@@ -1,0 +1,12 @@
+#!/bin/sh
+# Pre-commit gate: type-check and lint before a commit is recorded.
+# Skipped when dependencies are not installed so a fresh clone is not blocked.
+set -e
+
+if [ ! -d node_modules ]; then
+  echo "pre-commit: node_modules not found; skipping typecheck and lint. Run 'pnpm install' to enable the hook." >&2
+  exit 0
+fi
+
+pnpm run typecheck
+pnpm run lint

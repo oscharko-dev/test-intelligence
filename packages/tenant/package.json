@@ -1,0 +1,27 @@
+{
+  "name": "@oscharko-dev/ti-tenant",
+  "version": "0.1.0-beta.1",
+  "description": "Tenant onboarding, per-tenant data isolation, and EU data residency proofs.",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "lint": "node -e \"process.exit(0)\"",
+    "test": "tsx --test src/tenant-isolation-guard.test.ts src/tenant-isolation-proof.test.ts src/tenant-bundle.test.ts src/tenant-onboarding.test.ts"
+  },
+  "dependencies": {
+    "@oscharko-dev/ti-contracts": "workspace:*"
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "extractedAt": "2026-05-23T00:00:00.000Z",
+  "scenarioCount": 12,
+  "scenarios": {
+    "branded-ids": {
+      "fileCount": 1,
+      "manifestSha256": "sha256:da5cc3be80361d07b336fbeab0f2c0e1c02496e195098627698a9c3caa07bf9d"
+    },
+    "cli": {
+      "fileCount": 2,
+      "manifestSha256": "sha256:6812562a6b74a993f7ccedce82c8db137eeef7ed783444a09b939b6a15bb9d07"
+    },
+    "contracts": {
+      "fileCount": 3,
+      "manifestSha256": "sha256:e5f4de482eb920039b2726abf51f1263fe2ee2498c014fbdbe6732a76faa1022"
+    },
+    "core-generation": {
+      "fileCount": 2,
+      "manifestSha256": "sha256:ff9aca9c5518eb251349556068099363341741fd3597952eaa762372f9947786"
+    },
+    "evidence": {
+      "fileCount": 3,
+      "manifestSha256": "sha256:f23af15f22787e786e0c1c4a5fdbc7e9a684a295efdf3731d1227a0ff849a93b"
+    },
+    "http": {
+      "fileCount": 1,
+      "manifestSha256": "sha256:76d6bd4a99d015a9ded4f4fe4cd032dbc2e0ce02ccf0b0cef252476b585647d4"
+    },
+    "integrations": {
+      "fileCount": 1,
+      "manifestSha256": "sha256:1edb48009dce2f89d35ea9713a1dcb921b0f94ffd23d158d2b44cb8f0f229561"
+    },
+    "multi-source": {
+      "fileCount": 1,
+      "manifestSha256": "sha256:b5b7e91eb70c4fbd4be2a02ed79c43ecc841a8eefe1f1ea7939824f8b1c0b50c"
+    },
+    "policy": {
+      "fileCount": 3,
+      "manifestSha256": "sha256:e0cc25d2715310254d5a1bb884f306d86fde076c1d97b291ec0894c1de36b3df"
+    },
+    "review": {
+      "fileCount": 2,
+      "manifestSha256": "sha256:d8f224b5b15deb72f175c2ded46cc8289d5caf553c17ed300b7ffb8820865489"
+    },
+    "tenant": {
+      "fileCount": 1,
+      "manifestSha256": "sha256:bc1f084a755e300fe9e48fbcf5a1ff3b98aa5f9581e689338e3f6cebb1da2e8b"
+    },
+    "validation": {
+      "fileCount": 3,
+      "manifestSha256": "sha256:fc97e69054297e67d06888e5f8e7fc895f64e6b3e70286a7bb42fe819da2ae99"
+    }
+  },
+  "wdSourceSha": "006dabdf0abe30b9cac2b742a7238c6625d8e8c1"
+}

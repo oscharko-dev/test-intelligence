@@ -1,0 +1,27 @@
+{
+  "allowedAuditDossierArtifactKinds": [
+    "compliance_annotations",
+    "compliance_coverage",
+    "drift_baseline",
+    "evidence_seal",
+    "faithfulness_tier",
+    "finops_budget",
+    "formal_verification_report",
+    "human_review_log",
+    "incident_log",
+    "inter_rater_agreement",
+    "judge_calibration",
+    "locale_calibration",
+    "model_card",
+    "policy_report",
+    "provenance",
+    "region_attestations",
+    "self_consistency",
+    "subprocessor_register",
+    "tenant_bundle_resolved"
+  ],
+  "auditDossierArtifactBasename": "audit-dossier",
+  "auditDossierManifestSchemaVersion": "1.0.0",
+  "auditDossierSignatureSchemaVersion": "1.0.0",
+  "provenanceArtifactFilename": "provenance.jsonld"
+}

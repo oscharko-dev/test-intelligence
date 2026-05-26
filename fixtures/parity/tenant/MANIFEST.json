@@ -1,0 +1,9 @@
+{
+  "extractedAt": "2026-05-23T00:00:00.000Z",
+  "fileCount": 1,
+  "files": {
+    "isolation-proof.json": "sha256:34f29fe7eec525c4b0ea8627f2c6d49a5c67f6adbc9170f36c28dfea181a951c"
+  },
+  "scenario": "tenant",
+  "wdSourceSha": "006dabdf0abe30b9cac2b742a7238c6625d8e8c1"
+}

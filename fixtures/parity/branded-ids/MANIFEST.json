@@ -1,0 +1,9 @@
+{
+  "extractedAt": "2026-05-23T00:00:00.000Z",
+  "fileCount": 1,
+  "files": {
+    "branded-id-samples.json": "sha256:b91f0ab0eacca51a824915132af2c0c84cae593d92e6b832488bd173bfc2c011"
+  },
+  "scenario": "branded-ids",
+  "wdSourceSha": "006dabdf0abe30b9cac2b742a7238c6625d8e8c1"
+}

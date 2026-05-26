@@ -1,0 +1,6 @@
+{
+  "$schema": "./test-intelligence-prompt-template-version.lock.schema.json",
+  "description": "Pin of TEST_INTELLIGENCE_PROMPT_TEMPLATE_VERSION to the SHA-256 of packages/production-runner/src/prompt-compiler.ts.",
+  "version": "1.7.3",
+  "promptCompilerSha256": "e791c6693c05ee64e933e1552da4788beee3ab452eb2c63ece54dfb613e03cbf"
+}

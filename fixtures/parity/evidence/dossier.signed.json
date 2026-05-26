@@ -1,0 +1,21 @@
+{
+  "generatedCaseCount": 2,
+  "inputDescriptorHash": "sha256:0sha256:0sha256:0sha256:0sha256:0sha256:0sha256:0sha256:000000000000000000000000000000000000000000000000000000000",
+  "jobId": "ti-jobid-0000000000000001",
+  "policyProfileId": "eu-banking-default",
+  "runCompletedAt": "2026-01-01T00:05:00.000Z",
+  "runStartedAt": "2026-01-01T00:00:00.000Z",
+  "schemaVersion": "1.0.0",
+  "signatureShape": {
+    "algorithm": "Ed25519",
+    "encoding": "base64url"
+  },
+  "tenantId": "tenant-synthetic",
+  "validationOutcome": "pass",
+  "verificationMaterial": {
+    "crv": "Ed25519",
+    "kty": "OKP",
+    "pemPrefix": "-----BEGIN PUBLIC KEY-----",
+    "publicKeyShape": "PEM/SPKI"
+  }
+}

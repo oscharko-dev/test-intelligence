@@ -1,0 +1,126 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-bg-base: var(--bg-base);
+  --color-bg-panel: var(--bg-panel);
+  --color-bg-elev: var(--bg-elev);
+  --color-bg-input: var(--bg-input);
+  --color-border-subtle: var(--border-subtle);
+  --color-border-default: var(--border-default);
+  --color-border-strong: var(--border-strong);
+  --color-fg-default: var(--fg-default);
+  --color-fg-muted: var(--fg-muted);
+  --color-fg-subtle: var(--fg-subtle);
+  --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-fg);
+  --color-success: var(--success);
+  --color-warn: var(--warn);
+  --color-danger: var(--danger);
+  --color-info: var(--info);
+  --font-mono: var(--mono);
+  --font-ui: var(--ui);
+}
+
+:root {
+  --brand-green: #4eba87;
+  --bg-base: hsl(220 13% 8%);
+  --bg-panel: hsl(220 13% 11%);
+  --bg-elev: hsl(220 13% 14%);
+  --bg-input: hsl(220 13% 10%);
+  --border-subtle: hsl(220 13% 18%);
+  --border-default: hsl(220 13% 24%);
+  --border-strong: hsl(220 13% 32%);
+  --fg-default: hsl(220 13% 92%);
+  --fg-muted: hsl(220 8% 62%);
+  --fg-subtle: hsl(220 8% 45%);
+  --accent: hsl(210 100% 60%);
+  --accent-fg: hsl(220 13% 8%);
+  --success: hsl(142 55% 48%);
+  --warn: hsl(38 95% 55%);
+  --danger: hsl(0 70% 58%);
+  --info: hsl(200 85% 60%);
+  --focus-ring: hsl(210 100% 60% / 0.55);
+  --mono: var(--font-mono), "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --ui: var(--font-ui), "Inter", system-ui, sans-serif;
+}
+
+@layer base {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: var(--bg-base);
+    color: var(--fg-default);
+    font-family: var(--ui);
+    font-size: 13px;
+    line-height: 1.45;
+    font-feature-settings: "cv11", "ss01", "ss03";
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  button {
+    font: inherit;
+    color: inherit;
+  }
+
+  input,
+  select,
+  textarea {
+    font: inherit;
+    color: inherit;
+    background: var(--bg-input);
+  }
+
+  button,
+  [role="button"] {
+    cursor: pointer;
+  }
+
+  *:focus {
+    outline: none;
+  }
+
+  *:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 1px;
+    border-radius: 6px;
+  }
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+
+  .chip.running .chip__dot,
+  .chip.judging .chip__dot,
+  .chip.policy-gate .chip__dot,
+  .statusbar__dot.run {
+    animation: none !important;
+  }
+}

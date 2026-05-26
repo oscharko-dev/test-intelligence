@@ -1,0 +1,33 @@
+test-intelligence — enterprise operator command-line for the Test Intelligence product.
+
+Usage:
+  test-intelligence <command> [options]
+
+Generation:
+  run                Drive the figma_to_qc_test_cases production runner end-to-end.
+  doctor             Inspect the local Test Intelligence topology and configuration.
+  figma-export       Snapshot a Figma file into the canonical export schema.
+
+Human oversight (DSGVO Art. 22 / EU AI Act Art. 14):
+  review list|get|decide
+                     Inspect and capture decisions on the human-review queue.
+
+Self-improving calibration:
+  calibration-refit  Propose and apply a calibration refit from gold data.
+
+Integrations:
+  tms-push           Push canonicalized test cases into ALM / qTest / Polarion / Xray.
+  execution-pull     Pull execution evidence back into the calibration corpus.
+  onboard            Provision or doctor a tenant onboarding directory.
+
+Evidence verification:
+  audit-dossier      Generate a signed audit-dossier bundle from a run directory.
+  audit-verify       Verify the integrity and signature of an audit-dossier bundle.
+  verify-provenance  Verify provenance.jsonld against the artifacts of a run directory.
+  verify-seal        Independently verify a production-runner reproducibility seal.
+
+General:
+  --help, -h, help   Show this help text.
+  --version, -V      Print the product identity and release stage.
+
+Run "test-intelligence <command> --help" for command-specific options.

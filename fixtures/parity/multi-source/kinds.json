@@ -1,0 +1,28 @@
+{
+  "additiveOverBaseline": [
+    "custom_markdown",
+    "custom_structured",
+    "custom_text",
+    "figma_local_json",
+    "figma_plugin",
+    "figma_rest",
+    "jira_paste",
+    "jira_rest"
+  ],
+  "deltaRegisterEntry": "D-07",
+  "standaloneKinds": [
+    "custom_markdown",
+    "custom_structured",
+    "custom_text",
+    "figma_local_json",
+    "figma_plugin",
+    "figma_rest",
+    "jira_paste",
+    "jira_rest"
+  ],
+  "wdBaselineKinds": [
+    "figma-component",
+    "figma-design-system-token",
+    "figma-frame"
+  ]
+}

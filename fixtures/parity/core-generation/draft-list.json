@@ -1,0 +1,21 @@
+{
+  "allowedCategories": [
+    "accessibility",
+    "boundary_value",
+    "navigation_flow",
+    "negative_path",
+    "positive_path",
+    "validation_rule"
+  ],
+  "allowedPolarities": [
+    "accessibility",
+    "boundary",
+    "navigation",
+    "negative",
+    "positive",
+    "validation"
+  ],
+  "contractVersion": "1.39.0",
+  "promptTemplateVersion": "1.7.3",
+  "schemaVersion": "1.3.0"
+}

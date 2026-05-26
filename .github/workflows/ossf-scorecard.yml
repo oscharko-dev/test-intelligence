@@ -1,0 +1,101 @@
+name: ossf-scorecard
+
+# OSSF Scorecard supply-chain analysis + threshold enforcement.
+#
+# `analysis` (landed in #24) runs the Scorecard action on push to `dev`
+# and weekly; results are uploaded to GitHub code scanning and as a
+# workflow artifact, and (on dev) published to the public Scorecard API.
+#
+# `enforce-threshold` (added in #25 — fulfils the deferral from #24)
+# polls the public Scorecard API for the just-published score at the
+# current commit and fails the workflow if it falls below 5.5 (WD baseline).
+# Runs only on dev push so the threshold is checked against published
+# results, not stale data from a previous commit. Manual dispatches and
+# scheduled runs publish but do not enforce (no commit pin to verify).
+
+on:
+  push:
+    branches: [dev]
+  schedule:
+    - cron: "30 5 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/dev' }}
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  analysis:
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/dev'
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+      id-token: write
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Run OSSF Scorecard analysis
+        id: scorecard
+        uses: ossf/scorecard-action@4eaacf0543bb3f2c246792bd56e8cdeffafb205a # v2.4.3
+        with:
+          results_file: scorecard-results.sarif
+          results_format: sarif
+          # Publication is limited to dev; non-dev manual dispatches skip via
+          # the `if:` gate at the job level.
+          publish_results: ${{ github.ref == 'refs/heads/dev' }}
+
+      - name: Upload Scorecard SARIF
+        uses: github/codeql-action/upload-sarif@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4
+        with:
+          sarif_file: scorecard-results.sarif
+          category: ossf-scorecard
+
+      - name: Upload Scorecard artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: scorecard-results
+          path: scorecard-results.sarif
+          if-no-files-found: error
+
+  enforce-threshold:
+    # Run only after a publishable analysis on dev. Manual/scheduled runs
+    # do not pin to a commit the API can verify, so we skip them.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    needs: analysis
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    env:
+      SCORECARD_MIN_SCORE: "5.5"
+      SCORECARD_REPOSITORY_URI: github.com/${{ github.repository }}
+      SCORECARD_EXPECTED_COMMIT: ${{ github.sha }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      # setup-node@v5 auto-detects pnpm from package.json `packageManager`.
+      # This job never installs dependencies, so leaving package-manager
+      # caching enabled makes the post-job cache save fail because no
+      # cacheable path is created.
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Setup Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+          package-manager-cache: false
+
+      - name: Enforce Scorecard minimum threshold
+        run: node scripts/check-scorecard-threshold.mjs

@@ -1,0 +1,9 @@
+{
+  "extractedAt": "2026-05-23T00:00:00.000Z",
+  "fileCount": 1,
+  "files": {
+    "kinds.json": "sha256:5d017bf55cd966fd7d71ada7c325905c057acc1222d32450c5c9c7ed0e50baec"
+  },
+  "scenario": "multi-source",
+  "wdSourceSha": "006dabdf0abe30b9cac2b742a7238c6625d8e8c1"
+}

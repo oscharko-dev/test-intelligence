@@ -1,0 +1,31 @@
+{
+  "name": "@oscharko-dev/ti-agentic-harness",
+  "version": "0.1.0-beta.1",
+  "description": "Adversarial critic agents, formal verification, causal hypothesis registry, lessons memdir.",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsc -b && cp -r src/adversarial-playbooks dist/adversarial-playbooks && cp -r src/formal-verification dist/formal-verification",
+    "typecheck": "tsc -b",
+    "lint": "node -e \"process.exit(0)\"",
+    "test": "tsx --test src/action-topology-agent.test.ts src/adversarial-critic-agent.test.ts src/adversarial-gap-finder.test.ts src/agent-harness-checkpoint.test.ts src/agent-harness.test.ts src/agent-lessons-memdir.test.ts src/case-merger.test.ts src/causal-hypothesis-registry.test.ts src/formal-verification.test.ts src/lessons-consolidation-lock.test.ts src/test-data-oracle.test.ts"
+  },
+  "dependencies": {
+    "@oscharko-dev/ti-contracts": "workspace:*",
+    "@oscharko-dev/ti-security": "workspace:*",
+    "@oscharko-dev/ti-tenant": "workspace:*",
+    "@oscharko-dev/ti-core-engine": "workspace:*",
+    "@oscharko-dev/ti-model-gateway": "workspace:*"
+  }
+}

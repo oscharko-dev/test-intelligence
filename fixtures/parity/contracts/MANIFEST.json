@@ -1,0 +1,11 @@
+{
+  "extractedAt": "2026-05-23T00:00:00.000Z",
+  "fileCount": 3,
+  "files": {
+    "contract-versions.json": "sha256:a2fda5e4f796d087ae255ad7ca3490ef161dd04dd5e232ac2e26c91303bae556",
+    "enum-surface.json": "sha256:26287e74d3c336c6fd35d8592b116f298e8929638cc126f82550cdd99772524b",
+    "exports-list.json": "sha256:2693aa0ae09fde0c85a1cf9dd0dbc854bc1670ae5d715ee91bc9676912c69c52"
+  },
+  "scenario": "contracts",
+  "wdSourceSha": "006dabdf0abe30b9cac2b742a7238c6625d8e8c1"
+}

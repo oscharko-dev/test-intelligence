@@ -1,0 +1,232 @@
+name: ci
+
+# The single required check for every PR targeting `dev` or `main`. Issue #3
+# bootstrapped this workflow with the five baseline gates (install, typecheck,
+# lint, test, build, inline secret scan); issue #24 extends it in-place with
+# the full PR quality gate (policy, license, supply-chain, evaluation lanes,
+# markdown link check). The workflow name `ci` and the job name `ci` MUST NOT
+# change — every prior child issue of epic #1 expects exactly that
+# required-check name.
+#
+# Optional lanes (mutation-nightly, live-smoke, drift-canary, live-e2e) and
+# the security/supply-chain workflows (codeql, dependency-review, scorecard,
+# slsa-provenance, workflow-lint) live in sibling files and are NOT part of
+# the required `ci` check.
+
+on:
+  pull_request:
+    branches: [dev, main]
+  push:
+    branches: [dev]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/dev' }}
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+          # Full history is required by the evaluation lanes from issue #19
+          # (e.g. `check-customer-eval-sample-plan.mjs` runs
+          # `git diff --name-only HEAD^ HEAD`). The default `fetch-depth: 1`
+          # leaves no parent commit to diff against.
+          fetch-depth: 0
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Setup Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Workflow lint (actionlint)
+        # SHA-pinned per the standalone supply-chain policy; matches the WD pin
+        # in `.github/workflows/workflow-lint.yml`.
+        uses: rhysd/actionlint@914e7df21a07ef503a81201c76d2b11c789d3fca # v1.7.12
+
+      - name: Lint Dockerfile (hadolint)
+        # Cheap early-fail signal for the container delivery path (Issue #30).
+        # The heavier docker build + scan + smoke runs in docker-build.yml.
+        uses: hadolint/hadolint-action@2332a7b74a6de0dda2e2221d575162eba76ba5e5 # v3.3.0
+        with:
+          dockerfile: Dockerfile
+          failure-threshold: warning
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lockfile host allowlist
+        run: node scripts/check-lockfile-hosts.mjs
+
+      # ─── Workspace gates (Issue #76) ──────────────────────────────────
+      # Per-package lint, typecheck, test, and build across the
+      # `packages/*` and `apps/*` workspaces declared in
+      # `pnpm-workspace.yaml`. Run the workspace build first because the
+      # root project references in `tsconfig.json` require the per-package
+      # `dist/index.d.ts` outputs to exist before root `tsc --noEmit` runs
+      # (otherwise tsc fails with TS6305). After extraction work (Issue #77)
+      # populated the contracts package, this order matters.
+      - name: Workspaces — lint
+        run: pnpm run workspaces:lint
+
+      - name: Workspaces — typecheck
+        run: pnpm run workspaces:typecheck
+
+      - name: Workspaces — test
+        run: pnpm run workspaces:test
+
+      - name: Workspaces — build
+        run: pnpm run workspaces:build
+
+      # ─── Workbench gates ─────────────────────────────────────────────
+      # The Workbench is a private Next.js app under `apps/workbench`.
+      # It is intentionally outside the package-workspace scripts above
+      # because it is not part of the published npm runtime package.
+      - name: Workbench — lint
+        run: pnpm --dir apps/workbench lint
+
+      - name: Workbench — typecheck
+        run: pnpm --dir apps/workbench typecheck
+
+      - name: Workbench — test
+        run: pnpm --dir apps/workbench test
+
+      - name: Workbench — build
+        run: pnpm --dir apps/workbench build
+
+      - name: Workbench — install visual browser
+        run: pnpm --dir apps/workbench exec playwright install --with-deps chromium
+
+      - name: Workbench — visual regression
+        run: pnpm --dir apps/workbench test:visual:ci
+
+      # ─── Root gates ───────────────────────────────────────────────────
+      # The root project still owns the carry-in source under `src/`.
+      # Workspace gates above cover the package workspaces. These gates run
+      # AFTER the workspace build so root `tsc --noEmit` can resolve project
+      # references into the just-built `packages/*/dist/*.d.ts` outputs.
+      - name: Type-check
+        run: pnpm run typecheck
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Test
+        run: pnpm run test
+
+      - name: Build
+        run: pnpm run build:package
+
+      - name: Workspaces — dependency-cruiser (module-direction enforcement)
+        run: pnpm run check:depcruise
+
+      - name: Parity gate (#26)
+        # Deterministic byte-for-byte parity against pinned golden fixtures.
+        # Measured ~0.3 s locally; demote only if CI cost exceeds 2 min.
+        run: node --import tsx scripts/check-parity.mjs --ci
+
+      - name: Package shape (manifest sanity)
+        run: node scripts/check-package-shape.mjs
+
+      - name: License policy
+        run: node scripts/check-license-policy.mjs
+
+      - name: Zero-telemetry guard
+        run: node scripts/check-no-telemetry.mjs
+
+      # ─── Packaging / supply-chain gates (Issue #25) ───────────────────
+      # Cheap, deterministic, and gate the public-distribution shape.
+      # All depend on `dist/` being present (Build above) and exercise the
+      # same package.json the release-gate.yml workflow will publish from.
+
+      - name: Publint (manifest publish-readiness)
+        run: pnpm run check:publint
+
+      - name: Are-the-types-wrong (dual-package types correctness)
+        run: pnpm run check:attw
+
+      - name: SBOM — CycloneDX 1.5
+        run: pnpm run sbom:cyclonedx
+
+      - name: SBOM — SPDX 2.3
+        run: pnpm run sbom:spdx
+
+      - name: SBOM parity (CycloneDX ↔ SPDX)
+        run: pnpm run check:sbom-parity
+
+      - name: Supply-chain IOC scan
+        run: pnpm run check:supply-chain-iocs
+
+      - name: Evaluation lane — customer eval sample plan (Issue #19)
+        run: node --import tsx scripts/check-customer-eval-sample-plan.mjs
+
+      - name: Evaluation lane — calibration refit safety G11 (Issue #19)
+        run: node --import tsx scripts/check-calibration-refit-safety.mjs
+
+      - name: Evaluation lane — coverage-plan optimizer baseline (Issue #19)
+        run: node --import tsx scripts/check-coverage-plan-optimizer-baseline.mjs
+
+      - name: Evaluation lane — tenant isolation proof G12 (Issue #18)
+        run: node --import tsx packages/tenant/scripts/check-tenant-isolation-proof.mjs
+
+      - name: Evaluation lane — tenant isolation pentest (Issue #18)
+        run: node --import tsx scripts/check-tenant-isolation-pentest.mjs
+
+      - name: Markdown link check (lychee)
+        # SHA-pinned to lychee-action v2.4.1.
+        uses: lycheeverse/lychee-action@82202e5e9c2f4ef1a55a3d02563e1cb6041e5332 # v2.4.1
+        with:
+          args: >-
+            --no-progress
+            --max-concurrency 4
+            --exclude-mail
+            --exclude-path node_modules
+            --exclude-path dist
+            --accept 200..=299,403,429
+            ./**/*.md
+          fail: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Secret scan
+        # The standalone secret scan is a hardened `git grep` over tracked files.
+        # Excluded paths carry synthetic adversarial fixtures or this workflow
+        # file (which itself contains the regex literals being scanned for).
+        #
+        # Patterns:
+        #   - PEM private-key headers (any algorithm)
+        #   - AWS access-key IDs (AKIA + 16 base32 chars)
+        #   - Slack tokens (xoxb/xoxa/xoxp/xoxr/xoxs)
+        #   - GitHub personal-access tokens (ghp/gho/ghu/ghs/ghr + 36 base62)
+        #   - GCP service-account private_key_id literals
+        #   - Azure storage AccountKey= header
+        run: |
+          pattern='(-----BEGIN [A-Z ]*PRIVATE KEY-----|AKIA[0-9A-Z]{16}|xox[baprs]-[0-9A-Za-z-]{10,}|(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36}|"private_key_id"\s*:\s*"[a-f0-9]{40}"|AccountKey=[A-Za-z0-9+/]{86}==)'
+          # Test-file exclusions: these files contain literal secret-shaped
+          # strings on purpose — they exercise the secret-redaction code
+          # itself, so removing the literals would defeat their assertions.
+          if git grep -nE "$pattern" -- \
+            ':!pnpm-lock.yaml' \
+            ':!.github/workflows/ci.yml' \
+            ':!fixtures/adversarial-corpus/catalog.json' \
+            ':!src/secret-redaction.test.ts' \
+            ':!packages/security/src/secret-redaction.test.ts' \
+            ':!src/test-intelligence/cache-break-detector.test.ts' \
+            ':!src/test-intelligence/jira-issue-ir.test.ts' \
+            ':!packages/multi-source/src/jira-issue-ir.test.ts'; then
+            echo "::error::Potential secret detected in tracked files."
+            exit 1
+          fi
+          echo "Secret scan passed: no key/token patterns found."

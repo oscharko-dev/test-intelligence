@@ -1,0 +1,15 @@
+{
+  "maxRoleLineageDepth": 10,
+  "prefix": "ti-",
+  "rejectedExamples": [
+    "wd-1234567890abcdef",
+    "ti-1234567890ABCDEF",
+    "ti--1234567890abcdef",
+    "ti-1234567890abcde"
+  ],
+  "validExamples": [
+    "ti-1234567890abcdef",
+    "ti-jobid-1234567890abcdef",
+    "ti-agentroleprofile-fedcba9876543210"
+  ]
+}

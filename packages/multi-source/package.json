@@ -1,0 +1,30 @@
+{
+  "name": "@oscharko-dev/ti-multi-source",
+  "version": "0.1.0-beta.1",
+  "description": "Multi-source ingestion: Figma normalization, Jira ADF parsing, custom-context import.",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "lint": "node -e \"process.exit(0)\"",
+    "test": "tsx --test src/custom-context-input.test.ts src/custom-context-markdown.test.ts src/custom-context-store.test.ts src/customer-profile-input.test.ts src/inspector-multisource.test.ts src/jira-adf-parser.property.test.ts src/jira-adf-parser.test.ts src/jira-gateway-client.test.ts src/jira-issue-ir.property.test.ts src/jira-issue-ir.snapshot.test.ts src/jira-issue-ir.test.ts src/jira-paste-ingest.test.ts src/multi-source-envelope.property.test.ts src/multi-source-envelope.test.ts src/multi-source-eval.test.ts src/multi-source-fixtures.test.ts src/multi-source-production-readiness.test.ts src/source-mix-planner.property.test.ts src/source-mix-planner.test.ts"
+  },
+  "dependencies": {
+    "@oscharko-dev/ti-contracts": "workspace:*",
+    "@oscharko-dev/ti-core-engine": "workspace:*",
+    "@oscharko-dev/ti-model-gateway": "workspace:*",
+    "@oscharko-dev/ti-security": "workspace:*"
+  }
+}

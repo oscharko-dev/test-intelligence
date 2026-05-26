@@ -1,0 +1,24 @@
+name: Main merge policy
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions: {}
+
+jobs:
+  only-dev-to-main:
+    name: Only dev may merge to main
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate source branch
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          if [ "$HEAD_REF" != "dev" ]; then
+            echo "::error::Only pull requests from dev may target main."
+            exit 1
+          fi
+
+          echo "Pull request source branch is dev."

@@ -1,0 +1,16 @@
+{
+  "commandCount": 11,
+  "commands": [
+    "audit-dossier",
+    "audit-verify",
+    "calibration-refit",
+    "doctor",
+    "execution-pull",
+    "figma-export",
+    "onboard",
+    "run",
+    "tms-push",
+    "verify-provenance",
+    "verify-seal"
+  ]
+}

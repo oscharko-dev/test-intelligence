@@ -1,0 +1,30 @@
+{
+  "name": "@oscharko-dev/ti-model-gateway",
+  "version": "0.1.0-beta.1",
+  "description": "LLM provider gateway: routing policy, replay cache, FinOps budget controls, constrained decoding.",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "lint": "node -e \"process.exit(0)\"",
+    "test": "tsx --test src/agent-role-profile.test.ts src/cache-break-events-log.test.ts src/constrained-decoding.test.ts src/context-budget-analyzer.test.ts src/cost-routing-quality-sampler.test.ts src/finops-budget.test.ts src/finops-report.test.ts src/llm-capability-probe.test.ts src/llm-circuit-breaker.test.ts src/llm-failure-modes.test.ts src/llm-gateway-bundle.test.ts src/llm-gateway-idempotency.test.ts src/llm-gateway.test.ts src/llm-mock-gateway.test.ts src/llm-token-estimator.test.ts src/model-routing-policy.test.ts src/multi-source-finops-quota.test.ts src/prompt-optimizer.test.ts src/replay-cache.adversarial.test.ts src/replay-cache.test.ts src/resource-budget.test.ts src/routing-savings-report.test.ts src/routing-table.test.ts src/task-classifier-agent.test.ts src/technique-quota.test.ts"
+  },
+  "dependencies": {
+    "@oscharko-dev/ti-contracts": "workspace:*",
+    "@oscharko-dev/ti-security": "workspace:*",
+    "@oscharko-dev/ti-core-engine": "workspace:*",
+    "@oscharko-dev/ti-tenant": "workspace:*"
+  }
+}

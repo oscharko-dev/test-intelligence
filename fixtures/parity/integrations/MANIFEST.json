@@ -1,0 +1,9 @@
+{
+  "extractedAt": "2026-05-23T00:00:00.000Z",
+  "fileCount": 1,
+  "files": {
+    "canonical-mapping.json": "sha256:1a55766aa46589d9adf30750b4b343bbe4e379f3521acc50ef74eeb979f40473"
+  },
+  "scenario": "integrations",
+  "wdSourceSha": "006dabdf0abe30b9cac2b742a7238c6625d8e8c1"
+}

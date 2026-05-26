@@ -1,0 +1,42 @@
+{
+  "artifactFilename": "tenant-isolation-proof.json",
+  "defaultCacheKeyExamples": [
+    {
+      "digest": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "label": "fixture-key-alpha"
+    },
+    {
+      "digest": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "label": "fixture-key-beta"
+    },
+    {
+      "digest": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+      "label": "fixture-key-gamma"
+    }
+  ],
+  "defaultTenantScopeExamples": [
+    {
+      "environmentId": "prod",
+      "projectId": "proj-x",
+      "tenantId": "tenant-a"
+    },
+    {
+      "environmentId": "prod",
+      "projectId": "proj-x",
+      "tenantId": "tenant-b"
+    },
+    {
+      "environmentId": "staging",
+      "projectId": "proj-x",
+      "tenantId": "tenant-a"
+    },
+    {
+      "environmentId": "prod",
+      "projectId": "proj-y",
+      "tenantId": "tenant-a"
+    }
+  ],
+  "fixedGeneratedAt": "1970-01-01T00:00:00.000Z",
+  "g12PassToken": "G12_TENANT_ISOLATION_PROOF_PASS",
+  "schemaVersion": "1.0.0"
+}

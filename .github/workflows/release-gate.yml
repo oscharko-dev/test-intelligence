@@ -1,0 +1,91 @@
+name: release-gate
+
+# Release-time aggregate gate.
+#
+# Intentionally GATED — fires only on:
+#   - manual `workflow_dispatch` from the dev branch (operator-initiated)
+#   - push of a release tag matching `v*.*.*` (signed-tag-driven release)
+#
+# It is NEVER the PR-required `ci` check. The required check is `ci`
+# (.github/workflows/ci.yml).
+#
+# Runs every Wave A-D gate AS WELL AS the heavy
+# `pnpm run check:reproducible-build` (two consecutive builds + tarball
+# hash comparison) that is too slow for the PR-time `ci` lane.
+#
+# Per ADR-0006 §"Artifact Class 3", this workflow's outputs (the
+# release-readiness report + SBOMs) are attached to the GitHub Release
+# alongside the npm tarball. The actual `npm publish` step is owned by a
+# separate, currently-stubbed workflow — out of scope for #25.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*.*.*"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release-readiness:
+    name: release readiness
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+          # Full history so the embedded eval-lane scripts (which call
+          # `git diff HEAD^ HEAD` per the #24 memory entry) work.
+          fetch-depth: 0
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Setup Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: 22
+          package-manager-cache: false
+
+      - name: Set reproducible build metadata
+        shell: bash
+        run: |
+          echo "SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)" >> "$GITHUB_ENV"
+          echo "TZ=UTC" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Aggregate release readiness check
+        run: pnpm run release:check
+
+      - name: Verify reproducible build (two clean iterations)
+        run: pnpm run check:reproducible-build
+
+      - name: Upload release-readiness report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-readiness-report
+          path: artifacts/release-readiness/
+          if-no-files-found: error
+
+      - name: Upload reproducibility evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: reproducibility-evidence
+          path: artifacts/reproducibility/
+          if-no-files-found: error
+
+      - name: Upload SBOM artefacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: sbom
+          path: artifacts/sbom/
+          if-no-files-found: error

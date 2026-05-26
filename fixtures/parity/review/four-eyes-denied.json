@@ -1,0 +1,17 @@
+{
+  "policy": {
+    "requiredRiskCategories": [
+      "financial_transaction",
+      "high",
+      "regulated_data"
+    ],
+    "visualSidecarTriggerOutcomes": [
+      "conflicts_with_figma_metadata",
+      "fallback_used",
+      "low_confidence",
+      "possible_pii",
+      "prompt_injection_like_text"
+    ]
+  },
+  "rationale": "Same-operator approval is denied unless explicitly bypassed by policy."
+}

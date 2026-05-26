@@ -1,0 +1,179 @@
+{
+  "name": "@oscharko-dev/test-intelligence",
+  "version": "0.1.0-beta.1",
+  "description": "Test Intelligence is a standalone enterprise package for regulated quality and testing intelligence workloads.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "packageManager": "pnpm@10.33.0",
+  "sideEffects": false,
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./contracts": {
+      "import": {
+        "types": "./dist/contracts/index.d.ts",
+        "default": "./dist/contracts/index.js"
+      },
+      "require": {
+        "types": "./dist/contracts/index.d.cts",
+        "default": "./dist/contracts/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "test-intelligence": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "NOTICE",
+    "GOVERNANCE.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "CODE_OF_CONDUCT.md",
+    "SUPPORT.md"
+  ],
+  "scripts": {
+    "build": "pnpm run workspaces:build && pnpm run build:package",
+    "build:package": "tsup",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src",
+    "cli": "tsx packages/cli/src/cli.ts",
+    "local:start": "node scripts/start-local.mjs",
+    "local:start:mock": "node scripts/start-local.mjs --mock",
+    "local:start:prod": "node scripts/start-local.mjs --mode=prod",
+    "test:final-e2e": "node scripts/run-final-e2e.mjs",
+    "local:stop": "node scripts/stop-local.mjs",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "tsx --test \"src/**/*.test.ts\" \"integration/**/*.test.ts\"",
+    "test:formal-verification": "tsx --test packages/agentic-harness/src/formal-verification.test.ts && node --import tsx scripts/run-formal-verification.mjs --generated-at 1970-01-01T00:00:00.000Z --output-dir node_modules/.cache/formal-verification",
+    "test:ti-live-smoke": "node -e \"console.log('[ti-live-smoke] live lane requires TEST_INTELLIGENCE_LLM_API_KEY; configure the optional workflow secrets before enabling it.')\"",
+    "test:ti-drift-canary": "node -e \"console.log('[ti-drift-canary] live lane requires TEST_INTELLIGENCE_LLM_API_KEY; configure the optional workflow secrets before enabling it.')\"",
+    "test:ti-live-e2e": "node -e \"console.log('[ti-live-e2e] live lane requires the full Azure Foundry secret set; configure the optional workflow secrets before enabling it.')\"",
+    "test:mutation": "stryker run",
+    "docs": "typedoc",
+    "docs:api": "typedoc",
+    "check:publint": "publint",
+    "check:attw": "attw --pack",
+    "check:package-shape": "node scripts/check-package-shape.mjs",
+    "check:license-policy": "node scripts/check-license-policy.mjs",
+    "check:lockfile-hosts": "node scripts/check-lockfile-hosts.mjs",
+    "check:no-telemetry": "node scripts/check-no-telemetry.mjs",
+    "check:supply-chain-iocs": "node scripts/check-supply-chain-iocs.mjs",
+    "check:scorecard-threshold": "node scripts/check-scorecard-threshold.mjs",
+    "check:sbom-parity": "node scripts/check-sbom-parity.mjs",
+    "check:reproducible-build": "node scripts/verify-reproducible-build.mjs",
+    "check:npm-sbom-smoke": "node scripts/npm-sbom-smoke.mjs",
+    "check:parity": "node --import tsx scripts/check-parity.mjs",
+    "check:depcruise": "depcruise --config .dependency-cruiser.cjs packages src",
+    "workspaces:build": "pnpm -r --filter \"./packages/*\" run build",
+    "workspaces:typecheck": "pnpm -r --filter \"./packages/*\" run typecheck",
+    "workspaces:lint": "pnpm -r --filter \"./packages/*\" run lint",
+    "workspaces:test": "pnpm -r --filter \"./packages/*\" run test",
+    "check:sandbox-parity": "node --import tsx scripts/check-sandbox-parity.mjs",
+    "parity:extract": "node --import tsx scripts/extract-parity-fixtures.mjs",
+    "sbom:cyclonedx": "node scripts/generate-cyclonedx.mjs --ignore-npm-errors",
+    "sbom:cyclonedx:container": "node scripts/generate-cyclonedx-container.mjs",
+    "sbom:spdx": "node scripts/generate-spdx.mjs",
+    "test:airgap-smoke": "node scripts/run-airgap-smoke.mjs",
+    "test:airgap-install": "node scripts/verify-airgap-install.mjs",
+    "test:fips-smoke": "node scripts/fips-smoke.mjs",
+    "release:check": "node scripts/release-readiness.mjs",
+    "prepare": "git config core.hooksPath .githooks"
+  },
+  "keywords": [
+    "pre-beta",
+    "test-intelligence",
+    "enterprise",
+    "quality-assurance",
+    "governance"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/oscharko-dev/test-intelligence.git"
+  },
+  "bugs": {
+    "url": "https://github.com/oscharko-dev/test-intelligence/issues"
+  },
+  "homepage": "https://github.com/oscharko-dev/test-intelligence#readme",
+  "author": "oscharko-dev",
+  "license": "Apache-2.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "pnpm": {
+    "overrides": {
+      "esbuild": "^0.25.0",
+      "fflate": "0.7.4",
+      "postcss": "^8.5.10",
+      "qs": "^6.15.2",
+      "vite": "^6.4.2"
+    },
+    "ignoredOptionalDependencies": [
+      "sharp"
+    ]
+  },
+  "dependencies": {
+    "zod": "^4.4.2",
+    "@oscharko-dev/ti-security": "workspace:*",
+    "@oscharko-dev/ti-tenant": "workspace:*",
+    "@oscharko-dev/ti-core-engine": "workspace:*",
+    "@oscharko-dev/ti-model-gateway": "workspace:*",
+    "@oscharko-dev/ti-evidence": "workspace:*",
+    "@oscharko-dev/ti-quality": "workspace:*",
+    "@oscharko-dev/ti-multi-source": "workspace:*",
+    "@oscharko-dev/ti-review": "workspace:*",
+    "@oscharko-dev/ti-integrations": "workspace:*",
+    "@oscharko-dev/ti-eval": "workspace:*",
+    "@oscharko-dev/ti-agentic-harness": "workspace:*",
+    "@oscharko-dev/ti-contracts": "workspace:*",
+    "@oscharko-dev/ti-production-runner": "workspace:*",
+    "@oscharko-dev/ti-cli": "workspace:*"
+  },
+  "peerDependencies": {
+    "@opentelemetry/api": "^1.9.0"
+  },
+  "peerDependenciesMeta": {
+    "@opentelemetry/api": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@arethetypeswrong/cli": "^0.18.2",
+    "@cyclonedx/cyclonedx-npm": "^4.2.1",
+    "@eslint/js": "^10.0.1",
+    "dependency-cruiser": "^17.4.2",
+    "@opentelemetry/api": "^1.9.1",
+    "@stryker-mutator/core": "9.6.1",
+    "@types/node": "^25.6.0",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
+    "eslint": "^10.3.0",
+    "fast-check": "^4.7.0",
+    "globals": "^17.6.0",
+    "prettier": "^3.8.3",
+    "publint": "^0.3.18",
+    "tsup": "^8.5.1",
+    "tsx": "^4.21.0",
+    "typedoc": "0.28.19",
+    "typedoc-plugin-markdown": "4.11.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.59.1"
+  }
+}

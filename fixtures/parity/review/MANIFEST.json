@@ -1,0 +1,10 @@
+{
+  "extractedAt": "2026-05-23T00:00:00.000Z",
+  "fileCount": 2,
+  "files": {
+    "four-eyes-denied.json": "sha256:08a3c12c105b623f4ddc27b2525ba3d93cfd7b596d3292c968f348f5740da760",
+    "queue.json": "sha256:1ea5a0f842af2527a8b81a0bf7df3b89172a450a3e3fdbb9d1869ee1b483fc3a"
+  },
+  "scenario": "review",
+  "wdSourceSha": "006dabdf0abe30b9cac2b742a7238c6625d8e8c1"
+}

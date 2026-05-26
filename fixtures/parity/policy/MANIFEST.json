@@ -1,0 +1,11 @@
+{
+  "extractedAt": "2026-05-23T00:00:00.000Z",
+  "fileCount": 3,
+  "files": {
+    "bypass-denied.json": "sha256:13189178d29a517635293dc5b2b9c671c41fd40f05914149d9ecdc21716bc367",
+    "eu-banking.json": "sha256:bdb6884e32d8b52ac135af7d925bb8dca46d3b3f37bdfd85f5678497b9368274",
+    "sovereign.json": "sha256:a3ba3b4bae8bd9b1e449e6c5b76b07be584e571004aed694baac201ced672b9b"
+  },
+  "scenario": "policy",
+  "wdSourceSha": "006dabdf0abe30b9cac2b742a7238c6625d8e8c1"
+}

@@ -1,0 +1,14 @@
+dist/
+pnpm-lock.yaml
+docs/api/
+node_modules/
+coverage/
+playwright-report/
+ui-src/dist/
+ui-src/playwright-report/
+
+# Pre-existing repository files maintained outside this toolchain's formatting
+# scope; left untouched to preserve their authored layout.
+.github/ISSUE_TEMPLATE/
+.github/pull_request_template.md
+SECURITY.md

@@ -1,0 +1,65 @@
+name: dependency-review
+
+# PR-time supply-chain gate that inspects the metadata diff of `package.json`
+# and `pnpm-lock.yaml` changes against the GitHub Advisory Database before any
+# install step runs lifecycle scripts.
+#
+# Severity threshold scales with the target branch:
+#   - main: moderate (release gate)
+#   - dev:  high     (development gate)
+#
+# License deny-list is GPL/AGPL/LGPL/SSPL — copyleft licenses that are
+# incompatible with the standalone package's Apache-2.0 licensing posture.
+# The complementary `scripts/check-license-policy.mjs` allowlist runs in `ci.yml`.
+#
+# Operator prerequisite: the GitHub Dependency Graph must remain enabled in
+# Settings → Security & analysis. Without it, the dependency-review action
+# fails closed so advisory and license findings cannot be bypassed silently.
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [dev, main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/dev' }}
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-review:
+    name: Review dependency diff (dev/main)
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: Review dependency changes for known advisories (PR)
+        if: github.event_name == 'pull_request'
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: ${{ github.base_ref == 'main' && 'moderate' || 'high' }}
+          fail-on-scopes: ${{ github.base_ref == 'main' && 'runtime' || 'runtime, development' }}
+          comment-summary-in-pr: always
+          # keep license policy enforcement in the separate `check-license-policy` CI gate
+          license-check: false
+
+      - name: Review dependency changes for known advisories (push)
+        if: github.event_name == 'push'
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          base-ref: ${{ github.event.before }}
+          head-ref: ${{ github.sha }}
+          fail-on-severity: ${{ github.ref_name == 'main' && 'moderate' || 'high' }}
+          fail-on-scopes: ${{ github.ref_name == 'main' && 'runtime' || 'runtime, development' }}
+          comment-summary-in-pr: never
+          # keep license policy enforcement in the separate `check-license-policy` CI gate
+          license-check: false

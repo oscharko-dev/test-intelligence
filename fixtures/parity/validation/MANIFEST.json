@@ -1,0 +1,11 @@
+{
+  "extractedAt": "2026-05-23T00:00:00.000Z",
+  "fileCount": 3,
+  "files": {
+    "clean.json": "sha256:7632f9fc2b391184393562b69949cc9a62b1eace1f75c180b0eb6046b73a51ea",
+    "dirty.json": "sha256:cb719ad5894fb7820a3137e840fda13d54a9df6e64d761f3ff3b15c5f6f15ac6",
+    "empty.json": "sha256:78789bfecf461750656612725c564d1056b986b9f912a755e6050693650f8367"
+  },
+  "scenario": "validation",
+  "wdSourceSha": "006dabdf0abe30b9cac2b742a7238c6625d8e8c1"
+}

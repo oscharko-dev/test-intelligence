@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "tsBuildInfoFile": "./dist/.tsbuildinfo"
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["dist", "node_modules", "src/**/*.test.ts"],
+  "references": [
+    { "path": "../contracts" },
+    { "path": "../security" },
+    { "path": "../core-engine" },
+    { "path": "../tenant" }
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "name": "@oscharko-dev/ti-integrations",
+  "version": "0.1.0-beta.1",
+  "description": "TMS/QC push adapters, Jira-write adapter, traceability matrix, execution evidence ingest.",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "lint": "node -e \"process.exit(0)\"",
+    "test": "tsx --test src/jira-write-markdown.test.ts src/qc-adapter.test.ts src/qc-alm-api-transfer.test.ts src/qc-alm-dry-run.golden.test.ts src/qc-alm-dry-run.test.ts src/qc-alm-mapping-profile.test.ts src/qc-mapping.test.ts src/qc-provider-registry.property.test.ts src/qc-provider-registry.test.ts src/qc-provider-stub.test.ts src/test-execution-evidence-ingest.test.ts src/tms-adapters/alm-adapter.test.ts src/tms-adapters/polarion-adapter.test.ts src/tms-adapters/qtest-adapter.test.ts src/tms-adapters/tms-push-pipeline.test.ts src/tms-adapters/tms-shared.test.ts src/tms-adapters/xray-adapter.test.ts src/traceability-matrix.property.test.ts src/traceability-matrix.test.ts src/traceability-pipeline.test.ts"
+  },
+  "dependencies": {
+    "@oscharko-dev/ti-contracts": "workspace:*",
+    "@oscharko-dev/ti-core-engine": "workspace:*",
+    "@oscharko-dev/ti-security": "workspace:*",
+    "@oscharko-dev/ti-tenant": "workspace:*"
+  }
+}

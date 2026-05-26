@@ -1,0 +1,301 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+  GENERATED_TEST_CASE_SCHEMA_VERSION,
+  TEST_INTELLIGENCE_CONTRACT_VERSION,
+  TEST_INTELLIGENCE_PROMPT_TEMPLATE_VERSION,
+  type BusinessTestIntentIr,
+  type CoveragePlan,
+  type GeneratedTestCase,
+  type GeneratedTestCaseList,
+  type RiskRanking,
+  type TestCaseType,
+} from "@oscharko-dev/ti-contracts";
+import { createMockLlmGatewayClient } from "@oscharko-dev/ti-model-gateway";
+import {
+  computeAdversarialFindingDedupeKey,
+  computeNegativeCoverageAccounting,
+  dedupeAdversarialFindings,
+  runAdversarialCriticRound,
+  validateAdversarialCriticResponse,
+} from "./adversarial-critic-agent.js";
+
+const SAMPLE_INTENT: BusinessTestIntentIr = {
+  version: "1.0.0",
+  source: { kind: "figma_local_json", contentHash: "0".repeat(64) },
+  screens: [],
+  detectedFields: [],
+  detectedActions: [],
+  detectedValidations: [],
+  detectedNavigation: [],
+  inferredBusinessObjects: [],
+  risks: [],
+  assumptions: [],
+  openQuestions: [],
+  piiIndicators: [],
+  redactions: [],
+};
+
+const SAMPLE_COVERAGE_PLAN: CoveragePlan = {
+  schemaVersion: "1.0.0",
+  jobId: "job-2039",
+  perScreen: [],
+  perElement: [],
+  minimumCases: [],
+  recommendedCases: [],
+  techniques: [],
+  mutationKillRateTarget: 0.85,
+};
+
+const SAMPLE_RISK_RANKING: RiskRanking = {
+  schemaVersion: "1.0.0",
+  jobId: "job-2039",
+  rankedElements: [],
+  topKElementIds: [],
+};
+
+const makeCase = (id: string, type: TestCaseType): GeneratedTestCase => ({
+  id,
+  sourceJobId: "job-2039",
+  contractVersion: TEST_INTELLIGENCE_CONTRACT_VERSION,
+  schemaVersion: GENERATED_TEST_CASE_SCHEMA_VERSION,
+  promptTemplateVersion: TEST_INTELLIGENCE_PROMPT_TEMPLATE_VERSION,
+  title: `Case ${id}`,
+  objective: `Objective ${id}`,
+  level: "system",
+  type,
+  priority: "p1",
+  riskCategory: "low",
+  technique: "use_case",
+  preconditions: [],
+  testData: [],
+  steps: [{ index: 1, action: "Action", expected: "Expected" }],
+  expectedResults: ["Expected"],
+  figmaTraceRefs: [],
+  assumptions: [],
+  openQuestions: [],
+  qcMappingPreview: { exportable: true },
+  qualitySignals: {
+    coveredFieldIds: [],
+    coveredActionIds: [],
+    coveredValidationIds: [],
+    coveredNavigationIds: [],
+    confidence: 1,
+  },
+  reviewState: "auto_approved",
+  audit: {
+    jobId: "job-2039",
+    generatedAt: "2026-05-04T00:00:00Z",
+    contractVersion: TEST_INTELLIGENCE_CONTRACT_VERSION,
+    schemaVersion: GENERATED_TEST_CASE_SCHEMA_VERSION,
+    promptTemplateVersion: TEST_INTELLIGENCE_PROMPT_TEMPLATE_VERSION,
+    redactionPolicyVersion: "1.0.0",
+    visualSidecarSchemaVersion: "1.1.0",
+    cacheHit: false,
+    cacheKey: "x".repeat(64),
+    inputHash: "x".repeat(64),
+    promptHash: "x".repeat(64),
+    schemaHash: "x".repeat(64),
+  },
+});
+
+const makeList = (
+  testCases: Array<{
+    id: string;
+    type: "functional" | "negative" | "boundary" | "validation";
+  }>,
+): GeneratedTestCaseList => ({
+  schemaVersion: GENERATED_TEST_CASE_SCHEMA_VERSION,
+  jobId: "job-2039",
+  testCases: testCases.map((testCase) => makeCase(testCase.id, testCase.type)),
+});
+
+void test("adversarial critic: validateAdversarialCriticResponse keeps only well-formed findings", () => {
+  const findings = validateAdversarialCriticResponse({
+    findings: [
+      {
+        category: "boundary",
+        title: "Loan amount upper bound is untested",
+        rationale: "The suite never probes the documented max amount.",
+        affectedFieldId: "field:loan_amount",
+        sourceRefs: ["rule:max-loan-amount"],
+        ruleRefs: ["policy:max-loan-amount"],
+        minimumReproducibleTestData: ["loan_amount=999999.99"],
+        suggestedTestType: "boundary",
+        repairInstruction:
+          "Replace a low-value happy path with an upper-bound amount case.",
+      },
+      {
+        category: "boundary",
+        title: "",
+        rationale: "Missing title should be dropped.",
+        minimumReproducibleTestData: ["foo=bar"],
+        suggestedTestType: "boundary",
+        repairInstruction: "invalid",
+      },
+    ],
+  });
+
+  assert.equal(findings.length, 1);
+  assert.equal(findings[0]?.category, "boundary");
+  assert.equal(findings[0]!.affectedFieldId, "field:loan_amount");
+});
+
+void test("adversarial critic: dedupe keeps only the first finding per category and affected target", () => {
+  const first = validateAdversarialCriticResponse({
+    findings: [
+      {
+        category: "negative_path",
+        title: "Missing IBAN ownership rejection",
+        rationale: "The suite does not reject a mismatched account holder.",
+        affectedFieldId: "field:iban",
+        sourceRefs: ["rule:iban-owner-match"],
+        ruleRefs: [],
+        minimumReproducibleTestData: ["iban=DE001234", "owner_name=Other"],
+        suggestedTestType: "negative",
+        repairInstruction: "Swap in an owner-mismatch negative case.",
+      },
+    ],
+  })[0];
+  const duplicate = validateAdversarialCriticResponse({
+    findings: [
+      {
+        category: "negative_path",
+        title: "Duplicate IBAN ownership rejection",
+        rationale: "Same blind spot, different wording.",
+        affectedFieldId: "field:iban",
+        sourceRefs: ["rule:iban-owner-match"],
+        ruleRefs: [],
+        minimumReproducibleTestData: ["iban=DE001234", "owner_name=Other"],
+        suggestedTestType: "negative",
+        repairInstruction: "Still the same fix.",
+      },
+    ],
+  })[0];
+
+  assert.ok(first);
+  assert.ok(duplicate);
+  assert.equal(
+    computeAdversarialFindingDedupeKey(first),
+    computeAdversarialFindingDedupeKey(duplicate),
+  );
+  const seenKeys = new Set<string>();
+  const deduped = dedupeAdversarialFindings({
+    findings: [first, duplicate],
+    seenKeys,
+  });
+  assert.deepEqual(deduped, [first]);
+});
+
+void test("adversarial critic: malformed success payload is marked schema-invalid", async () => {
+  const client = createMockLlmGatewayClient({
+    role: "logic_judge",
+    deployment: "gpt-oss-120b-mock",
+    modelRevision: "mock-1",
+    gatewayRelease: "mock",
+    staticResponse: {
+      outcome: "success",
+      content: { testCases: [{ id: "legacy-generator-payload" }] },
+      finishReason: "stop",
+      usage: { inputTokens: 10, outputTokens: 5 },
+      modelDeployment: "gpt-oss-120b-mock",
+      modelRevision: "mock-1",
+      gatewayRelease: "mock",
+      attempt: 1,
+    },
+  });
+
+  const result = await runAdversarialCriticRound({
+    jobId: "job-2039",
+    round: 1,
+    domain: "banking",
+    client,
+    intent: SAMPLE_INTENT,
+    generatedList: makeList([{ id: "tc-1", type: "functional" }]),
+    coveragePlan: SAMPLE_COVERAGE_PLAN,
+    riskRanking: SAMPLE_RISK_RANKING,
+  });
+
+  assert.equal(result.gatewayResult.outcome, "success");
+  assert.deepEqual(result.findings, []);
+  assert.equal(result.artifact.outputs.findingCount, 0);
+  assert.equal(result.artifact.llmGateway.outcome, "error");
+  assert.equal(result.artifact.llmGateway.errorClass, "schema_validation");
+});
+
+void test("adversarial critic: negative coverage accounting reports the >=30% ratio improvement threshold", () => {
+  const accounting = computeNegativeCoverageAccounting({
+    baselineList: makeList([
+      { id: "tc-1", type: "functional" },
+      { id: "tc-2", type: "functional" },
+      { id: "tc-3", type: "negative" },
+    ]),
+    finalList: makeList([
+      { id: "tc-1", type: "functional" },
+      { id: "tc-2", type: "negative" },
+      { id: "tc-3", type: "negative" },
+    ]),
+  });
+
+  assert.equal(accounting.baselineNegativeRatio, 0.333333);
+  assert.equal(accounting.finalNegativeRatio, 0.666667);
+  assert.equal(accounting.relativeRatioIncrease, 1.000003);
+  assert.equal(accounting.meetsThreshold, true);
+});
+
+void test("adversarial critic: negative coverage accounting passes saturated lift when the requested relative improvement is impossible", () => {
+  const accounting = computeNegativeCoverageAccounting({
+    baselineList: makeList([
+      { id: "tc-1", type: "negative" },
+      { id: "tc-2", type: "negative" },
+      { id: "tc-3", type: "negative" },
+      { id: "tc-4", type: "negative" },
+      { id: "tc-5", type: "negative" },
+      { id: "tc-6", type: "negative" },
+      { id: "tc-7", type: "negative" },
+      { id: "tc-8", type: "negative" },
+      { id: "tc-9", type: "negative" },
+      { id: "tc-10", type: "negative" },
+      { id: "tc-11", type: "negative" },
+      { id: "tc-12", type: "functional" },
+    ]),
+    finalList: makeList([
+      { id: "tc-1", type: "negative" },
+      { id: "tc-2", type: "negative" },
+      { id: "tc-3", type: "negative" },
+      { id: "tc-4", type: "negative" },
+      { id: "tc-5", type: "negative" },
+      { id: "tc-6", type: "negative" },
+      { id: "tc-7", type: "negative" },
+      { id: "tc-8", type: "negative" },
+      { id: "tc-9", type: "negative" },
+      { id: "tc-10", type: "negative" },
+      { id: "tc-11", type: "negative" },
+      { id: "tc-12", type: "negative" },
+    ]),
+  });
+
+  assert.equal(accounting.baselineNegativeRatio, 0.916667);
+  assert.equal(accounting.finalNegativeRatio, 1);
+  assert.equal(accounting.relativeRatioIncrease, 0.090909);
+  assert.equal(accounting.meetsThreshold, true);
+});
+
+void test("adversarial critic: non-saturated suites fail when no additional negative case is created", () => {
+  const accounting = computeNegativeCoverageAccounting({
+    baselineList: makeList([
+      { id: "tc-1", type: "negative" },
+      { id: "tc-2", type: "functional" },
+    ]),
+    finalList: makeList([
+      { id: "tc-1", type: "negative" },
+      { id: "tc-2", type: "functional" },
+    ]),
+  });
+
+  assert.equal(accounting.baselineNegativeRatio, 0.5);
+  assert.equal(accounting.finalNegativeRatio, 0.5);
+  assert.equal(accounting.relativeRatioIncrease, 0);
+  assert.equal(accounting.meetsThreshold, false);
+});

@@ -1,0 +1,31 @@
+{
+  "name": "@oscharko-dev/ti-quality",
+  "version": "0.1.0-beta.1",
+  "description": "Validation pipeline, policy gate, judges, causal validation, mutation oracle.",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "lint": "node -e \"process.exit(0)\"",
+    "test": "tsx --test src/coverage-baseline-drift.test.ts src/coverage-plan-optimizer.test.ts src/coverage-planner.test.ts src/cross-family-judge-policy.test.ts src/cross-field-invariant-benchmark.test.ts src/faithfulness-judge.test.ts src/faithfulness-tier-report.test.ts src/ir-mutation-oracle.test.ts src/judge-disagreement-report.test.ts src/library-coverage-report.test.ts src/logic-judge.test.ts src/policy-profile.sovereign.test.ts src/self-consistency-voter.test.ts src/self-verify-rubric.fuzz.test.ts src/self-verify-rubric.test.ts src/semantic-judge-panel.test.ts"
+  },
+  "dependencies": {
+    "@oscharko-dev/ti-contracts": "workspace:*",
+    "@oscharko-dev/ti-core-engine": "workspace:*",
+    "@oscharko-dev/ti-model-gateway": "workspace:*",
+    "@oscharko-dev/ti-security": "workspace:*",
+    "@oscharko-dev/ti-tenant": "workspace:*"
+  }
+}

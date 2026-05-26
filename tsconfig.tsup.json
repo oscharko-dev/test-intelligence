@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "tsBuildInfoFile": "node_modules/.cache/tsc/tsup.tsbuildinfo"
+  },
+  "include": [
+    "src",
+    "packages/contracts/src",
+    "packages/cli/src",
+    "packages/server/src"
+  ],
+  "references": []
+}

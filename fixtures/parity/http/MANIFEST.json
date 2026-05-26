@@ -1,0 +1,9 @@
+{
+  "extractedAt": "2026-05-23T00:00:00.000Z",
+  "fileCount": 1,
+  "files": {
+    "openapi.json": "sha256:701fbc803f4f860c1231fb71a1f86247495a8b095ab7da38d3459b3668538eb8"
+  },
+  "scenario": "http",
+  "wdSourceSha": "006dabdf0abe30b9cac2b742a7238c6625d8e8c1"
+}

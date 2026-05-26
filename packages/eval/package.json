@@ -1,0 +1,30 @@
+{
+  "name": "@oscharko-dev/ti-eval",
+  "version": "0.1.0-beta.1",
+  "description": "Evaluation, calibration, benchmark, drift control, active-learning sampler.",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "lint": "node -e \"process.exit(0)\"",
+    "test": "tsx --test src/active-learning-sampler.test.ts src/agent-eval-online-sampler.test.ts src/distribution-shift-detector.test.ts src/inter-rater-agreement.test.ts src/judge-calibration-eval.test.ts src/locale-calibration-health.test.ts src/locale-calibration.test.ts src/mutation-killing-eval.test.ts src/property-sampler.test.ts src/self-improving-calibration.test.ts"
+  },
+  "dependencies": {
+    "@oscharko-dev/ti-contracts": "workspace:*",
+    "@oscharko-dev/ti-security": "workspace:*",
+    "@oscharko-dev/ti-tenant": "workspace:*",
+    "@oscharko-dev/ti-core-engine": "workspace:*"
+  }
+}

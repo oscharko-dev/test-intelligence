@@ -1,0 +1,11 @@
+{
+  "extractedAt": "2026-05-23T00:00:00.000Z",
+  "fileCount": 3,
+  "files": {
+    "dossier.json": "sha256:a95b542311522e14a92926b533e2e65bfbf38edef14e89899911f32d6606c497",
+    "dossier.signed.json": "sha256:108c0298d2e2a1bee6474e3dd866febafac0b63e9576e0a5577205d38ab59ab3",
+    "evidence-manifest.json": "sha256:1e5aa5cc180347678ed367a4a5d472624db38747cd55bb839eb633d3e1a7d61a"
+  },
+  "scenario": "evidence",
+  "wdSourceSha": "006dabdf0abe30b9cac2b742a7238c6625d8e8c1"
+}

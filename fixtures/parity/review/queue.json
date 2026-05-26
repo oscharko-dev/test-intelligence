@@ -1,0 +1,30 @@
+{
+  "policy": {
+    "requiredRiskCategories": [
+      "financial_transaction",
+      "high",
+      "regulated_data"
+    ],
+    "visualSidecarTriggerOutcomes": [
+      "conflicts_with_figma_metadata",
+      "fallback_used",
+      "low_confidence",
+      "possible_pii",
+      "prompt_injection_like_text"
+    ]
+  },
+  "transitions": {
+    "approved": [
+      "edited",
+      "exported",
+      "note",
+      "review_started"
+    ],
+    "expired": [],
+    "in-review": [],
+    "pending": [],
+    "rejected": [
+      "note"
+    ]
+  }
+}

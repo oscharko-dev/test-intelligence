@@ -1,0 +1,226 @@
+name: Docker build
+
+# Issue #30 — build the standalone Test Intelligence container, run a
+# smoke against the standalone HTTP surface, scan for vulnerabilities,
+# and emit a container-image SBOM. No registry publish; image and SBOM
+# are uploaded as workflow artefacts only.
+#
+# Heavy job — runs on PR + workflow_dispatch, NOT on every push to dev.
+# `ci.yml` remains the fast required check.
+
+on:
+  pull_request:
+    branches: [dev, main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/dev' }}
+
+permissions:
+  contents: read
+
+jobs:
+  docker-build:
+    name: Build, scan, SBOM, smoke
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: Lint Dockerfile (hadolint)
+        uses: hadolint/hadolint-action@2332a7b74a6de0dda2e2221d575162eba76ba5e5 # v3.3.0
+        with:
+          dockerfile: Dockerfile
+          failure-threshold: warning
+
+      - name: Validate Compose model
+        run: docker compose -f docker-compose.yml config > /dev/null
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Build container image (load into local engine)
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          load: true
+          push: false
+          pull: true
+          tags: |
+            test-intelligence:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Verify entrypoint --help
+        run: docker run --rm test-intelligence:test --help
+
+      - name: Verify base image pinned by digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Collect prior-stage aliases declared in `FROM <image> AS <alias>`.
+          # An intermediate stage that says `FROM <alias>` MUST NOT require a
+          # digest pin — it's a stage reference, not an external image.
+          stage_aliases=$(grep -E '^FROM .* AS [A-Za-z0-9_-]+' Dockerfile \
+            | sed -E 's/^FROM .* AS ([A-Za-z0-9_-]+).*/\1/' \
+            | sort -u || true)
+          unpinned=""
+          while IFS= read -r line; do
+            # The source is the first whitespace-separated token after FROM
+            # (drops any trailing `AS <alias>`).
+            source=$(echo "$line" | sed -E 's/^FROM[[:space:]]+([^[:space:]]+).*/\1/')
+            # Skip stage aliases — internal references to prior stages.
+            if echo "$stage_aliases" | grep -qxF "$source"; then
+              continue
+            fi
+            # External image ref must contain a digest pin.
+            if [[ "$source" != *"@sha256:"* ]]; then
+              unpinned="${unpinned}${line}"$'\n'
+            fi
+          done < <(grep -E '^FROM ' Dockerfile)
+          if [[ -n "${unpinned}" ]]; then
+            echo "::error::External Dockerfile FROM directives must be pinned by digest." >&2
+            echo "${unpinned}" >&2
+            exit 1
+          fi
+          echo "All external FROM directives pinned by digest; stage aliases: ${stage_aliases//$'\n'/ }"
+
+      - name: Verify runtime user is non-root
+        shell: bash
+        run: |
+          set -euo pipefail
+          uid=$(docker run --rm --entrypoint id test-intelligence:test -u)
+          gid=$(docker run --rm --entrypoint id test-intelligence:test -g)
+          echo "Container runs as uid=${uid} gid=${gid}"
+          if [[ "${uid}" == "0" || "${gid}" == "0" ]]; then
+            echo "::error::Runtime stage must not run as root (uid=0 / gid=0)." >&2
+            exit 1
+          fi
+
+      - name: Image-history secret-leak audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          history=$(docker history --no-trunc --format '{{.CreatedBy}}' test-intelligence:test)
+          # Reject any layer that imports a dotenv-style secret file or
+          # embeds a PEM private-key header / AWS access-key id.
+          if echo "${history}" | grep -E '(\.env(\.[A-Za-z0-9]+)?|BEGIN [A-Z ]*PRIVATE KEY|AKIA[0-9A-Z]{16})' >&2; then
+            echo "::error::Suspicious content detected in image history." >&2
+            exit 1
+          fi
+          echo "Image history clean: no .env, PEM, or AWS-access-key ids leaked."
+
+      - name: Smoke — start container, poll /healthz, /readyz, /openapi.json
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          docker run --rm -d \
+            --name ti-smoke \
+            -p 127.0.0.1:21983:1983 \
+            test-intelligence:test
+
+          # shellcheck disable=SC2329
+          cleanup() {
+            docker logs ti-smoke || true
+            docker stop ti-smoke >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          base_url="http://127.0.0.1:21983"
+          start=$SECONDS
+          deadline=$((SECONDS + 60))
+          until curl -fsS --max-time 5 "${base_url}/healthz" >/dev/null; do
+            if (( SECONDS >= deadline )); then
+              echo "::error::Timed out waiting for /healthz" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+
+          echo "/healthz reached in $((SECONDS - start))s — polling /readyz and /openapi.json"
+
+          curl -fsS --max-time 5 "${base_url}/readyz" >/dev/null
+          openapi_file="$(mktemp)"
+          curl -fsS --max-time 5 "${base_url}/openapi.json" -o "${openapi_file}"
+          node -e '
+            const data = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+            if (typeof data?.openapi !== "string" || !data.openapi.startsWith("3.")) {
+              console.error("openapi.json missing or malformed");
+              process.exit(1);
+            }
+          ' "${openapi_file}"
+          rm -f "${openapi_file}"
+
+          printf "smoke ok\n"
+
+      - name: Vulnerability scan (Trivy)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: test-intelligence:test
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: true
+          vuln-type: os,library
+
+      - name: Upload Trivy SARIF to code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-container
+
+      - name: Install syft (container SBOM generator)
+        # `anchore/sbom-action/download-syft` puts the `syft` binary on PATH
+        # without taking over the SBOM emission itself; our wrapper script
+        # enforces the container-branding leakage check.
+        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Setup Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies (for airgap/fips smoke and SBOM script)
+        run: pnpm install --frozen-lockfile
+
+      - name: Build workspace packages (required by src/ tests via shims)
+        run: pnpm run workspaces:build
+
+      - name: Container SBOM (syft via cyclonedx-container script)
+        run: node scripts/generate-cyclonedx-container.mjs --image test-intelligence:test --output dist/sbom/test-intelligence-container.cdx.json
+
+      - name: Air-gap smoke (run-airgap-smoke)
+        run: pnpm run test:airgap-smoke
+
+      - name: FIPS smoke (best-effort on non-FIPS hosts)
+        run: pnpm run test:fips-smoke
+
+      - name: Upload Trivy SARIF artefact
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: trivy-sarif
+          path: trivy-results.sarif
+          retention-days: 30
+
+      - name: Upload container SBOM artefact
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: container-sbom
+          path: dist/sbom/test-intelligence-container.cdx.json
+          retention-days: 30

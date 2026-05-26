@@ -1,0 +1,13 @@
+{
+  "adapterEnvNames": {
+    "alm": "ALM",
+    "polarion": "POLARION",
+    "qtest": "QTEST",
+    "xray": "XRAY"
+  },
+  "defaultPrincipalId": "tms-principal:default",
+  "defaultRetryAttempts": 4,
+  "defaultRetryBaseMs": 250,
+  "defaultRetryCeilMs": 8000,
+  "maxExecutionEvidenceRowsPerPull": 5000
+}

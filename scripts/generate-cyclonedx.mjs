@@ -1,0 +1,140 @@
+#!/usr/bin/env node
+
+/**
+ * CycloneDX SBOM generator for `@oscharko-dev/test-intelligence`.
+ *
+ * Scoped to the single npm artifact described by ADR-0006. The standalone
+ * package has no profile sub-tarballs and no template subpackages.
+ *
+ * Output: `artifacts/sbom/test-intelligence.cdx.json` (CycloneDX 1.5).
+ *
+ * Usage:
+ *   node scripts/generate-cyclonedx.mjs [--ignore-npm-errors]
+ *                                       [--package-root <dir>] [<outputPath>]
+ *
+ * Defaults:
+ *   <outputPath>            artifacts/sbom/test-intelligence.cdx.json
+ *   --package-root          the standalone repo root (kept as a test seam;
+ *                           production callers should not pass this flag).
+ *   --ignore-npm-errors     false (fail closed on npm metadata gaps).
+ */
+
+import { mkdir } from "node:fs/promises";
+import path from "node:path";
+import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(__dirname, "..");
+const require = createRequire(import.meta.url);
+const cyclonedxPackageEntryPath = require.resolve("@cyclonedx/cyclonedx-npm");
+const cyclonedxCliPath = path.resolve(
+  path.dirname(cyclonedxPackageEntryPath),
+  "bin/cyclonedx-npm-cli.js",
+);
+
+const DEFAULT_OUTPUT_PATH = "artifacts/sbom/test-intelligence.cdx.json";
+
+const parseArgs = () => {
+  const args = process.argv.slice(2);
+  let outputPath = DEFAULT_OUTPUT_PATH;
+  let packageRoot = repoRoot;
+  let ignoreNpmErrors = false;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const current = args[index];
+    if (!current) continue;
+    if (current === "--ignore-npm-errors") {
+      ignoreNpmErrors = true;
+      continue;
+    }
+    if (current === "--package-root") {
+      const next = args[index + 1];
+      if (!next) {
+        throw new Error("Missing value for --package-root.");
+      }
+      packageRoot = path.resolve(repoRoot, next);
+      index += 1;
+      continue;
+    }
+    if (current.startsWith("--package-root=")) {
+      packageRoot = path.resolve(
+        repoRoot,
+        current.slice("--package-root=".length),
+      );
+      continue;
+    }
+    if (current.startsWith("--")) {
+      throw new Error(`Unknown flag: ${current}`);
+    }
+    outputPath = current;
+  }
+
+  return { ignoreNpmErrors, outputPath, packageRoot };
+};
+
+const run = (command, args, cwd, { quiet = false } = {}) =>
+  new Promise((resolve, reject) => {
+    const env = { ...process.env };
+    delete env.npm_execpath;
+
+    const child = spawn(command, args, {
+      cwd,
+      env,
+      stdio: quiet ? ["ignore", "pipe", "pipe"] : "inherit",
+    });
+    let stderr = "";
+    if (quiet) {
+      child.stdout.resume();
+      child.stderr.setEncoding("utf8");
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk;
+      });
+    }
+
+    child.once("error", reject);
+    child.once("close", (code) => {
+      if (code === 0) {
+        resolve(undefined);
+        return;
+      }
+      reject(
+        new Error(
+          `Command failed with exit code ${code ?? 1}: ${command} ${args.join(" ")}${stderr ? `\n${stderr}` : ""}`,
+        ),
+      );
+    });
+  });
+
+const main = async () => {
+  const { ignoreNpmErrors, outputPath, packageRoot } = parseArgs();
+  const absoluteOutputPath = path.resolve(repoRoot, outputPath);
+  await mkdir(path.dirname(absoluteOutputPath), { recursive: true });
+
+  await run(
+    process.execPath,
+    [
+      cyclonedxCliPath,
+      ...(ignoreNpmErrors ? ["--ignore-npm-errors"] : []),
+      "--omit",
+      "dev",
+      "--spec-version",
+      "1.5",
+      "--output-reproducible",
+      "--output-file",
+      absoluteOutputPath,
+    ],
+    packageRoot,
+    { quiet: ignoreNpmErrors },
+  );
+
+  console.log(
+    `[sbom] CycloneDX written to ${absoluteOutputPath} (packageRoot=${packageRoot})`,
+  );
+};
+
+main().catch((error) => {
+  console.error("[sbom] CycloneDX generation failed:", error);
+  process.exit(1);
+});

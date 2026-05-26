@@ -1,0 +1,51 @@
+{
+  "allowedGateStatuses": [
+    "advisory",
+    "failed",
+    "passed",
+    "skipped"
+  ],
+  "allowedPolicyDecisions": [
+    "approved",
+    "blocked",
+    "needs_review"
+  ],
+  "allowedPolicyOutcomes": [
+    "a11y_criterion_covered_weakly",
+    "a11y_criterion_not_covered",
+    "acceptance_criterion_uncovered",
+    "ambiguity_review_required",
+    "coverage_drift_exceeded",
+    "cross_modal_faithfulness_case_level_fallback",
+    "cross_modal_faithfulness_evaluation_missing",
+    "cross_modal_faithfulness_partial_majority",
+    "cross_modal_faithfulness_score_below_threshold",
+    "custom_context_risk_escalation",
+    "duplicate_test_case",
+    "ict_register_ref_required",
+    "judge_refused",
+    "low_confidence_review_required",
+    "missing_accessibility_case",
+    "missing_boundary_case",
+    "missing_expected_results",
+    "missing_negative_or_validation_for_required_field",
+    "missing_trace",
+    "multi_source_conflict_present",
+    "open_questions_review_required",
+    "p0_risk_element_uncovered",
+    "pii_in_test_data",
+    "qc_mapping_not_exportable",
+    "regulated_risk_review_required",
+    "risk_tag_downgrade_detected",
+    "schema_invalid",
+    "semantic_suspicious_content",
+    "technique_quota_breach",
+    "visual_sidecar_both_failed",
+    "visual_sidecar_failure",
+    "visual_sidecar_fallback_used",
+    "visual_sidecar_fallback_used_succeeded",
+    "visual_sidecar_low_confidence",
+    "visual_sidecar_possible_pii",
+    "visual_sidecar_prompt_injection_text"
+  ]
+}

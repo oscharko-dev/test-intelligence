@@ -1,0 +1,52 @@
+# Issue #30 — minimise the build context so layer cache invalidates
+# only on inputs the build actually consumes.
+
+# VCS and editor state
+.git
+.gitignore
+.github
+.codex
+.claude
+.idea
+.vscode
+.DS_Store
+
+# Build outputs (we re-emit them inside the image)
+dist
+ui-src/dist
+
+# Dependencies (the image installs them via `pnpm install`)
+node_modules
+ui-src/node_modules
+**/node_modules
+
+# Tests, fixtures, and developer scratch space
+**/*.test.ts
+**/*.test.tsx
+**/*.test.mjs
+**/*.spec.ts
+**/*.spec.tsx
+integration
+ui-src/e2e
+playwright-report
+test-results
+coverage
+storybook-static
+
+# Caches, artefacts, and logs that must never leak into a layer
+artifacts
+.test-intelligence
+*.log
+*.tgz
+*.tsbuildinfo
+
+# Operator-supplied secrets — explicit allow-list for the example only
+.env
+.env.*
+!.env.example
+
+# Per-issue spec drafts (gitignored already; defence in depth)
+.spec-*.md
+
+# Generated docs that the runtime does not consume
+docs/api

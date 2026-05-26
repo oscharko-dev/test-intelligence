@@ -1,0 +1,30 @@
+{
+  "name": "@oscharko-dev/ti-evidence",
+  "version": "0.1.0-beta.1",
+  "description": "Evidence attestation, tamper-evident seal, provenance graph, audit dossier, ML-BOM.",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "lint": "node -e \"process.exit(0)\"",
+    "test": "tsx --test src/evidence-attestation.airgapped.test.ts src/evidence-attestation.concurrency.test.ts src/evidence-attestation.fuzz.test.ts src/evidence-attestation.keyless.test.ts src/evidence-attestation.signing.test.ts src/evidence-attestation.tampering.test.ts src/evidence-attestation.test.ts src/evidence-manifest.test.ts src/evidence-tampering.test.ts src/evidence-unexpected-artifact.test.ts src/multi-source-evidence-tampering.test.ts"
+  },
+  "dependencies": {
+    "@oscharko-dev/ti-contracts": "workspace:*",
+    "@oscharko-dev/ti-core-engine": "workspace:*",
+    "@oscharko-dev/ti-model-gateway": "workspace:*",
+    "@oscharko-dev/ti-security": "workspace:*"
+  }
+}

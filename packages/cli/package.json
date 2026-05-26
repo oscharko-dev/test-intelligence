@@ -1,0 +1,41 @@
+{
+  "name": "@oscharko-dev/ti-cli",
+  "version": "0.1.0-beta.1",
+  "description": "Standalone CLI binary. Operator entry points: run, TMS push, calibration, onboarding, review.",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "test-intelligence": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "lint": "node -e \"process.exit(0)\"",
+    "pretest": "pnpm --filter @oscharko-dev/ti-core-engine build",
+    "test": "tsx --test src/audit-dossier.test.ts src/cli-defaults.test.ts src/cli.contract.test.ts src/test-intelligence-calibration-refit-cli.test.ts src/test-intelligence-execution-pull-cli.test.ts src/test-intelligence-figma-export-cli.test.ts src/test-intelligence-onboard-cli.test.ts src/test-intelligence-review-cli.test.ts src/test-intelligence-run-cli.test.ts src/test-intelligence-tms-push-cli.test.ts"
+  },
+  "dependencies": {
+    "@oscharko-dev/ti-agentic-harness": "workspace:*",
+    "@oscharko-dev/ti-contracts": "workspace:*",
+    "@oscharko-dev/ti-core-engine": "workspace:*",
+    "@oscharko-dev/ti-eval": "workspace:*",
+    "@oscharko-dev/ti-evidence": "workspace:*",
+    "@oscharko-dev/ti-integrations": "workspace:*",
+    "@oscharko-dev/ti-model-gateway": "workspace:*",
+    "@oscharko-dev/ti-production-runner": "workspace:*",
+    "@oscharko-dev/ti-review": "workspace:*",
+    "@oscharko-dev/ti-security": "workspace:*",
+    "@oscharko-dev/ti-tenant": "workspace:*"
+  }
+}

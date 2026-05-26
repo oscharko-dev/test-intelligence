@@ -1,0 +1,29 @@
+{
+  "name": "@oscharko-dev/ti-review",
+  "version": "0.1.0-beta.1",
+  "description": "Human review queue, four-eyes governance, review state machine, review storage.",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "lint": "node -e \"process.exit(0)\"",
+    "test": "tsx --test src/four-eyes-policy.test.ts src/human-review-queue.test.ts src/review-state-machine.test.ts"
+  },
+  "dependencies": {
+    "@oscharko-dev/ti-contracts": "workspace:*",
+    "@oscharko-dev/ti-core-engine": "workspace:*",
+    "@oscharko-dev/ti-security": "workspace:*"
+  }
+}

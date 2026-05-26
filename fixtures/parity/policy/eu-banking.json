@@ -1,0 +1,92 @@
+{
+  "description": "Default EU banking compliance gate: PII blocks export, regulated/financial risk requires review, required fields must have negative/validation/boundary cases, accessibility is required when form fields are present.",
+  "id": "eu-banking-default",
+  "rules": {
+    "actionCoverageRatioMin": 0.5,
+    "allowedHostingRegions": [
+      "eu-central-1",
+      "eu-west-1",
+      "eu-west-3",
+      "eu-north-1",
+      "eu-south-1",
+      "eu-de-1",
+      "eu-fr-1",
+      "switzerland-north",
+      "norway-east"
+    ],
+    "duplicateSimilarityThreshold": 0.92,
+    "enforceRiskTagDowngradeDetection": true,
+    "fieldCoverageRatioMin": 0.4,
+    "finopsWallClockBudget": {
+      "baseMs": 150000,
+      "hardCeilingMs": 1800000,
+      "perAdditionalJudgeMs": 20000,
+      "perAdversarialRoundMs": 30000,
+      "perCaseMs": 4000,
+      "visualSidecarMs": 30000
+    },
+    "judgeRefusalPolicy": {
+      "a11y": "needs_review",
+      "faithfulness": "needs_review"
+    },
+    "maxAssumptionsPerCase": 8,
+    "maxOpenQuestionsPerCase": 5,
+    "minConfidence": 0.6,
+    "negativeCaseLift": {
+      "gateMode": "enforce",
+      "thresholdRatio": 0.3
+    },
+    "requireAccessibilityCaseWhenFormPresent": true,
+    "requireBoundaryCaseForRequiredFields": true,
+    "requireNegativeOrValidationForValidationRules": true,
+    "requirePerStepFaithfulness": false,
+    "reviewOnlyRiskCategories": [
+      "regulated_data",
+      "financial_transaction"
+    ],
+    "selfConsistency": {
+      "sampleCount": 3
+    },
+    "strictRiskCategories": [
+      "regulated_data",
+      "financial_transaction",
+      "high"
+    ],
+    "techniqueCoverageMinimum": {
+      "mode": "tier-elastic",
+      "tiers": [
+        {
+          "floor": 4,
+          "label": "fields<=4: max(4, 2*fields)",
+          "minFieldCount": 0,
+          "multiplier": 2
+        },
+        {
+          "floor": 0,
+          "label": "fields=5-8: ceil(1.25*fields)",
+          "minFieldCount": 5,
+          "multiplier": 1.25
+        },
+        {
+          "floor": 0,
+          "label": "fields=9-19: ceil(0.9*fields)",
+          "minFieldCount": 9,
+          "multiplier": 0.9
+        },
+        {
+          "floor": 0,
+          "label": "fields=20-29: ceil(0.85*fields)",
+          "minFieldCount": 20,
+          "multiplier": 0.85
+        },
+        {
+          "floor": 0,
+          "label": "fields>=30: ceil(0.75*fields)",
+          "minFieldCount": 30,
+          "multiplier": 0.75
+        }
+      ]
+    }
+  },
+  "version": "1.0.0"
+}

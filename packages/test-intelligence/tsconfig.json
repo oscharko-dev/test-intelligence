@@ -1,0 +1,62 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "tsBuildInfoFile": "./dist/.tsbuildinfo"
+  },
+  "include": [
+    "src/**/*.ts"
+  ],
+  "exclude": [
+    "dist",
+    "node_modules"
+  ],
+  "references": [
+    {
+      "path": "../contracts"
+    },
+    {
+      "path": "../security"
+    },
+    {
+      "path": "../tenant"
+    },
+    {
+      "path": "../core-engine"
+    },
+    {
+      "path": "../model-gateway"
+    },
+    {
+      "path": "../evidence"
+    },
+    {
+      "path": "../quality"
+    },
+    {
+      "path": "../multi-source"
+    },
+    {
+      "path": "../review"
+    },
+    {
+      "path": "../integrations"
+    },
+    {
+      "path": "../eval"
+    },
+    {
+      "path": "../agentic-harness"
+    },
+    {
+      "path": "../production-runner"
+    },
+    {
+      "path": "../server"
+    },
+    {
+      "path": "../cli"
+    }
+  ]
+}
