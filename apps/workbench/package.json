@@ -11,9 +11,9 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --ignore-pattern next-env.d.ts",
     "test": "vitest run",
-    "test:visual": "pnpm run build && playwright test",
-    "test:visual:ci": "playwright test",
-    "test:visual:update": "pnpm run build && playwright test --update-snapshots",
+    "test:visual": "pnpm run build && playwright test tests/visual/workbench.visual.spec.ts",
+    "test:visual:ci": "playwright test tests/visual/workbench.visual.spec.ts",
+    "test:visual:update": "pnpm run build && playwright test tests/visual/workbench.visual.spec.ts --update-snapshots",
     "test:watch": "vitest"
   },
   "dependencies": {
