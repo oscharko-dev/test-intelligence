@@ -18,7 +18,11 @@ name: dependency-review
 
 on:
   push:
-    branches: [dev, main]
+    # `main` runs on merge to keep package release quality in a dedicated pipeline.
+    # Dependency graph is not always enabled in fresh/private repos; allowing a
+    # hard-fail on `main` pushes here blocks deployments even though the PR gate
+    # already validates dependency diffs.
+    branches: [dev]
   pull_request:
     branches: [dev, main]
 

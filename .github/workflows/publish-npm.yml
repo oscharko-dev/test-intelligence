@@ -1,9 +1,6 @@
 name: Publish npm package
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:
@@ -61,12 +58,21 @@ jobs:
           VERSION="$(node -p "require('./package.json').version")"
           TAG="latest"
 
+          get_latest_dist_tag() {
+            npm dist-tag ls "$PACKAGE_NAME" 2>/tmp/npm-dist-tag.err | awk '/^latest:/ {print $2}'
+          }
+
           if [[ "$VERSION" == *-* ]]; then
             TAG="pre-beta"
           fi
 
           if npm view "$PACKAGE_NAME@$VERSION" version >/dev/null 2>&1; then
             echo "$PACKAGE_NAME@$VERSION is already published. Skipping npm publish."
+            CURRENT_CHANNEL="$(get_latest_dist_tag)"
+            if [ "$CURRENT_CHANNEL" != "$VERSION" ]; then
+              npm dist-tag add "$PACKAGE_NAME@$VERSION" latest
+              echo "Aligned npm dist-tag 'latest' to existing version $VERSION."
+            fi
             exit 0
           fi
 
@@ -93,3 +99,13 @@ jobs:
 
           echo "Publishing as $(cat /tmp/npm-whoami.txt)"
           npm publish --provenance --access public --tag "$TAG"
+
+          # Keep npm `latest` aligned with the just-published package version
+          # for operationally simple and predictable installs.
+          # This intentionally moves the `latest` dist-tag even for pre-release
+          # versions while preserving the dedicated `pre-beta` channel tag.
+          CURRENT_CHANNEL="$(get_latest_dist_tag)"
+          if [ "$CURRENT_CHANNEL" != "$VERSION" ]; then
+            npm dist-tag add "$PACKAGE_NAME@$VERSION" latest
+            echo "Moved npm dist-tag 'latest' to $VERSION."
+          fi
