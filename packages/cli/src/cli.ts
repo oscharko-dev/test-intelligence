@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { realpathSync } from "node:fs";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
 /**
  * Command-line entry point for `@oscharko-dev/test-intelligence`.
  *
@@ -66,6 +69,12 @@ import {
   TEST_INTELLIGENCE_TMS_PUSH_HELP,
   TestIntelligenceTmsPushOperatorError,
 } from "./test-intelligence-tms-push-cli.js";
+import {
+  runWorkbenchStartCommand,
+  runWorkbenchStopCommand,
+  TEST_INTELLIGENCE_WORKBENCH_START_HELP,
+  TEST_INTELLIGENCE_WORKBENCH_STOP_HELP,
+} from "./workbench-app-cli.js";
 
 interface CommandSink {
   readonly stdout: (chunk: string) => void;
@@ -91,6 +100,10 @@ Generation:
   run                Drive the figma_to_qc_test_cases production runner end-to-end.
   doctor             Inspect the local Test Intelligence topology and configuration.
   figma-export       Snapshot a Figma file into the canonical export schema.
+
+Workbench:
+  start              Start the local Workbench UI from the installed package.
+  stop               Stop the managed local Workbench UI process.
 
 Human oversight (DSGVO Art. 22 / EU AI Act Art. 14):
   review list|get|decide
@@ -405,6 +418,28 @@ const runFigmaExport = async (
   sink: CommandSink,
 ): Promise<number> => runFigmaExportCli(args, sink);
 
+const runWorkbenchStart = async (
+  args: ReadonlyArray<string>,
+  sink: CommandSink,
+): Promise<number> => {
+  if (isHelpFlag(args[0])) {
+    sink.stdout(TEST_INTELLIGENCE_WORKBENCH_START_HELP);
+    return 0;
+  }
+  return runWorkbenchStartCommand(args, sink);
+};
+
+const runWorkbenchStop = async (
+  args: ReadonlyArray<string>,
+  sink: CommandSink,
+): Promise<number> => {
+  if (isHelpFlag(args[0])) {
+    sink.stdout(TEST_INTELLIGENCE_WORKBENCH_STOP_HELP);
+    return 0;
+  }
+  return runWorkbenchStopCommand(args, sink);
+};
+
 /**
  * Dispatch a single CLI invocation to the matching command handler.
  *
@@ -453,6 +488,10 @@ export const runCli = async (
       return runExecutionPull(rest, sink);
     case "figma-export":
       return runFigmaExport(rest, sink);
+    case "start":
+      return runWorkbenchStart(rest, sink);
+    case "stop":
+      return runWorkbenchStop(rest, sink);
     default:
       writeOperatorError(
         sink,
@@ -469,8 +508,9 @@ const isCliEntry = (): boolean => {
     return false;
   }
   try {
-    const entryHref = new URL(`file://${argv1}`).href;
-    return import.meta.url === entryHref;
+    const modulePath = fileURLToPath(import.meta.url);
+    const entryPath = realpathSync(argv1);
+    return pathToFileURL(modulePath).href === pathToFileURL(entryPath).href;
   } catch {
     return false;
   }

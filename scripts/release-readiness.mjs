@@ -14,7 +14,7 @@
  * Required gates (block the report on failure):
  *
  *   typecheck, lint, test, build, check:publint, check:attw,
- *   check:package-shape, check:license-policy, check:lockfile-hosts,
+ *   check:package-shape, check:installable-package, check:license-policy, check:lockfile-hosts,
  *   check:no-telemetry, check:supply-chain-iocs, sbom:cyclonedx,
  *   sbom:spdx, check:sbom-parity.
  *
@@ -55,6 +55,10 @@ const REQUIRED_GATES = Object.freeze([
   {
     id: "check:package-shape",
     command: ["pnpm", "run", "check:package-shape"],
+  },
+  {
+    id: "check:installable-package",
+    command: ["pnpm", "run", "check:installable-package"],
   },
   {
     id: "check:license-policy",

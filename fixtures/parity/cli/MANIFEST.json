@@ -2,8 +2,8 @@
   "extractedAt": "2026-05-23T00:00:00.000Z",
   "fileCount": 2,
   "files": {
-    "commands.json": "sha256:ad0b958f273f0ac5d4e26e3c6ebcd4d2a87d58ae80ee1f3e6e5a3fb9aea2243d",
-    "help-text.txt": "sha256:3323b71d63df9bd69c6d25a6a95cfa077240ba4e892d4116c84fcf39b2c45712"
+    "commands.json": "sha256:fe7152ad57cf66eccf92aee187b42a176823d05f71ba3c2d59c8b30f42b82e13",
+    "help-text.txt": "sha256:4dc71334e31f87022fa82011f8410c7a5e34a015bb17c6aa36b4db93b87376b5"
   },
   "scenario": "cli",
   "wdSourceSha": "006dabdf0abe30b9cac2b742a7238c6625d8e8c1"

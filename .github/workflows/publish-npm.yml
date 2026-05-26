@@ -46,11 +46,8 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build workspace dependencies
-        run: pnpm run workspaces:build
-
       - name: Build distributable
-        run: pnpm run build:package
+        run: pnpm run build
 
       - name: Publish package
         run: |
@@ -83,6 +80,11 @@ jobs:
 
           if [ ! -f dist/cli.js ]; then
             echo "Build output dist/cli.js is missing. Run pnpm run build:package before publish."
+            exit 1
+          fi
+
+          if [ ! -f dist/workbench/.next/BUILD_ID ]; then
+            echo "Workbench runtime output dist/workbench/.next/BUILD_ID is missing. Run pnpm run build before publish."
             exit 1
           fi
 

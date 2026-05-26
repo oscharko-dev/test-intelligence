@@ -8,6 +8,10 @@ Generation:
   doctor             Inspect the local Test Intelligence topology and configuration.
   figma-export       Snapshot a Figma file into the canonical export schema.
 
+Workbench:
+  start              Start the local Workbench UI from the installed package.
+  stop               Stop the managed local Workbench UI process.
+
 Human oversight (DSGVO Art. 22 / EU AI Act Art. 14):
   review list|get|decide
                      Inspect and capture decisions on the human-review queue.

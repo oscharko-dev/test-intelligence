@@ -7,7 +7,35 @@ The current user-facing surface is the **Workbench** in `apps/workbench`. It is
 a local Next.js operator UI for configuring runs, launching the runtime, and
 inspecting generated artifacts.
 
-## Local Workbench
+## npm Installation
+
+Install the published package:
+
+```bash
+npm install @oscharko-dev/test-intelligence
+```
+
+Start the packaged Workbench from the directory that contains your `.env`,
+`test-case/`, and `.test-intelligence/` workspace:
+
+```bash
+npx test-intelligence start
+```
+
+Open `http://localhost:1983`.
+
+Stop the managed packaged Workbench process:
+
+```bash
+npx test-intelligence stop
+```
+
+Use `npx test-intelligence start --mock` for UI-only local runs without live
+Figma or LLM calls. The packaged Workbench uses the current directory as the
+operator workspace by default; override it with `--workspace=<path>` when
+needed.
+
+## Source Checkout Workbench
 
 Start from a fresh checkout:
 

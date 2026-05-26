@@ -1,6 +1,6 @@
 {
   "name": "@oscharko-dev/ti-agentic-harness",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.3",
   "description": "Adversarial critic agents, formal verification, causal hypothesis registry, lessons memdir.",
   "private": true,
   "type": "module",

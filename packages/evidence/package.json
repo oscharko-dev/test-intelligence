@@ -1,6 +1,6 @@
 {
   "name": "@oscharko-dev/ti-evidence",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.3",
   "description": "Evidence attestation, tamper-evident seal, provenance graph, audit dossier, ML-BOM.",
   "private": true,
   "type": "module",
