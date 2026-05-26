@@ -1,6 +1,6 @@
 {
   "name": "@oscharko-dev/ti-quality",
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0-beta.2",
   "description": "Validation pipeline, policy gate, judges, causal validation, mutation oracle.",
   "private": true,
   "type": "module",

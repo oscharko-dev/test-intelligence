@@ -1,6 +1,6 @@
 {
   "name": "@oscharko-dev/ti-meta",
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0-beta.2",
   "description": "Bootstrap-period placeholder for the meta-facade aggregating the Test Intelligence public surface. The published name @oscharko-dev/test-intelligence is currently owned by the repository root; it transfers to this package in #87 when the root is retired as the npm publication entry point.",
   "private": true,
   "type": "module",

@@ -1,6 +1,6 @@
 {
   "name": "@oscharko-dev/ti-server",
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0-beta.2",
   "description": "HTTP API under /api/v1/: run submission, status, evidence, TMS export, four-eyes approval.",
   "private": true,
   "type": "module",
@@ -32,7 +32,7 @@
     "@oscharko-dev/ti-security": "workspace:*"
   },
   "devDependencies": {
-    "@types/node": "^25.6.0",
+    "@types/node": "^25.9.1",
     "fast-check": "^4.7.0",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3"
