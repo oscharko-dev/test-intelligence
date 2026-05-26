@@ -1,5 +1,5 @@
 {
-  "commandCount": 11,
+  "commandCount": 13,
   "commands": [
     "audit-dossier",
     "audit-verify",
@@ -9,6 +9,8 @@
     "figma-export",
     "onboard",
     "run",
+    "start",
+    "stop",
     "tms-push",
     "verify-provenance",
     "verify-seal"
