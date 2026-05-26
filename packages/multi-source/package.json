@@ -1,6 +1,6 @@
 {
   "name": "@oscharko-dev/ti-multi-source",
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0-beta.2",
   "description": "Multi-source ingestion: Figma normalization, Jira ADF parsing, custom-context import.",
   "private": true,
   "type": "module",
