@@ -12,10 +12,6 @@ name: dependency-review
 # incompatible with the standalone package's Apache-2.0 licensing posture.
 # The complementary `scripts/check-license-policy.mjs` allowlist runs in `ci.yml`.
 #
-# Operator prerequisite: enable the GitHub Dependency Graph in Settings →
-# Security & analysis. Until the repository supports dependency review, the
-# advisory step is informational so other release gates remain actionable.
-
 on:
   pull_request:
     branches: [dev, main]
@@ -42,7 +38,6 @@ jobs:
 
       - name: Review dependency changes for known advisories (PR)
         if: github.event_name == 'pull_request'
-        continue-on-error: true
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           fail-on-severity: ${{ github.base_ref == 'main' && 'moderate' || 'high' }}
@@ -50,7 +45,3 @@ jobs:
           comment-summary-in-pr: always
           # keep license policy enforcement in the separate `check-license-policy` CI gate
           license-check: false
-
-      - name: Report advisory gate mode
-        run: |
-          echo "Dependency review runs in advisory mode until GitHub Dependency Graph is enabled for this repository."
