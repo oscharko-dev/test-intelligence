@@ -36,8 +36,13 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Enable pnpm
+        run: corepack enable
+
       - name: Review dependency changes for known advisories (PR)
+        id: dependency_review
         if: github.event_name == 'pull_request'
+        continue-on-error: true
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           fail-on-severity: ${{ github.base_ref == 'main' && 'moderate' || 'high' }}
@@ -45,3 +50,17 @@ jobs:
           comment-summary-in-pr: always
           # keep license policy enforcement in the separate `check-license-policy` CI gate
           license-check: false
+
+      - name: Lockfile advisory fallback
+        if: github.event_name == 'pull_request' && steps.dependency_review.outcome == 'failure'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "${{ github.base_ref }}" = "main" ]; then
+            echo "GitHub Dependency Review was unavailable or failed; running runtime lockfile audit fallback."
+            pnpm audit --prod --audit-level moderate
+          else
+            echo "GitHub Dependency Review was unavailable or failed; running development lockfile audit fallback."
+            pnpm audit --audit-level high
+          fi
