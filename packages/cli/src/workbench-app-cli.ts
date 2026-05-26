@@ -126,6 +126,7 @@ const parseStartArgs = (argv: ReadonlyArray<string>): StartOptions => {
 const parseStopArgs = (argv: ReadonlyArray<string>): StopOptions => {
   let help = false;
   let timeoutSeconds = 15;
+  let timeoutRawValue = String(timeoutSeconds);
   let workspaceRoot = resolveWorkspaceRoot(undefined);
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -147,10 +148,12 @@ const parseStopArgs = (argv: ReadonlyArray<string>): StopOptions => {
       if (value === undefined) {
         throw new WorkbenchCliError("Missing value for --timeout.");
       }
+      timeoutRawValue = value;
       timeoutSeconds = Number(value);
       index += 1;
     } else if (arg.startsWith("--timeout=")) {
-      timeoutSeconds = Number(arg.slice("--timeout=".length));
+      timeoutRawValue = arg.slice("--timeout=".length);
+      timeoutSeconds = Number(timeoutRawValue);
     } else {
       throw new WorkbenchCliError(`Unknown option: ${arg}`);
     }
@@ -162,7 +165,7 @@ const parseStopArgs = (argv: ReadonlyArray<string>): StopOptions => {
     timeoutSeconds > 120
   ) {
     throw new WorkbenchCliError(
-      "--timeout must be a number between 1 and 120.",
+      `--timeout received ${JSON.stringify(timeoutRawValue)}; expected a number between 1 and 120.`,
     );
   }
 
@@ -399,9 +402,16 @@ const waitForPortClear = (port: number, timeoutMs: number): Promise<boolean> =>
     void check();
   });
 
-const resolveNextBin = (): string => {
+const resolveNextBin = (): string | null => {
   const require = createRequire(import.meta.url);
-  return require.resolve("next/dist/bin/next");
+  try {
+    return require.resolve("next/dist/bin/next");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "MODULE_NOT_FOUND") {
+      return null;
+    }
+    throw error;
+  }
 };
 
 export const runWorkbenchStartCommand = async (
@@ -452,7 +462,7 @@ export const runWorkbenchStartCommand = async (
 
   const workbenchRoot = await resolveWorkbenchRoot();
   const nextBin = resolveNextBin();
-  if (!(await pathExists(nextBin))) {
+  if (nextBin === null || !(await pathExists(nextBin))) {
     sink.stderr(
       "error: Next.js runtime is missing. Reinstall @oscharko-dev/test-intelligence before starting the Workbench.\n",
     );
@@ -461,8 +471,8 @@ export const runWorkbenchStartCommand = async (
 
   const dotenv = await parseDotenv(options.envFile);
   const env: NodeJS.ProcessEnv = {
-    ...dotenv,
     ...process.env,
+    ...dotenv,
     NEXT_TELEMETRY_DISABLED: "1",
     WORKBENCH_REPO_ROOT: options.workspaceRoot,
   };

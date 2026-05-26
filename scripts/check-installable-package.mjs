@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { readdir, readFile } from "node:fs/promises";
+import { access, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -31,6 +31,17 @@ const collectFiles = async (dir) => {
   }
   return files;
 };
+
+const ensureDirectoryExists = async (dir, label) => {
+  try {
+    await access(dir);
+  } catch {
+    fail(`${label} is missing at ${path.relative(repoRoot, dir)}.`);
+  }
+};
+
+const unresolvedRuntimeImportPattern =
+  /(?:\bfrom\s+|\bimport\s*\(\s*|\brequire\s*\(\s*)["'](@oscharko-dev\/ti-[^"']+|is-path-inside)["']/;
 
 for (const section of ["dependencies", "optionalDependencies"]) {
   const entries = Object.entries(manifest[section] ?? {});
@@ -71,17 +82,16 @@ const workbenchServerDir = path.join(
   ".next",
   "server",
 );
+await ensureDirectoryExists(workbenchServerDir, "Workbench server bundle");
 const serverFiles = (await collectFiles(workbenchServerDir)).filter((file) =>
   file.endsWith(".js"),
 );
 for (const file of serverFiles) {
   const content = await readFile(file, "utf8");
-  if (
-    content.includes("@oscharko-dev/ti-") ||
-    content.includes("is-path-inside")
-  ) {
+  const unresolvedImport = content.match(unresolvedRuntimeImportPattern)?.[1];
+  if (unresolvedImport !== undefined) {
     fail(
-      `Workbench server bundle contains an unresolved workspace import in ${path.relative(repoRoot, file)}.`,
+      `Workbench server bundle contains unresolved runtime import '${unresolvedImport}' in ${path.relative(repoRoot, file)}.`,
     );
   }
 }
