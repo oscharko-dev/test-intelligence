@@ -2,9 +2,12 @@ name: ossf-scorecard
 
 # OSSF Scorecard supply-chain analysis + threshold enforcement.
 #
-# `analysis` (landed in #24) runs the Scorecard action on push to `main`
-# and weekly; results are uploaded to GitHub code scanning and as a
-# workflow artifact, and (on main) published to the public Scorecard API.
+# `analysis` (landed in #24) runs the Scorecard action on push to the
+# repository default branch (`dev`) and weekly. OSSF Scorecard only supports
+# the default branch for push-triggered analysis; release promotion to `main`
+# is covered by the protected `dev` -> `main` pull request path.
+# Results are uploaded to GitHub code scanning and as a workflow artifact,
+# and (on dev) published to the public Scorecard API.
 #
 # `enforce-threshold` (added in #25 — fulfils the deferral from #24)
 # polls the public Scorecard API for the just-published score at the
@@ -15,14 +18,14 @@ name: ossf-scorecard
 
 on:
   push:
-    branches: [main]
+    branches: [dev]
   schedule:
     - cron: "30 5 * * 1"
   workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/dev' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/dev' }}
 
 permissions:
   actions: read
@@ -30,7 +33,7 @@ permissions:
 
 jobs:
   analysis:
-    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/dev'
     permissions:
       actions: read
       contents: read
@@ -49,9 +52,9 @@ jobs:
         with:
           results_file: scorecard-results.sarif
           results_format: sarif
-          # Publication is limited to main; non-main manual dispatches skip via
+          # Publication is limited to dev; non-dev manual dispatches skip via
           # the `if:` gate at the job level.
-          publish_results: ${{ github.ref == 'refs/heads/main' }}
+          publish_results: ${{ github.ref == 'refs/heads/dev' }}
 
       - name: Upload Scorecard SARIF
         uses: github/codeql-action/upload-sarif@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4
@@ -67,9 +70,9 @@ jobs:
           if-no-files-found: error
 
   enforce-threshold:
-    # Run only after a publishable analysis on main. Manual/scheduled runs
+    # Run only after a publishable analysis on dev. Manual/scheduled runs
     # do not pin to a commit the API can verify, so we skip them.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
     needs: analysis
     runs-on: ubuntu-22.04
     permissions:
