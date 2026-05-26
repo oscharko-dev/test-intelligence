@@ -29,6 +29,12 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build distributable
+        run: pnpm run build:package
+
       - name: Publish package
         run: |
           PACKAGE_NAME="$(node -p "require('./package.json').name")"
@@ -44,4 +50,26 @@ jobs:
             exit 0
           fi
 
+          if [ ! -f dist/index.js ]; then
+            echo "Build output dist/index.js is missing. Run pnpm run build:package before publish."
+            exit 1
+          fi
+
+          if [ ! -f dist/cli.js ]; then
+            echo "Build output dist/cli.js is missing. Run pnpm run build:package before publish."
+            exit 1
+          fi
+
+          if [ ! -f dist/contracts/index.js ]; then
+            echo "Build output dist/index.js is missing. Run pnpm run build:package before publish."
+            exit 1
+          fi
+
+          if ! npm whoami >/tmp/npm-whoami.txt 2>/tmp/npm-whoami.err; then
+            echo "npm authentication failed. Verify NODE_AUTH_TOKEN is configured for https://registry.npmjs.org."
+            cat /tmp/npm-whoami.err
+            exit 1
+          fi
+
+          echo "Publishing as $(cat /tmp/npm-whoami.txt)"
           npm publish --provenance --access public --tag "$TAG"
