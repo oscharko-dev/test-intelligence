@@ -17,6 +17,8 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN || secrets.NODE_AUTH_TOKEN }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
@@ -31,6 +33,13 @@ jobs:
 
       - name: Enable pnpm
         run: corepack enable
+
+      - name: Validate npm auth token
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "Missing NPM token. Set repository secret NPM_TOKEN (or NODE_AUTH_TOKEN)."
+            exit 1
+          fi
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
