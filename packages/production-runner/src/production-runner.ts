@@ -9414,6 +9414,13 @@ const selectRotatedScreenFields = (
   );
 };
 
+const useCaseSupplementalVariantLimit = (
+  fields: readonly BusinessTestIntentIr["detectedFields"][number][],
+): number => {
+  if (fields.length === 0) return 1;
+  return Math.max(4, fields.length);
+};
+
 const enforceUseCaseQuotaSupplementalCasesForValidation = (input: {
   list: GeneratedTestCaseList;
   intent: BusinessTestIntentIr;
@@ -9476,7 +9483,7 @@ const enforceUseCaseQuotaSupplementalCasesForValidation = (input: {
         )[0] ?? testCases[0];
     if (seedCase === undefined) continue;
     const screenFields = fieldsByScreen.get(quota.screenId) ?? [];
-    const uniqueVariantLimit = Math.max(1, Math.ceil(screenFields.length / 5));
+    const uniqueVariantLimit = useCaseSupplementalVariantLimit(screenFields);
     for (
       let index = 0;
       index < Math.min(missing, uniqueVariantLimit);

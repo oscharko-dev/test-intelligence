@@ -1,6 +1,6 @@
 {
   "name": "@oscharko-dev/ti-tenant",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.3",
   "description": "Tenant onboarding, per-tenant data isolation, and EU data residency proofs.",
   "private": true,
   "type": "module",

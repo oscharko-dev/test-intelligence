@@ -1,6 +1,6 @@
 {
   "name": "@oscharko-dev/ti-security",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.3",
   "description": "PII detection, redaction, sanitization, and compliance rule definitions.",
   "private": true,
   "type": "module",

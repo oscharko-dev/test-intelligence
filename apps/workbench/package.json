@@ -1,6 +1,6 @@
 {
   "name": "@oscharko-dev/ti-workbench",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.3",
   "private": true,
   "description": "Test Intelligence operator workbench — Next.js UI for run drafts and model-gateway settings.",
   "type": "module",

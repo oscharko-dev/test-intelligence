@@ -5065,6 +5065,165 @@ void test("Issue #1934: runFigmaToQcTestCases persists coverage-plan.json and us
   }
 });
 
+void test("use-case quota supplementation covers tier-elastic multi-field screens", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "ti-runner-"));
+  const screenId = "1:quota";
+  const fields = Array.from({ length: 8 }, (_, index) => ({
+    nodeId: `2:${index + 1}`,
+    label: `Quota field ${index + 1}`,
+  }));
+  const sourceFile: FigmaRestFileSnapshot = {
+    fileKey: "QUOTA",
+    name: "Quota View",
+    document: node({
+      id: "0:0",
+      type: "DOCUMENT",
+      children: [
+        node({
+          id: "0:1",
+          name: "Page 1",
+          type: "CANVAS",
+          children: [
+            node({
+              id: screenId,
+              name: "Quota Form",
+              type: "FRAME",
+              absoluteBoundingBox: { x: 0, y: 0, width: 600, height: 900 },
+              children: fields.map((field) =>
+                node({
+                  id: field.nodeId,
+                  name: `${field.label} input`,
+                  type: "TEXT",
+                  characters: field.label,
+                }),
+              ),
+            }),
+          ],
+        }),
+      ],
+    }),
+  };
+  const fieldIds = fields.map((field) => `${screenId}::field::${field.nodeId}`);
+  const draft: ProductionRunnerLlmDraftCase = {
+    ...SAMPLE_DRAFT,
+    figmaTraceRefs: [
+      {
+        screenId,
+        nodeId: fields[0]!.nodeId,
+        nodeName: fields[0]!.label,
+      },
+    ],
+    qualitySignals: {
+      ...SAMPLE_DRAFT.qualitySignals,
+      coveredFieldIds: [fieldIds[0]!],
+      coveredActionIds: [],
+    },
+  };
+
+  try {
+    const bundle = createMockLlmGatewayClientBundle({
+      testGeneration: {
+        role: "test_generation",
+        deployment: "gpt-oss-120b",
+        modelRevision: "gpt-oss-120b@test",
+        gatewayRelease: "mock",
+        declaredCapabilities: TEST_GENERATION_CAPS,
+        responder: okResponder([draft]),
+      },
+      visualPrimary: {
+        role: "visual_primary",
+        deployment: "llama-4-maverick-vision",
+        modelRevision: "llama-4-maverick-vision@test",
+        gatewayRelease: "mock",
+        declaredCapabilities: VISUAL_CAPS,
+      },
+      visualFallback: {
+        role: "visual_fallback",
+        deployment: "phi-4-multimodal-poc",
+        modelRevision: "phi-4-multimodal-poc@test",
+        gatewayRelease: "mock",
+        declaredCapabilities: VISUAL_CAPS,
+      },
+      coveragePlanner: {
+        role: "coverage_planner",
+        deployment: "phi-4-mini-instruct",
+        modelRevision: "phi-4-mini-instruct@test",
+        gatewayRelease: "mock",
+        declaredCapabilities: TEST_GENERATION_CAPS,
+        responder: (_request, attempt) => ({
+          outcome: "success",
+          content: {
+            perScreen: [
+              {
+                screenId,
+                techniqueQuotas: {
+                  use_case: 8,
+                  equivalence_partitioning: 1,
+                },
+              },
+            ],
+            perElement: fieldIds.map((elementId) => ({
+              screenId,
+              elementId,
+              mustHaveCase: true,
+              riskClass: "low",
+            })),
+          },
+          finishReason: "stop",
+          usage: { inputTokens: 9, outputTokens: 7 },
+          modelDeployment: "phi-4-mini-instruct",
+          modelRevision: "phi-4-mini-instruct@test",
+          gatewayRelease: "mock",
+          attempt,
+        }),
+      },
+    });
+
+    const result = await runFigmaToQcTestCases({
+      jobId: "job-use-case-quota-supplement",
+      generatedAt: "2026-05-26T10:00:00.000Z",
+      source: { kind: "figma_paste_normalized", file: sourceFile },
+      outputRoot: tempRoot,
+      llm: {
+        client: bundle.testGeneration,
+        bundle,
+      },
+      harness: { mode: "off", maxRepairIterations: 0 },
+    });
+
+    const generated = JSON.parse(
+      await readFile(result.artifactPaths.generatedTestCases, "utf8"),
+    ) as GeneratedTestCaseList;
+    const useCaseCount = generated.testCases.filter(
+      (testCase) =>
+        testCase.technique === "use_case" &&
+        testCase.figmaTraceRefs.some(
+          (traceRef) => traceRef.screenId === screenId,
+        ),
+    ).length;
+    assert.ok(
+      useCaseCount >= 8,
+      `expected at least 8 anchored use_case cases, got ${useCaseCount}`,
+    );
+
+    const policy = JSON.parse(
+      await readFile(result.artifactPaths.policyReport, "utf8"),
+    ) as {
+      jobLevelViolations?: Array<{ rule: string; outcome: string }>;
+    };
+    assert.equal(
+      policy.jobLevelViolations?.some(
+        (violation) =>
+          violation.rule === "policy:technique-coverage-minimum" &&
+          violation.outcome === "technique_quota_breach",
+      ),
+      false,
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 void test("Issue #1929: runFigmaToQcTestCases preserves all 9 initial logic/faithfulness verdict combinations when visual captures exist", async () => {
   const logicVerdicts = ["accept", "repair", "reject"] as const;
   const faithfulnessVerdicts = ["accept", "repair", "reject"] as const;

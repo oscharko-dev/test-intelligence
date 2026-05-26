@@ -14,6 +14,7 @@ import type {
   RunFigmaToQcTestCasesInput,
   RunFigmaToQcTestCasesResult,
 } from "@oscharko-dev/ti-production-runner";
+import { runFigmaToQcTestCases } from "@oscharko-dev/ti-production-runner";
 import isPathInside from "is-path-inside";
 import {
   DEFAULT_ARTIFACT_NAMES,
@@ -50,12 +51,6 @@ interface ReadWorkbenchRunFileResult {
   filename: string;
 }
 
-interface ProductionRunnerModule {
-  runFigmaToQcTestCases: (
-    input: RunFigmaToQcTestCasesInput,
-  ) => Promise<RunFigmaToQcTestCasesResult>;
-}
-
 export class WorkbenchRunRegistryError extends Error {
   readonly status: number;
   readonly code: string;
@@ -79,17 +74,6 @@ export class WorkbenchRunRegistryError extends Error {
 const globalForRuns = globalThis as typeof globalThis & {
   __TI_WORKBENCH_RUN_STORE__?: WorkbenchRunStore;
 };
-
-const PRODUCTION_RUNNER_PACKAGE_PARTS = [
-  "@oscharko-dev",
-  "ti-production-runner",
-] as const;
-
-const loadProductionRunner = async (): Promise<ProductionRunnerModule> =>
-  (await import(
-    /* webpackIgnore: true */
-    PRODUCTION_RUNNER_PACKAGE_PARTS.join("/")
-  )) as ProductionRunnerModule;
 
 const getStore = (): WorkbenchRunStore => {
   if (globalForRuns.__TI_WORKBENCH_RUN_STORE__ === undefined) {
@@ -604,7 +588,6 @@ const executeRealRun = async (
   if (prepared.customContextMarkdown !== undefined) {
     input.customContextMarkdown = prepared.customContextMarkdown;
   }
-  const { runFigmaToQcTestCases } = await loadProductionRunner();
   const result = await runFigmaToQcTestCases(input);
   await finishWithArtifacts({
     jobId: prepared.jobId,

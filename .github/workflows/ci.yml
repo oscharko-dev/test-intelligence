@@ -140,6 +140,9 @@ jobs:
       - name: Package shape (manifest sanity)
         run: node scripts/check-package-shape.mjs
 
+      - name: Installable package (npm runtime sanity)
+        run: pnpm run check:installable-package
+
       - name: License policy
         run: node scripts/check-license-policy.mjs
 
