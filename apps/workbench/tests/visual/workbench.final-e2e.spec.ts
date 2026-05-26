@@ -48,11 +48,25 @@ async function readFixture(caseId: string): Promise<CaseFixture> {
 }
 
 async function listFixtures(): Promise<CaseFixture[]> {
+  const casesRootExists = await stat(casesRoot)
+    .then((info) => info.isDirectory())
+    .catch(() => false);
+  if (!casesRootExists) {
+    throw new Error(
+      `Final E2E requires local case fixtures in ${casesRoot}. This directory is intentionally not versioned.`,
+    );
+  }
+
   const entries = await readdir(casesRoot, { withFileTypes: true });
   const dirs = entries
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
     .sort();
+  if (dirs.length === 0) {
+    throw new Error(
+      `Final E2E found no case fixture directories in ${casesRoot}.`,
+    );
+  }
   return Promise.all(dirs.map(readFixture));
 }
 

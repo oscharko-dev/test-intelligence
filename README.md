@@ -45,16 +45,17 @@ is implemented.
 
 ## Final Local E2E
 
-Run the local final end-to-end suite after the Workbench is running:
+Run the local final end-to-end suite after the Workbench is running and local
+case fixtures have been provided:
 
 ```bash
 pnpm run test:final-e2e
 ```
 
-The command runs the Workbench Playwright flow against the local test-case set
-and writes fresh results to `.test-intelligence/final-e2e/`. The test clears
-that result directory at the start of each run so stale artifacts are not reused
-as successful evidence.
+The command runs the Workbench Playwright flow against operator-provided local
+fixtures in the untracked `test-case/` directory and writes fresh results to
+`.test-intelligence/final-e2e/`. The test clears that result directory at the
+start of each run so stale artifacts are not reused as successful evidence.
 
 ## Maintainer Checks
 

@@ -51,9 +51,10 @@ pnpm run local:start
 pnpm run test:final-e2e
 ```
 
-The command clears `.test-intelligence/final-e2e/` before every run. If launch
-fails, inspect `.test-intelligence/local-runtime/workbench.log` and confirm the
-run uses the expected base URL.
+The command expects operator-provided local fixtures in the untracked
+`test-case/` directory and clears `.test-intelligence/final-e2e/` before every
+run. If launch fails, inspect `.test-intelligence/local-runtime/workbench.log`
+and confirm the run uses the expected base URL.
 
 ## Repository Checks Fail
 
