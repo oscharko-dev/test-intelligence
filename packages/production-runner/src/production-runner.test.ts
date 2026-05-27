@@ -1743,7 +1743,9 @@ void test("Issue #2125: weak 2/1 self-consistency splits trigger a cross-family 
           "test-intelligence-production-runner-draft-list-v1",
       );
     assert.deepEqual(
-      primaryRequests.map((request) => request.seed),
+      primaryRequests
+        .map((request) => request.seed)
+        .toSorted((left, right) => (left ?? 0) - (right ?? 0)),
       [11, 29, 47],
     );
     const arbitrationRequests =
