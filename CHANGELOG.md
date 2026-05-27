@@ -2,6 +2,16 @@
 
 All notable public changes are tracked here.
 
+## 0.1.0-beta.5 - 2026-05-27
+
+- Fixed npm-installed CLI startup on Node 22.14 by removing a premature
+  `node:tls` named import that is only available in newer Node 22 releases.
+- Kept enterprise CA bundle support for Figma REST and model-gateway calls
+  while using the Node runtime's system CA store when available and falling
+  back to the native fetch trust path on older Node runtimes.
+- Added Azure Foundry `/openai` to `/openai/v1` chat-completions fallback and
+  clarified Workbench endpoint templates to prefer v1 base URLs.
+
 ## 0.1.0-beta.4 - 2026-05-27
 
 - Added local Workbench credential onboarding with `.env` path import, `.env`

@@ -23,7 +23,9 @@ export const WORKBENCH_IMPORT_ENV_TEMPLATE = `# Test Intelligence Workbench impo
 # Fill the required values, then import this file in the Workbench settings.
 # Keep this file local. It may contain secrets after you fill it.
 
-# Required: text-generation endpoint. Azure Foundry/OpenAI-compatible endpoint.
+# Required: text-generation endpoint. For Azure Foundry/OpenAI-compatible
+# deployments prefer the v1 base URL, for example:
+# https://<account>.services.ai.azure.com/openai/v1
 TEST_INTELLIGENCE_MODEL_ENDPOINT=
 
 # Required: API key or bearer token for the text-generation endpoint.
@@ -32,7 +34,7 @@ TEST_INTELLIGENCE_LLM_API_KEY=
 # Required: Figma access token for Figma URL ingestion.
 TEST_INTELLIGENCE_FIGMA_ACCESS_TOKEN=
 
-# Required when visual sidecar is enabled. Defaults to the text endpoint if omitted.
+# Required when visual sidecar is enabled. Prefer the matching v1 base URL.
 TEST_INTELLIGENCE_VISUAL_MODEL_ENDPOINT=
 
 # Required deployment pins. Use the model/deployment names provided by your platform team.
