@@ -27,7 +27,7 @@ import { sanitizeErrorMessage } from "@oscharko-dev/ti-security";
 import { redactHighRiskSecrets } from "@oscharko-dev/ti-security";
 import { readFile } from "node:fs/promises";
 import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
-import { getCACertificates } from "node:tls";
+import * as tls from "node:tls";
 
 const FIGMA_REST_HOST = "api.figma.com" as const;
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -497,12 +497,33 @@ const readRuntimeCaBundlePath = (
     : configured;
 };
 
+type RuntimeTlsModule = typeof tls & {
+  getCACertificates?: (source?: "default" | "system") => readonly string[];
+};
+
+const readRuntimeCaCertificates = (
+  source: "default" | "system",
+): readonly string[] => {
+  // Node 22.14 satisfies our engines range but does not expose this API yet.
+  // Keep the namespace lookup lazy so the published CLI can load there.
+  const getRuntimeCaCertificates = (tls as RuntimeTlsModule)
+    .getCACertificates;
+  if (typeof getRuntimeCaCertificates === "function") {
+    try {
+      return getRuntimeCaCertificates(source);
+    } catch {
+      return [];
+    }
+  }
+  return source === "default" ? tls.rootCertificates : [];
+};
+
 const loadFigmaCaCertificates = async (
   caCertPath: string | undefined,
 ): Promise<string[]> => {
   const certificates = new Set<string>();
   for (const source of ["default", "system"] as const) {
-    for (const certificate of getCACertificates(source)) {
+    for (const certificate of readRuntimeCaCertificates(source)) {
       if (certificate.trim().length > 0) certificates.add(certificate);
     }
   }
@@ -516,6 +537,9 @@ const loadFigmaCaCertificates = async (
 const createTrustedFigmaFetch = (
   caCertPath: string | undefined,
 ): typeof fetch => {
+  if (readRuntimeCaBundlePath(caCertPath) === undefined) {
+    return fetch;
+  }
   const agentPromise = loadFigmaCaCertificates(caCertPath).then(
     (ca) => new HttpsAgent({ ca, keepAlive: true, maxSockets: 32 }),
   );

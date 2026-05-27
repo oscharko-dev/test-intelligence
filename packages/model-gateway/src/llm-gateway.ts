@@ -24,7 +24,7 @@ import type { IncomingHttpHeaders } from "node:http";
 import { readFile } from "node:fs/promises";
 import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import * as net from "node:net";
-import { getCACertificates } from "node:tls";
+import * as tls from "node:tls";
 
 import { sanitizeErrorMessage } from "@oscharko-dev/ti-security";
 import { redactHighRiskSecrets } from "@oscharko-dev/ti-security";
@@ -712,12 +712,33 @@ const readRuntimeCaBundlePath = (
     : configured;
 };
 
+type RuntimeTlsModule = typeof tls & {
+  getCACertificates?: (source?: "default" | "system") => readonly string[];
+};
+
+const readRuntimeCaCertificates = (
+  source: "default" | "system",
+): readonly string[] => {
+  // Node 22.14 satisfies our engines range but does not expose this API yet.
+  // Keep the namespace lookup lazy so the published CLI can load there.
+  const getRuntimeCaCertificates = (tls as RuntimeTlsModule)
+    .getCACertificates;
+  if (typeof getRuntimeCaCertificates === "function") {
+    try {
+      return getRuntimeCaCertificates(source);
+    } catch {
+      return [];
+    }
+  }
+  return source === "default" ? tls.rootCertificates : [];
+};
+
 const loadGatewayCaCertificates = async (
   caCertPath: string | undefined,
 ): Promise<string[]> => {
   const certificates = new Set<string>();
   for (const source of ["default", "system"] as const) {
-    for (const certificate of getCACertificates(source)) {
+    for (const certificate of readRuntimeCaCertificates(source)) {
       if (certificate.trim().length > 0) certificates.add(certificate);
     }
   }
@@ -731,6 +752,9 @@ const loadGatewayCaCertificates = async (
 const createTrustedGatewayFetch = (
   caCertPath: string | undefined,
 ): typeof fetch => {
+  if (readRuntimeCaBundlePath(caCertPath) === undefined) {
+    return fetch;
+  }
   const agentPromise = loadGatewayCaCertificates(caCertPath).then(
     (ca) => new HttpsAgent({ ca, keepAlive: true, maxSockets: 32 }),
   );
