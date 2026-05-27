@@ -518,6 +518,9 @@ const readRuntimeCaCertificates = (
   return source === "default" ? tls.rootCertificates : [];
 };
 
+const runtimeProvidesSystemCaCertificates = (): boolean =>
+  typeof (tls as RuntimeTlsModule).getCACertificates === "function";
+
 const loadFigmaCaCertificates = async (
   caCertPath: string | undefined,
 ): Promise<string[]> => {
@@ -537,7 +540,10 @@ const loadFigmaCaCertificates = async (
 const createTrustedFigmaFetch = (
   caCertPath: string | undefined,
 ): typeof fetch => {
-  if (readRuntimeCaBundlePath(caCertPath) === undefined) {
+  if (
+    readRuntimeCaBundlePath(caCertPath) === undefined &&
+    !runtimeProvidesSystemCaCertificates()
+  ) {
     return fetch;
   }
   const agentPromise = loadFigmaCaCertificates(caCertPath).then(
@@ -548,7 +554,7 @@ const createTrustedFigmaFetch = (
     const request = input instanceof Request ? input : undefined;
     if (url.protocol !== "https:") {
       throw new TypeError(
-        `custom CA fetch only supports https URLs: ${url.protocol}`,
+        `trusted Figma fetch only supports https URLs: ${url.protocol}`,
       );
     }
     if (

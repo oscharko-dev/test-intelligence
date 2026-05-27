@@ -1238,6 +1238,35 @@ void test("URL composition preserves trailing-slash baseUrl and adds chat/comple
   assert.equal((observedUrl ?? "").includes("?model="), false);
 });
 
+void test("URL composition expands Azure /openai to /openai/v1 before legacy fallback", async () => {
+  const observedUrls: string[] = [];
+  const client = createLlmGatewayClient(
+    { ...baseConfig, baseUrl: "https://example.com/openai" },
+    {
+      fetchImpl: async (url) => {
+        const href =
+          url instanceof URL ? url.href : url instanceof Request ? url.url : url;
+        observedUrls.push(href);
+        return observedUrls.length === 1
+          ? new Response(`{"error":{"code":"404","message":"not found"}}`, {
+              status: 404,
+              headers: { "content-type": "application/json" },
+            })
+          : okJsonResponse(buildChoiceBody({ ack: "ok" }));
+      },
+      apiKeyProvider: () => "k",
+    },
+  );
+
+  const result = await client.generate(sampleRequest());
+
+  assert.equal(result.outcome, "success");
+  assert.deepEqual(observedUrls, [
+    "https://example.com/openai/v1/chat/completions",
+    "https://example.com/openai/chat/completions",
+  ]);
+});
+
 void test("visual sidecar role accepts image payloads", async () => {
   let observedBody: string | undefined;
   const client = createLlmGatewayClient(

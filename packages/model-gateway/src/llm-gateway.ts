@@ -733,6 +733,9 @@ const readRuntimeCaCertificates = (
   return source === "default" ? tls.rootCertificates : [];
 };
 
+const runtimeProvidesSystemCaCertificates = (): boolean =>
+  typeof (tls as RuntimeTlsModule).getCACertificates === "function";
+
 const loadGatewayCaCertificates = async (
   caCertPath: string | undefined,
 ): Promise<string[]> => {
@@ -752,7 +755,10 @@ const loadGatewayCaCertificates = async (
 const createTrustedGatewayFetch = (
   caCertPath: string | undefined,
 ): typeof fetch => {
-  if (readRuntimeCaBundlePath(caCertPath) === undefined) {
+  if (
+    readRuntimeCaBundlePath(caCertPath) === undefined &&
+    !runtimeProvidesSystemCaCertificates()
+  ) {
     return fetch;
   }
   const agentPromise = loadGatewayCaCertificates(caCertPath).then(
@@ -763,7 +769,7 @@ const createTrustedGatewayFetch = (
     const request = input instanceof Request ? input : undefined;
     if (url.protocol !== "https:") {
       throw new TypeError(
-        `custom CA gateway fetch only supports https URLs: ${url.protocol}`,
+        `trusted gateway fetch only supports https URLs: ${url.protocol}`,
       );
     }
     const body = resolveRequestBody(input, init);
@@ -855,7 +861,7 @@ const dispatchOnce = async ({
   });
   // Compatibility mode is enforced eagerly in `validateConfig`; the type
   // system narrows it to the only currently-supported wire protocol here.
-  const url = buildOpenAiChatUrl(config.baseUrl);
+  const urls = buildOpenAiChatUrlCandidates(config.baseUrl);
   const body = buildOpenAiChatBody(config, request);
   const headers = await buildAuthHeaders(config, apiKeyProvider, attempt);
   if ("error" in headers) return headers.error;
@@ -887,15 +893,22 @@ const dispatchOnce = async ({
   const upstreamWasAborted = (): boolean =>
     upstreamSignal !== undefined && upstreamSignal.aborted;
 
-  let response: Response;
+  let response: Response | undefined;
   try {
-    response = await fetchImpl(url, {
-      method: "POST",
-      headers: headers.headers,
-      body: JSON.stringify(body),
-      redirect: "error",
-      signal: fetchSignal,
-    });
+    for (let index = 0; index < urls.length; index += 1) {
+      response = await fetchImpl(urls[index]!, {
+        method: "POST",
+        headers: headers.headers,
+        body: JSON.stringify(body),
+        redirect: "error",
+        signal: fetchSignal,
+      });
+      if (index === 0 && response.status === 404 && urls.length > 1) {
+        await cancelResponseBody(response);
+        continue;
+      }
+      break;
+    }
   } catch (err) {
     clearTimeout(timer);
     if (isAbortLikeError(err)) {
@@ -931,6 +944,16 @@ const dispatchOnce = async ({
       attempt,
     };
   }
+  if (response === undefined) {
+    clearTimeout(timer);
+    return {
+      outcome: "error",
+      errorClass: "transport",
+      message: "gateway dispatch produced no response",
+      retryable: true,
+      attempt,
+    };
+  }
 
   try {
     return await parseOpenAiChatResponse({
@@ -947,9 +970,28 @@ const dispatchOnce = async ({
   }
 };
 
-const buildOpenAiChatUrl = (baseUrl: string): string => {
+const appendOpenAiChatPath = (baseUrl: string): string => {
+  const url = new URL(baseUrl);
+  const trimmedPath = url.pathname.replace(/\/+$/u, "");
+  url.pathname = `${trimmedPath}/chat/completions`;
+  return url.href;
+};
+
+const buildAzureOpenAiV1FallbackUrl = (baseUrl: string): string | undefined => {
+  const url = new URL(baseUrl);
+  const trimmedPath = url.pathname.replace(/\/+$/u, "");
+  if (!trimmedPath.endsWith("/openai")) return undefined;
+  url.pathname = `${trimmedPath}/v1/chat/completions`;
+  return url.href;
+};
+
+const buildOpenAiChatUrlCandidates = (baseUrl: string): readonly string[] => {
   const trimmed = baseUrl.endsWith("/") ? baseUrl.slice(0, -1) : baseUrl;
-  return `${trimmed}/chat/completions`;
+  const primary = appendOpenAiChatPath(trimmed);
+  const azureV1Fallback = buildAzureOpenAiV1FallbackUrl(trimmed);
+  return azureV1Fallback !== undefined && azureV1Fallback !== primary
+    ? [azureV1Fallback, primary]
+    : [primary];
 };
 
 /**
