@@ -67,6 +67,21 @@ const URL_FIELDS: readonly SettingsKey[] = [
 
 const PATH_FIELDS: readonly SettingsKey[] = ["NODE_EXTRA_CA_CERTS"];
 const WINDOWS_ABSOLUTE_PATH = /^(?:[A-Za-z]:[\\/]|\\\\)/u;
+const SAFE_WORKSPACE_RELATIVE_PATH = /^[A-Za-z0-9._/-]+$/u;
+
+function isWorkspaceRelativePath(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) return true;
+  if (
+    trimmed.startsWith("/") ||
+    WINDOWS_ABSOLUTE_PATH.test(trimmed) ||
+    !SAFE_WORKSPACE_RELATIVE_PATH.test(trimmed)
+  ) {
+    return false;
+  }
+  const segments = trimmed.split("/");
+  return segments.every((segment) => segment !== "." && segment !== "..");
+}
 
 export type SettingsAction =
   | { type: "set"; key: SettingsKey; value: SettingsValue }
@@ -130,14 +145,7 @@ export function validateSettings(values: Settings): ValidationIssue[] {
     const v = values[key];
     if (typeof v !== "string" || v.trim().length === 0) continue;
     const trimmed = v.trim();
-    if (
-      trimmed.startsWith("..") ||
-      trimmed.includes("/../") ||
-      trimmed.includes("\\..\\") ||
-      trimmed.startsWith("/") ||
-      WINDOWS_ABSOLUTE_PATH.test(trimmed) ||
-      !/^[A-Za-z0-9._/-]+$/u.test(trimmed)
-    ) {
+    if (!isWorkspaceRelativePath(trimmed)) {
       issues.push({
         field: key,
         label: prettyEnv(key),

@@ -22,7 +22,7 @@
 
 import type { IncomingHttpHeaders } from "node:http";
 import { readFile } from "node:fs/promises";
-import { request as httpsRequest } from "node:https";
+import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import * as net from "node:net";
 import { getCACertificates } from "node:tls";
 
@@ -731,7 +731,9 @@ const loadGatewayCaCertificates = async (
 const createTrustedGatewayFetch = (
   caCertPath: string | undefined,
 ): typeof fetch => {
-  const caPromise = loadGatewayCaCertificates(caCertPath);
+  const agentPromise = loadGatewayCaCertificates(caCertPath).then(
+    (ca) => new HttpsAgent({ ca, keepAlive: true, maxSockets: 32 }),
+  );
   return (async (input: string | URL | Request, init?: RequestInit) => {
     const url = resolveRequestUrl(input);
     const request = input instanceof Request ? input : undefined;
@@ -741,12 +743,12 @@ const createTrustedGatewayFetch = (
       );
     }
     const body = resolveRequestBody(input, init);
-    const ca = await caPromise;
+    const agent = await agentPromise;
     return await new Promise<Response>((resolve, reject) => {
       const req = httpsRequest(
         url,
         {
-          ca,
+          agent,
           headers: headersToRecord(init?.headers ?? request?.headers),
           method: init?.method ?? request?.method ?? "GET",
           signal: init?.signal ?? request?.signal ?? undefined,

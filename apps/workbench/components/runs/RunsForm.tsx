@@ -189,11 +189,11 @@ export function RunsForm({
               mono
               value={form.caCerts}
               onChange={setField("caCerts")}
-              placeholder="/etc/ssl/ws-internal-ca.pem"
+              placeholder=".test-intelligence/trust/company-ca.pem"
               invalid={Boolean(issueByField("caCerts"))}
               hint={
                 issueByField("caCerts")?.message ??
-                "Used as the CA bundle for Figma REST HTTPS requests. Absolute path preferred."
+                "Workspace-relative PEM bundle path used for Figma REST HTTPS requests."
               }
               {...(issueByField("caCerts")
                 ? { hintVariant: "err" as const }

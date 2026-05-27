@@ -72,6 +72,16 @@ describe("validateForm", () => {
     expect(issues.some((i) => i.field === "caCerts")).toBe(true);
   });
 
+  it("rejects CA cert paths that traverse out of the workspace", () => {
+    const issues = validateForm({
+      ...DEFAULT_FORM,
+      figmaUrl: "https://www.figma.com/design/ABC/Name?node-id=1-2",
+      outputDir: ".out",
+      caCerts: "trust/..",
+    });
+    expect(issues.some((i) => i.field === "caCerts")).toBe(true);
+  });
+
   it("returns no issues for a clean configuration", () => {
     const issues = validateForm({
       ...DEFAULT_FORM,

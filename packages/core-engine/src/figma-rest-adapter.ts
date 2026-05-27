@@ -26,7 +26,7 @@
 import { sanitizeErrorMessage } from "@oscharko-dev/ti-security";
 import { redactHighRiskSecrets } from "@oscharko-dev/ti-security";
 import { readFile } from "node:fs/promises";
-import { request as httpsRequest } from "node:https";
+import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import { getCACertificates } from "node:tls";
 
 const FIGMA_REST_HOST = "api.figma.com" as const;
@@ -516,7 +516,9 @@ const loadFigmaCaCertificates = async (
 const createTrustedFigmaFetch = (
   caCertPath: string | undefined,
 ): typeof fetch => {
-  const caPromise = loadFigmaCaCertificates(caCertPath);
+  const agentPromise = loadFigmaCaCertificates(caCertPath).then(
+    (ca) => new HttpsAgent({ ca, keepAlive: true, maxSockets: 32 }),
+  );
   return (async (input: string | URL | Request, init?: RequestInit) => {
     const url = resolveRequestUrl(input);
     const request = input instanceof Request ? input : undefined;
@@ -531,12 +533,12 @@ const createTrustedFigmaFetch = (
     ) {
       throw new TypeError("custom CA fetch does not support request bodies");
     }
-    const ca = await caPromise;
+    const agent = await agentPromise;
     return await new Promise<Response>((resolve, reject) => {
       const req = httpsRequest(
         url,
         {
-          ca,
+          agent,
           headers: headersToRecord(init?.headers ?? request?.headers),
           method: init?.method ?? request?.method ?? "GET",
           signal: init?.signal ?? request?.signal ?? undefined,

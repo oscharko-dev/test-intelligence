@@ -108,6 +108,16 @@ describe("validateSettings", () => {
     const issues = validateSettings(broken);
     expect(issues.some((i) => i.field === "NODE_EXTRA_CA_CERTS")).toBe(true);
   });
+
+  it("rejects CA bundle paths that traverse out of the workspace", () => {
+    const broken = settingsReducer(SETTINGS_BASELINE, {
+      type: "set",
+      key: "NODE_EXTRA_CA_CERTS",
+      value: "trust/..",
+    });
+    const issues = validateSettings(broken);
+    expect(issues.some((i) => i.field === "NODE_EXTRA_CA_CERTS")).toBe(true);
+  });
 });
 
 describe("diffSettings", () => {
