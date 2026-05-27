@@ -23,6 +23,7 @@ export interface RunsFormProps {
   setForm: (next: RunConfig | ((prev: RunConfig) => RunConfig)) => void;
   issues: ValidationIssue[];
   onSubmit: () => void | Promise<void>;
+  launchDisabled?: boolean;
   submitting?: boolean;
 }
 
@@ -31,6 +32,7 @@ export function RunsForm({
   setForm,
   issues,
   onSubmit,
+  launchDisabled = false,
   submitting = false,
 }: RunsFormProps): ReactNode {
   const formRef = useRef<HTMLFormElement>(null);
@@ -187,11 +189,11 @@ export function RunsForm({
               mono
               value={form.caCerts}
               onChange={setField("caCerts")}
-              placeholder="/etc/ssl/ws-internal-ca.pem"
+              placeholder=".test-intelligence/trust/company-ca.pem"
               invalid={Boolean(issueByField("caCerts"))}
               hint={
                 issueByField("caCerts")?.message ??
-                "Forwarded to the Node process as an env var. Absolute path preferred."
+                "Workspace-relative PEM bundle path used for Figma REST HTTPS requests."
               }
               {...(issueByField("caCerts")
                 ? { hintVariant: "err" as const }
@@ -220,17 +222,13 @@ export function RunsForm({
           <span>to launch</span>
         </span>
         <span className={ui.bottomBar.spacer} />
-        <button
-          type="button"
-          className={ui.button.base}
-          onClick={copyCli}
-        >
+        <button type="button" className={ui.button.base} onClick={copyCli}>
           <Copy size={14} aria-hidden focusable={false} /> Copy expert command
         </button>
         <button
           type="submit"
           className={cx(ui.button.base, ui.button.primary)}
-          disabled={issues.length > 0 || submitting}
+          disabled={issues.length > 0 || launchDisabled || submitting}
         >
           <Play size={14} aria-hidden focusable={false} />{" "}
           {submitting ? "Launching" : "Launch run"}

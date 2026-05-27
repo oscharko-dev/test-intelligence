@@ -25,6 +25,23 @@ export interface FigmaUrlCheck {
   reason?: string;
 }
 
+const WINDOWS_ABSOLUTE_PATH = /^(?:[A-Za-z]:[\\/]|\\\\)/u;
+const SAFE_WORKSPACE_RELATIVE_PATH = /^[A-Za-z0-9._/-]+$/u;
+
+function isWorkspaceRelativePath(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) return true;
+  if (
+    trimmed.startsWith("/") ||
+    WINDOWS_ABSOLUTE_PATH.test(trimmed) ||
+    !SAFE_WORKSPACE_RELATIVE_PATH.test(trimmed)
+  ) {
+    return false;
+  }
+  const segments = trimmed.split("/");
+  return segments.every((segment) => segment !== "." && segment !== "..");
+}
+
 export function looksLikeFigmaDesignUrl(url: string): FigmaUrlCheck {
   if (!url) return { ok: false, reason: "Figma URL is empty" };
   let u: URL;
@@ -73,11 +90,11 @@ export function validateForm(f: RunConfig): ValidationIssue[] {
     });
   }
   const ca = f.caCerts.trim();
-  if (ca && !/^([./]|[a-zA-Z]:[\\/]|\$\{?\w+\}?)/.test(ca)) {
+  if (ca && !isWorkspaceRelativePath(ca)) {
     issues.push({
       field: "caCerts",
       label: "NODE_EXTRA_CA_CERTS",
-      message: "Expected an absolute or workspace-relative path",
+      message: "Expected a workspace-relative path",
     });
   }
   return issues;

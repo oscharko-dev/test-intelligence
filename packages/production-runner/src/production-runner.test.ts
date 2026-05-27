@@ -60,6 +60,7 @@ import {
   detectBankingInsuranceScreens,
   runFigmaToQcTestCases,
   type ProductionRunnerLlmDraftCase,
+  type ProductionRunnerSource,
 } from "./production-runner.js";
 import type {
   FigmaRestFileSnapshot,
@@ -102,6 +103,16 @@ process.env[REGION_ATTESTATION_SIGNING_KEY_ENV] ??=
 const node = (
   partial: Partial<FigmaRestNode> & { id: string; type: string },
 ): FigmaRestNode => partial as FigmaRestNode;
+
+const figmaUrlSource = (
+  figmaUrl: string,
+  accessToken = "figd_test",
+): ProductionRunnerSource => ({
+  kind: "figma_url",
+  figmaUrl,
+  accessToken,
+  fetchImpl: globalThis.fetch,
+});
 
 const SAMPLE_FILE = {
   fileKey: "ABC",
@@ -901,11 +912,9 @@ void test("Issue #1992: runFigmaToQcTestCases records degraded_success when the 
     const result = await runFigmaToQcTestCases({
       jobId: "job-1992-degraded-success",
       generatedAt: "2026-05-07T10:05:00Z",
-      source: {
-        kind: "figma_url",
-        figmaUrl: "https://www.figma.com/design/ABC/Test-View-03?node-id=1-1",
-        accessToken: "figd_test",
-      },
+      source: figmaUrlSource(
+        "https://www.figma.com/design/ABC/Test-View-03?node-id=1-1",
+      ),
       outputRoot: tempRoot,
       llm: { client: bundle.testGeneration, bundle },
       generation: { diversityPasses: 1 },
@@ -1734,7 +1743,9 @@ void test("Issue #2125: weak 2/1 self-consistency splits trigger a cross-family 
           "test-intelligence-production-runner-draft-list-v1",
       );
     assert.deepEqual(
-      primaryRequests.map((request) => request.seed),
+      primaryRequests
+        .map((request) => request.seed)
+        .toSorted((left, right) => (left ?? 0) - (right ?? 0)),
       [11, 29, 47],
     );
     const arbitrationRequests =
@@ -2462,11 +2473,7 @@ void test("runFigmaToQcTestCases rejects an SSRF-flavoured Figma URL with FIGMA_
         runFigmaToQcTestCases({
           jobId: "job-ssrf",
           generatedAt: "2026-05-02T10:00:00Z",
-          source: {
-            kind: "figma_url",
-            figmaUrl: "https://evil.example.com/design/ABC/X",
-            accessToken: "figd_test",
-          },
+          source: figmaUrlSource("https://evil.example.com/design/ABC/X"),
           outputRoot: tempRoot,
           llm: { client },
         }),
@@ -2595,12 +2602,9 @@ void test("runFigmaToQcTestCases wires Figma URL screenshots through the visual 
     const result = await runFigmaToQcTestCases({
       jobId: "job-figma-url-visual",
       generatedAt: "2026-05-02T10:00:00Z",
-      source: {
-        kind: "figma_url",
-        figmaUrl:
-          "https://www.figma.com/design/ABC/Test-View-03?node-id=1-1&access_token=figd_supersecret_test_token_value_1234567890_padded_padded", // pragma: allowlist secret
-        accessToken: "figd_test",
-      },
+      source: figmaUrlSource(
+        "https://www.figma.com/design/ABC/Test-View-03?node-id=1-1&access_token=figd_supersecret_test_token_value_1234567890_padded_padded", // pragma: allowlist secret
+      ),
       outputRoot: tempRoot,
       llm: { client, bundle },
       generation: { diversityPasses: 1 },
@@ -2885,11 +2889,9 @@ void test("runFigmaToQcTestCases runs both judges, persists their artifacts, and
     const result = await runFigmaToQcTestCases({
       jobId: "job-1899-happy",
       generatedAt: "2026-05-05T10:00:00Z",
-      source: {
-        kind: "figma_url",
-        figmaUrl: "https://www.figma.com/design/ABC/Test-View-03?node-id=1-1",
-        accessToken: "figd_test",
-      },
+      source: figmaUrlSource(
+        "https://www.figma.com/design/ABC/Test-View-03?node-id=1-1",
+      ),
       outputRoot: tempRoot,
       llm: { client, bundle },
       generation: { diversityPasses: 1 },
@@ -3149,11 +3151,9 @@ void test("Issue #2102: multi-judge regulated disagreement records a review-even
     const result = await runFigmaToQcTestCases({
       jobId: "job-2102-regulated-disagreement",
       generatedAt: "2026-05-09T10:00:00Z",
-      source: {
-        kind: "figma_url",
-        figmaUrl: "https://www.figma.com/design/ABC/Test-View-03?node-id=1-1",
-        accessToken: "figd_test",
-      },
+      source: figmaUrlSource(
+        "https://www.figma.com/design/ABC/Test-View-03?node-id=1-1",
+      ),
       outputRoot: tempRoot,
       llm: { client: bundle.testGeneration, bundle },
       generation: { diversityPasses: 1 },
@@ -3457,11 +3457,9 @@ void test("Issue #2102: needs_review replay reuses the existing human-review que
       runFigmaToQcTestCases({
         jobId: "job-2102-regulated-disagreement-replay",
         generatedAt,
-        source: {
-          kind: "figma_url",
-          figmaUrl: "https://www.figma.com/design/ABC/Test-View-03?node-id=1-1",
-          accessToken: "figd_test",
-        },
+        source: figmaUrlSource(
+          "https://www.figma.com/design/ABC/Test-View-03?node-id=1-1",
+        ),
         outputRoot: tempRoot,
         llm: { client: bundle.testGeneration, bundle },
         generation: { diversityPasses: 1 },
@@ -3816,11 +3814,9 @@ void test("Issue #2167: human-review queue/log filesystem failure surfaces as PE
       runFigmaToQcTestCases({
         jobId,
         generatedAt: "2026-05-09T10:00:00Z",
-        source: {
-          kind: "figma_url",
-          figmaUrl: "https://www.figma.com/design/ABC/Test-View-03?node-id=1-1",
-          accessToken: "figd_test",
-        },
+        source: figmaUrlSource(
+          "https://www.figma.com/design/ABC/Test-View-03?node-id=1-1",
+        ),
         outputRoot: tempRoot,
         llm: { client: bundle.testGeneration, bundle },
         generation: { diversityPasses: 1 },
@@ -4310,11 +4306,9 @@ void test("Issue #1992: fallback-recovered visual sidecar runs surface degraded_
     const result = await runFigmaToQcTestCases({
       jobId: "job-1992-degraded",
       generatedAt: "2026-05-07T12:30:00Z",
-      source: {
-        kind: "figma_url",
-        figmaUrl: "https://www.figma.com/design/ABC/Test-View-03?node-id=1-1",
-        accessToken: "figd_test",
-      },
+      source: figmaUrlSource(
+        "https://www.figma.com/design/ABC/Test-View-03?node-id=1-1",
+      ),
       outputRoot: tempRoot,
       llm: { client, bundle },
       generation: { diversityPasses: 1 },
@@ -4484,11 +4478,9 @@ void test("Issue #1940: runFigmaToQcTestCases dispatches the optional a11yJudge 
     const result = await runFigmaToQcTestCases({
       jobId: "job-1940-a11y-runner",
       generatedAt: "2026-05-06T10:00:00Z",
-      source: {
-        kind: "figma_url",
-        figmaUrl: "https://www.figma.com/design/ABC/Test-View-03?node-id=1-1",
-        accessToken: "figd_test",
-      },
+      source: figmaUrlSource(
+        "https://www.figma.com/design/ABC/Test-View-03?node-id=1-1",
+      ),
       outputRoot: tempRoot,
       llm: { client: bundle.testGeneration, bundle },
     });
@@ -4654,11 +4646,9 @@ void test("Issue #1951: runFigmaToQcTestCases blocks when a11y_judge reports scr
     const result = await runFigmaToQcTestCases({
       jobId: "job-1951-a11y-runner",
       generatedAt: "2026-05-06T10:30:00Z",
-      source: {
-        kind: "figma_url",
-        figmaUrl: "https://www.figma.com/design/ABC/Test-View-03?node-id=1-1",
-        accessToken: "figd_test",
-      },
+      source: figmaUrlSource(
+        "https://www.figma.com/design/ABC/Test-View-03?node-id=1-1",
+      ),
       outputRoot: tempRoot,
       llm: { client: bundle.testGeneration, bundle },
     });
@@ -4882,11 +4872,9 @@ void test("Issue #1998: runFigmaToQcTestCases persists agent participation with 
     const result = await runFigmaToQcTestCases({
       jobId: "job-1998-participation-success",
       generatedAt: "2026-05-07T10:00:00Z",
-      source: {
-        kind: "figma_url",
-        figmaUrl: "https://www.figma.com/design/ABC/Test-View-03?node-id=1-1",
-        accessToken: "figd_test",
-      },
+      source: figmaUrlSource(
+        "https://www.figma.com/design/ABC/Test-View-03?node-id=1-1",
+      ),
       outputRoot: tempRoot,
       llm: { client: bundle.testGeneration, bundle },
       roleConfigurationSources: {
@@ -5379,12 +5367,9 @@ void test("Issue #1929: runFigmaToQcTestCases preserves all 9 initial logic/fait
         const result = await runFigmaToQcTestCases({
           jobId: `job-1929-${logicVerdict}-${faithfulnessVerdict}`,
           generatedAt: "2026-05-06T12:00:00Z",
-          source: {
-            kind: "figma_url",
-            figmaUrl:
-              "https://www.figma.com/design/ABC/Test-View-03?node-id=1-1",
-            accessToken: "figd_test",
-          },
+          source: figmaUrlSource(
+            "https://www.figma.com/design/ABC/Test-View-03?node-id=1-1",
+          ),
           outputRoot: tempRoot,
           llm: { client, bundle },
           generation: { diversityPasses: 1 },
@@ -5580,11 +5565,9 @@ void test("generation replay hits do not let stochastic faithfulness repair muta
     const first = await runFigmaToQcTestCases({
       jobId: "job-replay-faithfulness-1",
       generatedAt: "2026-05-06T12:00:00Z",
-      source: {
-        kind: "figma_url",
-        figmaUrl: "https://www.figma.com/design/ABC/Test-View-03?node-id=1-1",
-        accessToken: "figd_test",
-      },
+      source: figmaUrlSource(
+        "https://www.figma.com/design/ABC/Test-View-03?node-id=1-1",
+      ),
       outputRoot: tempRoot,
       llm: { client, bundle },
       generation: { diversityPasses: 1 },
@@ -5606,11 +5589,9 @@ void test("generation replay hits do not let stochastic faithfulness repair muta
     const second = await runFigmaToQcTestCases({
       jobId: "job-replay-faithfulness-2",
       generatedAt: "2026-05-06T12:00:00Z",
-      source: {
-        kind: "figma_url",
-        figmaUrl: "https://www.figma.com/design/ABC/Test-View-03?node-id=1-1",
-        accessToken: "figd_test",
-      },
+      source: figmaUrlSource(
+        "https://www.figma.com/design/ABC/Test-View-03?node-id=1-1",
+      ),
       outputRoot: tempRoot,
       llm: { client, bundle },
       generation: { diversityPasses: 1 },
@@ -5724,11 +5705,9 @@ void test("Issue #2069: both_sidecars_failed emits a blocking job-level refusal 
     const result = await runFigmaToQcTestCases({
       jobId: "job-1772-refusal",
       generatedAt: "2026-05-03T10:00:00Z",
-      source: {
-        kind: "figma_url",
-        figmaUrl: "https://www.figma.com/design/ABC/Test-View-03?node-id=1-1",
-        accessToken: "figd_test",
-      },
+      source: figmaUrlSource(
+        "https://www.figma.com/design/ABC/Test-View-03?node-id=1-1",
+      ),
       outputRoot: tempRoot,
       llm: { client, bundle },
       events: (event) =>
@@ -5945,11 +5924,9 @@ void test("Issue #2069: persisted visual-primary breaker skips primary on the ne
       runFigmaToQcTestCases({
         jobId,
         generatedAt: "2026-05-08T10:00:00Z",
-        source: {
-          kind: "figma_url",
-          figmaUrl: "https://www.figma.com/design/ABC/Test-View-03?node-id=1-1",
-          accessToken: "figd_test",
-        },
+        source: figmaUrlSource(
+          "https://www.figma.com/design/ABC/Test-View-03?node-id=1-1",
+        ),
         outputRoot: tempRoot,
         llm: { client, bundle },
       });

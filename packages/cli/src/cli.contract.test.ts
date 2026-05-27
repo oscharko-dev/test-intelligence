@@ -11,7 +11,7 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -79,6 +79,9 @@ void test("cli contract: --help prints the flat command surface and exits 0", as
   for (const command of [
     "run",
     "doctor",
+    "start",
+    "stop",
+    "init",
     "audit-dossier",
     "audit-verify",
     "verify-provenance",
@@ -232,6 +235,96 @@ void test("cli contract: figma-export --help prints export flags", async () => {
   const result = await runCli({ args: ["figma-export", "--help"] });
   assert.equal(result.exitCode, 0);
   assert.match(result.stdout, /figma-export/i);
+});
+
+void test("cli contract: init --help prints init options", async () => {
+  const result = await runCli({ args: ["init", "--help"] });
+  assert.equal(result.exitCode, 0);
+  assert.match(result.stdout, /test-intelligence init/);
+  assert.match(result.stdout, /--workspace=/);
+  assert.match(result.stdout, /--overwrite/);
+});
+
+void test("cli contract: init fails when package.json is missing", async () => {
+  const workspaceRoot = await mkdtemp(path.join(tmpdir(), "ti-cli-init-missing-"));
+  try {
+    const result = await runCli({
+      args: ["init", `--workspace=${workspaceRoot}`],
+    });
+    assert.equal(result.exitCode, 1);
+    assert.match(result.stderr, /Could not read/);
+    assert.match(result.stderr, /package.json/);
+  } finally {
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
+void test("cli contract: init writes start/stop scripts when absent", async () => {
+  const workspaceRoot = await mkdtemp(path.join(tmpdir(), "ti-cli-init-write-"));
+  const packageJsonPath = path.join(workspaceRoot, "package.json");
+  const initial = {
+    name: "ti-init-fixture",
+    version: "1.0.0",
+    scripts: {
+      test: "pnpm test",
+    },
+  };
+  await writeFile(packageJsonPath, `${JSON.stringify(initial, null, 2)}\n`, "utf8");
+
+  try {
+    const result = await runCli({
+      args: ["init", `--workspace=${workspaceRoot}`],
+    });
+    assert.equal(result.exitCode, 0);
+    const updated = JSON.parse(await readFile(packageJsonPath, "utf8")) as {
+      scripts?: { [key: string]: string };
+    };
+    assert.equal(updated.scripts?.["test-intelligence:start"], "test-intelligence start");
+    assert.equal(updated.scripts?.["test-intelligence:stop"], "test-intelligence stop");
+    assert.match(result.stdout, /Done\. You can now start and stop the Workbench/);
+  } finally {
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
+void test("cli contract: init refuses to overwrite existing scripts unless --overwrite is set", async () => {
+  const workspaceRoot = await mkdtemp(path.join(tmpdir(), "ti-cli-init-conflict-"));
+  const packageJsonPath = path.join(workspaceRoot, "package.json");
+  const initial = {
+    name: "ti-init-conflict-fixture",
+    version: "1.0.0",
+    scripts: {
+      "test-intelligence:start": "echo custom-start",
+      "test-intelligence:stop": "echo custom-stop",
+    },
+  };
+  await writeFile(packageJsonPath, `${JSON.stringify(initial, null, 2)}\n`, "utf8");
+
+  try {
+    const result = await runCli({
+      args: ["init", `--workspace=${workspaceRoot}`],
+    });
+    assert.equal(result.exitCode, 1);
+    assert.match(result.stderr, /Refusing to overwrite existing scripts/);
+
+    const resultWithOverwrite = await runCli({
+      args: ["init", `--workspace=${workspaceRoot}`, "--overwrite"],
+    });
+    assert.equal(resultWithOverwrite.exitCode, 0);
+    const updated = JSON.parse(await readFile(packageJsonPath, "utf8")) as {
+      scripts?: { [key: string]: string };
+    };
+    assert.equal(
+      updated.scripts?.["test-intelligence:start"],
+      "test-intelligence start",
+    );
+    assert.equal(
+      updated.scripts?.["test-intelligence:stop"],
+      "test-intelligence stop",
+    );
+  } finally {
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
 });
 
 void test("cli contract: run without feature gate exits 1 with a clear error", async () => {

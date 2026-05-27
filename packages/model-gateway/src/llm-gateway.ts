@@ -20,7 +20,11 @@
  *     when structured outputs are unsupported) reaches the caller.
  */
 
+import type { IncomingHttpHeaders } from "node:http";
+import { readFile } from "node:fs/promises";
+import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import * as net from "node:net";
+import { getCACertificates } from "node:tls";
 
 import { sanitizeErrorMessage } from "@oscharko-dev/ti-security";
 import { redactHighRiskSecrets } from "@oscharko-dev/ti-security";
@@ -96,6 +100,8 @@ export type LlmGatewayApiKeyProvider = () =>
 
 export interface LlmGatewayRuntime {
   fetchImpl?: typeof fetch;
+  /** Optional PEM CA bundle for enterprise TLS interception. */
+  caCertPath?: string;
   clock?: LlmCircuitClock;
   /** Source of the API key for `api_key` / `bearer_token` auth modes. */
   apiKeyProvider?: LlmGatewayApiKeyProvider;
@@ -191,7 +197,8 @@ export const createLlmGatewayClient = (
 ): LlmGatewayClient => {
   validateConfig(config);
 
-  const fetchImpl = runtime.fetchImpl ?? globalThis.fetch.bind(globalThis);
+  const fetchImpl =
+    runtime.fetchImpl ?? createTrustedGatewayFetch(runtime.caCertPath);
   const sleep = runtime.sleep ?? defaultSleep;
   const backoff = runtime.retryBackoffMs ?? DEFAULT_BACKOFF_MS;
   const defaultConstrainedDecoding = resolveConstrainedDecodingMetadata({
@@ -293,12 +300,7 @@ export const createLlmGatewayClient = (
         result = {
           outcome: "error",
           errorClass: "transport",
-          message: redactBoundedMessage(
-            sanitizeErrorMessage({
-              error: err,
-              fallback: "transport failure",
-            }),
-          ),
+          message: normalizeLlmTransportErrorMessage(err),
           retryable: true,
           attempt,
         };
@@ -636,6 +638,155 @@ const isAbortLikeError = (err: unknown): boolean =>
   err instanceof Error &&
   (err.name === "AbortError" || /aborted/i.test(err.message));
 
+const headersToRecord = (
+  headers: RequestInit["headers"] | undefined,
+): Record<string, string> => {
+  if (headers === undefined) return {};
+  if (headers instanceof Headers) {
+    const out: Record<string, string> = {};
+    headers.forEach((value, key) => {
+      out[key] = value;
+    });
+    return out;
+  }
+  if (Array.isArray(headers)) {
+    return Object.fromEntries(headers.map(([key, value]) => [key, value]));
+  }
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(
+    headers as Record<string, string | readonly string[] | undefined>,
+  )) {
+    if (value === undefined) continue;
+    out[key] = typeof value === "string" ? value : value.join(", ");
+  }
+  return out;
+};
+
+const responseHeadersToRecord = (
+  headers: IncomingHttpHeaders,
+): Record<string, string> => {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    if (value === undefined) continue;
+    out[key] = Array.isArray(value) ? value.join(", ") : String(value);
+  }
+  return out;
+};
+
+const resolveRequestUrl = (input: string | URL | Request): URL => {
+  if (input instanceof URL) return input;
+  if (typeof input === "string") return new URL(input);
+  return new URL(input.url);
+};
+
+const resolveRequestBody = (
+  input: string | URL | Request,
+  init: RequestInit | undefined,
+): Buffer | undefined => {
+  const body = init?.body;
+  if (body === undefined || body === null) {
+    if (input instanceof Request && input.body !== null) {
+      throw new TypeError("custom CA gateway fetch requires init.body");
+    }
+    return undefined;
+  }
+  if (typeof body === "string") return Buffer.from(body);
+  if (body instanceof URLSearchParams) return Buffer.from(body.toString());
+  if (body instanceof ArrayBuffer) return Buffer.from(body);
+  if (ArrayBuffer.isView(body)) {
+    return Buffer.from(body.buffer, body.byteOffset, body.byteLength);
+  }
+  if (body instanceof Blob) {
+    throw new TypeError("custom CA gateway fetch does not support Blob bodies");
+  }
+  throw new TypeError("custom CA gateway fetch received unsupported body type");
+};
+
+const readRuntimeCaBundlePath = (
+  caCertPath: string | undefined,
+): string | undefined => {
+  const configured =
+    caCertPath?.trim() || process.env.NODE_EXTRA_CA_CERTS?.trim();
+  return configured === undefined || configured.length === 0
+    ? undefined
+    : configured;
+};
+
+const loadGatewayCaCertificates = async (
+  caCertPath: string | undefined,
+): Promise<string[]> => {
+  const certificates = new Set<string>();
+  for (const source of ["default", "system"] as const) {
+    for (const certificate of getCACertificates(source)) {
+      if (certificate.trim().length > 0) certificates.add(certificate);
+    }
+  }
+  const runtimeCaBundlePath = readRuntimeCaBundlePath(caCertPath);
+  if (runtimeCaBundlePath !== undefined) {
+    certificates.add(await readFile(runtimeCaBundlePath, "utf8"));
+  }
+  return [...certificates];
+};
+
+const createTrustedGatewayFetch = (
+  caCertPath: string | undefined,
+): typeof fetch => {
+  const agentPromise = loadGatewayCaCertificates(caCertPath).then(
+    (ca) => new HttpsAgent({ ca, keepAlive: true, maxSockets: 32 }),
+  );
+  return (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = resolveRequestUrl(input);
+    const request = input instanceof Request ? input : undefined;
+    if (url.protocol !== "https:") {
+      throw new TypeError(
+        `custom CA gateway fetch only supports https URLs: ${url.protocol}`,
+      );
+    }
+    const body = resolveRequestBody(input, init);
+    const agent = await agentPromise;
+    return await new Promise<Response>((resolve, reject) => {
+      const req = httpsRequest(
+        url,
+        {
+          agent,
+          headers: headersToRecord(init?.headers ?? request?.headers),
+          method: init?.method ?? request?.method ?? "GET",
+          signal: init?.signal ?? request?.signal ?? undefined,
+        },
+        (res) => {
+          const chunks: Buffer[] = [];
+          res.on("data", (chunk: Buffer | string) => {
+            chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          });
+          res.once("error", reject);
+          res.once("end", () => {
+            const status = res.statusCode ?? 0;
+            if (init?.redirect === "error" && status >= 300 && status <= 399) {
+              reject(new TypeError("redirect refused by fetch policy"));
+              return;
+            }
+            const responseInit: ResponseInit =
+              res.statusMessage === undefined
+                ? {
+                    headers: responseHeadersToRecord(res.headers),
+                    status,
+                  }
+                : {
+                    headers: responseHeadersToRecord(res.headers),
+                    status,
+                    statusText: res.statusMessage,
+                  };
+            resolve(new Response(Buffer.concat(chunks), responseInit));
+          });
+        },
+      );
+      req.once("error", reject);
+      if (body !== undefined) req.write(body);
+      req.end();
+    });
+  }) as typeof fetch;
+};
+
 const timeoutFailure = (input: {
   wallClockBudgetCausedTimeout: boolean;
   effectiveTimeoutMs: number;
@@ -750,9 +901,7 @@ const dispatchOnce = async ({
     return {
       outcome: "error",
       errorClass: "transport",
-      message: redactBoundedMessage(
-        sanitizeErrorMessage({ error: err, fallback: "transport failure" }),
-      ),
+      message: normalizeLlmTransportErrorMessage(err),
       ...(constrainedDecoding !== undefined ? { constrainedDecoding } : {}),
       retryable: true,
       attempt,
@@ -1700,6 +1849,40 @@ const redactBoundedMessage = (input: string): string => {
     .trim();
   if (redacted.length <= MAX_REDACTED_MESSAGE_LENGTH) return redacted;
   return `${redacted.slice(0, MAX_REDACTED_MESSAGE_LENGTH)}...`;
+};
+
+const TLS_LOCAL_ISSUER_CODES = new Set([
+  "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+  "SELF_SIGNED_CERT_IN_CHAIN",
+]);
+
+const getErrorCode = (input: unknown): string | undefined => {
+  if (typeof input !== "object" || input === null) return undefined;
+  const code = (input as { code?: unknown }).code;
+  return typeof code === "string" ? code : undefined;
+};
+
+const getErrorCause = (input: unknown): unknown =>
+  input instanceof Error ? input.cause : undefined;
+
+const isTlsTrustFailure = (input: unknown): boolean => {
+  const code = getErrorCode(input);
+  if (code !== undefined && TLS_LOCAL_ISSUER_CODES.has(code)) return true;
+  const cause = getErrorCause(input);
+  return cause === undefined ? false : isTlsTrustFailure(cause);
+};
+
+const normalizeLlmTransportErrorMessage = (input: unknown): string => {
+  if (isTlsTrustFailure(input)) {
+    return "LLM gateway TLS trust validation failed. Configure NODE_EXTRA_CA_CERTS or the Workbench NODE_EXTRA_CA_CERTS path with an operator-approved CA bundle.";
+  }
+  return redactBoundedMessage(
+    sanitizeErrorMessage({
+      error: input,
+      fallback: "LLM gateway transport failure",
+    }),
+  );
 };
 
 const validateConfig = (config: LlmGatewayClientConfig): void => {

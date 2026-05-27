@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
-import { access, mkdir, open, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { createConnection } from "node:net";
 import path from "node:path";
@@ -25,8 +25,18 @@ interface StopOptions {
   readonly workspaceRoot: string;
 }
 
+interface InitOptions {
+  readonly help?: boolean;
+  readonly overwrite: boolean;
+  readonly workspaceRoot: string;
+}
+
 const DEFAULT_PORT = 1983;
 const PORT_CHECK_TIMEOUT_MS = 2_000;
+const DEFAULT_INIT_COMMAND_START = "test-intelligence start";
+const DEFAULT_INIT_COMMAND_STOP = "test-intelligence stop";
+const INIT_SCRIPT_START = "test-intelligence:start";
+const INIT_SCRIPT_STOP = "test-intelligence:stop";
 
 export const TEST_INTELLIGENCE_WORKBENCH_START_HELP = `Start the local Test Intelligence Workbench UI from the installed package.
 
@@ -35,9 +45,9 @@ Usage:
 
 Options:
   --port=<port>         Workbench port. Default: 1983.
-  --workspace=<path>    Workspace for .env, test-case/, and .test-intelligence/. Default: current directory.
-  --env-file=<path>     Dotenv file to load before starting. Default: <workspace>/.env.
-  --no-env-file         Do not load a dotenv file.
+  --workspace=<path>    Workspace for test-case/, and .test-intelligence/. Default: current directory.
+  --env-file=<path>     Optional dotenv file to load before starting. Default: none.
+  --no-env-file         Disable loading a dotenv file.
   --mock                Start with WORKBENCH_RUNNER_MODE=mock for UI-only local runs.
   --help                Print this help.
 `;
@@ -51,6 +61,19 @@ Options:
   --workspace=<path>      Workspace containing .test-intelligence/local-runtime/. Default: current directory.
   --timeout=<seconds>     Seconds to wait after SIGTERM before SIGKILL. Default: 15.
   --help                  Print this help.
+`;
+
+export const TEST_INTELLIGENCE_WORKBENCH_INIT_HELP = `Create local convenience scripts for Workbench lifecycle management.
+
+Usage:
+  test-intelligence init [options]
+
+Options:
+  --workspace=<path>    Workspace containing package.json. Default: current directory.
+  --overwrite           Overwrite existing test-intelligence:start and test-intelligence:stop scripts.
+  --help                Print this help.
+
+By default, this command only writes scripts when they are absent.
 `;
 
 class WorkbenchCliError extends Error {}
@@ -115,7 +138,7 @@ const parseStartArgs = (argv: ReadonlyArray<string>): StartOptions => {
   }
 
   return {
-    envFile: envFile === undefined ? path.join(workspaceRoot, ".env") : envFile,
+    envFile: envFile === undefined ? null : envFile,
     help,
     mock,
     port,
@@ -170,6 +193,135 @@ const parseStopArgs = (argv: ReadonlyArray<string>): StopOptions => {
   }
 
   return { help, timeoutSeconds, workspaceRoot };
+};
+
+const parseInitArgs = (argv: ReadonlyArray<string>): InitOptions => {
+  let help = false;
+  let overwrite = false;
+  let workspaceRoot = resolveWorkspaceRoot(undefined);
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === undefined) continue;
+    if (arg === "--help" || arg === "-h") {
+      help = true;
+    } else if (arg === "--overwrite") {
+      overwrite = true;
+    } else if (arg === "--workspace") {
+      const value = argv[index + 1];
+      if (value === undefined) {
+        throw new WorkbenchCliError("Missing value for --workspace.");
+      }
+      workspaceRoot = resolveWorkspaceRoot(value);
+      index += 1;
+    } else if (arg.startsWith("--workspace=")) {
+      workspaceRoot = resolveWorkspaceRoot(arg.slice("--workspace=".length));
+    } else {
+      throw new WorkbenchCliError(`Unknown option: ${arg}`);
+    }
+  }
+
+  return { help, overwrite, workspaceRoot };
+};
+
+const readPackageManifest = async <T>(
+  packageJsonPath: string,
+): Promise<T> => {
+  const raw = await readFile(packageJsonPath, "utf8");
+  return JSON.parse(raw) as T;
+};
+
+const ensurePackageManagerScripts = async ({
+  workspaceRoot,
+  overwrite,
+  sink,
+}: {
+  readonly workspaceRoot: string;
+  readonly overwrite: boolean;
+  readonly sink: CommandSink;
+}): Promise<void> => {
+  const packageJsonPath = path.join(workspaceRoot, "package.json");
+
+  let manifest;
+  try {
+    manifest = await readPackageManifest<{
+      scripts?: Record<string, string>;
+      [key: string]: unknown;
+    }>(packageJsonPath);
+  } catch (error) {
+    throw new WorkbenchCliError(
+      `Could not read ${packageJsonPath}: ${String((error as Error).message)}.`,
+    );
+  }
+
+  if (typeof manifest !== "object" || manifest === null) {
+    throw new WorkbenchCliError(`${packageJsonPath} does not contain a JSON object.`);
+  }
+
+  const scripts = manifest.scripts;
+  if (typeof scripts !== "object" || scripts === null) {
+    manifest.scripts = {};
+  }
+
+  const updates: Array<{ key: string; value: string }> = [
+    { key: INIT_SCRIPT_START, value: DEFAULT_INIT_COMMAND_START },
+    { key: INIT_SCRIPT_STOP, value: DEFAULT_INIT_COMMAND_STOP },
+  ];
+
+  const conflicts = updates.filter(
+    (entry) =>
+      manifest.scripts?.[entry.key] !== undefined &&
+      manifest.scripts?.[entry.key] !== entry.value &&
+      overwrite === false,
+  );
+
+  if (conflicts.length > 0) {
+    throw new WorkbenchCliError(
+      `Refusing to overwrite existing scripts: ${conflicts.map((item) => item.key).join(", ")}. Use --overwrite to replace them.`,
+    );
+  }
+
+  let hasChanges = false;
+  for (const entry of updates) {
+    if (manifest.scripts?.[entry.key] === entry.value) {
+      continue;
+    }
+    if (manifest.scripts === undefined) {
+      manifest.scripts = {};
+    }
+    if (overwrite && manifest.scripts[entry.key] !== undefined) {
+      const from =
+        typeof manifest.scripts[entry.key] === "string"
+          ? manifest.scripts[entry.key]
+          : JSON.stringify(manifest.scripts[entry.key]);
+      sink.stdout(
+        `Overwriting script "${entry.key}" from "${from}" to "${entry.value}".\n`,
+      );
+    } else {
+      sink.stdout(`Adding script "${entry.key}".\n`);
+    }
+    manifest.scripts[entry.key] = entry.value;
+    hasChanges = true;
+  }
+
+  if (!hasChanges) {
+    sink.stdout("Local scripts are already up-to-date.\n");
+    return;
+  }
+
+  const tmpPackageJsonPath = `${packageJsonPath}.tmp`;
+  try {
+    await writeFile(
+      tmpPackageJsonPath,
+      `${JSON.stringify(manifest, null, 2)}\n`,
+      "utf8",
+    );
+    await rename(tmpPackageJsonPath, packageJsonPath);
+  } catch (error) {
+    await rm(tmpPackageJsonPath, { force: true });
+    throw error;
+  }
+  sink.stdout("Updated package.json with start/stop scripts.\n");
 };
 
 const resolvePackageRoot = (): string => {
@@ -253,6 +405,55 @@ const readManagedMeta = async (
   } catch {
     return null;
   }
+};
+
+const collectWorkspaceAncestors = (
+  workspaceRoot: string,
+): readonly string[] => {
+  const normalizedRoot = path.resolve(workspaceRoot);
+  const seen = new Set<string>();
+  const candidates: string[] = [];
+
+  let current = normalizedRoot;
+  while (!seen.has(current)) {
+    seen.add(current);
+    candidates.push(current);
+
+    const parent = path.dirname(current);
+    if (parent === current) {
+      break;
+    }
+    current = parent;
+  }
+
+  return candidates;
+};
+
+const resolveManagedRuntimeWorkspace = async (
+  workspaceRoot: string,
+): Promise<string | null> => {
+  const candidates = collectWorkspaceAncestors(workspaceRoot);
+  for (const candidate of candidates) {
+    const paths = runtimePaths(candidate);
+    const hasRuntimeDir = await pathExists(paths.runtimeDir);
+    if (!hasRuntimeDir) {
+      continue;
+    }
+
+    const pid = await readManagedPid(candidate);
+    if (pid !== null && isProcessRunning(pid)) {
+      return candidate;
+    }
+  }
+
+  for (const candidate of candidates) {
+    const paths = runtimePaths(candidate);
+    if (await pathExists(paths.pidFile) || (await pathExists(paths.metaFile))) {
+      return candidate;
+    }
+  }
+
+  return null;
 };
 
 const cleanupRuntimeState = async (workspaceRoot: string): Promise<void> => {
@@ -475,6 +676,8 @@ export const runWorkbenchStartCommand = async (
     ...dotenv,
     NEXT_TELEMETRY_DISABLED: "1",
     WORKBENCH_REPO_ROOT: options.workspaceRoot,
+    TEST_INTELLIGENCE_ENABLED: "1",
+    FIGMAPIPE_WORKSPACE_TEST_INTELLIGENCE: "1",
   };
   if (options.mock) {
     env.WORKBENCH_RUNNER_MODE = "mock";
@@ -581,8 +784,32 @@ export const runWorkbenchStopCommand = async (
     return 0;
   }
 
-  const pid = await readManagedPid(options.workspaceRoot);
-  const meta = await readManagedMeta(options.workspaceRoot);
+  const runtimeWorkspaceRoot = await resolveManagedRuntimeWorkspace(
+    options.workspaceRoot,
+  );
+  if (runtimeWorkspaceRoot === null) {
+    const listenerPids = describePortOwner(DEFAULT_PORT);
+    if (listenerPids !== null) {
+      sink.stdout(
+        `No managed local Workbench process found. Port ${DEFAULT_PORT} is in use by unmanaged process(es): ${listenerPids.join(", ")}\n`,
+      );
+      sink.stdout(
+        `Please free port ${DEFAULT_PORT} locally if you want to start the Workbench there.\n`,
+      );
+    } else {
+      sink.stdout("No managed local Workbench process found.\n");
+    }
+    return 0;
+  }
+
+  const pid = await readManagedPid(runtimeWorkspaceRoot);
+  const meta = await readManagedMeta(runtimeWorkspaceRoot);
+
+  if (runtimeWorkspaceRoot !== options.workspaceRoot) {
+    sink.stdout(
+      `Using managed runtime workspace: ${runtimeWorkspaceRoot}\n`,
+    );
+  }
   const managedPort =
     meta !== null && Number.isInteger(meta.port) ? Number(meta.port) : null;
   const targetPort = managedPort ?? DEFAULT_PORT;
@@ -603,12 +830,12 @@ export const runWorkbenchStopCommand = async (
     } else {
       sink.stdout("No managed local Workbench process found.\n");
     }
-    await cleanupRuntimeState(options.workspaceRoot);
+    await cleanupRuntimeState(runtimeWorkspaceRoot);
     return 0;
   }
 
   if (!isProcessRunning(pid)) {
-    await cleanupRuntimeState(options.workspaceRoot);
+    await cleanupRuntimeState(runtimeWorkspaceRoot);
     sink.stdout(
       `Managed Workbench process ${pid} is not running. Runtime state cleaned.\n`,
     );
@@ -641,7 +868,46 @@ export const runWorkbenchStopCommand = async (
     );
   }
 
-  await cleanupRuntimeState(options.workspaceRoot);
+  await cleanupRuntimeState(runtimeWorkspaceRoot);
   sink.stdout("Workbench stopped.\n");
   return 0;
+};
+
+export const runWorkbenchInitCommand = async (
+  argv: ReadonlyArray<string>,
+  sink: CommandSink,
+): Promise<number> => {
+  let options: InitOptions;
+  try {
+    options = parseInitArgs(argv);
+  } catch (error) {
+    if (error instanceof WorkbenchCliError) {
+      sink.stderr(`error: ${error.message}\n`);
+      return 1;
+    }
+    throw error;
+  }
+
+  if (options.help) {
+    sink.stdout(TEST_INTELLIGENCE_WORKBENCH_INIT_HELP);
+    return 0;
+  }
+
+  try {
+    await ensurePackageManagerScripts({
+      workspaceRoot: options.workspaceRoot,
+      overwrite: options.overwrite,
+      sink,
+    });
+    sink.stdout("Done. You can now start and stop the Workbench with:\n");
+    sink.stdout("  npm run test-intelligence:start\n");
+    sink.stdout("  npm run test-intelligence:stop\n");
+    return 0;
+  } catch (error) {
+    if (error instanceof WorkbenchCliError) {
+      sink.stderr(`error: ${error.message}\n`);
+      return 1;
+    }
+    throw error;
+  }
 };

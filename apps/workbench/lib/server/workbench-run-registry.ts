@@ -284,6 +284,9 @@ const buildLlmConfig = (
   };
   const bundle = createProductionTopologyClientBundle(bundleInput, {
     apiKeyProvider: () => prepared.env.apiKey,
+    ...(prepared.caCertPath !== undefined
+      ? { caCertPath: prepared.caCertPath }
+      : {}),
   });
   const llm: ProductionRunnerLlmConfig = {
     client: bundle.testGeneration,
@@ -579,10 +582,18 @@ const executeRealRun = async (
       kind: "figma_url",
       figmaUrl: prepared.config.figmaUrl,
       accessToken: prepared.env.figmaToken,
+      ...(prepared.caCertPath !== undefined
+        ? { caCertPath: prepared.caCertPath }
+        : {}),
     },
     outputRoot: resolvedOutputRoot,
     artifactDir: safeArtifactDir,
     llm: buildLlmConfig(prepared),
+    regionAttestation: {
+      pinnedRegion: prepared.env.regionAttestedRegion,
+      sovereignSource: prepared.env.regionAttestationSovereignSource,
+      signingKey: prepared.env.regionAttestationSigningKey,
+    },
     events: handleRunnerEvent(prepared.jobId),
   };
   if (prepared.customContextMarkdown !== undefined) {

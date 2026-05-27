@@ -1,7 +1,7 @@
 "use client";
 
 import { Check, Download, Lock } from "lucide-react";
-import type { FormEvent, ReactNode } from "react";
+import { useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { Badge } from "@/components/primitives/Badge";
 import { Panel } from "@/components/primitives/Panel";
 import { SecretField } from "@/components/primitives/SecretField";
@@ -10,17 +10,32 @@ import { TextField } from "@/components/primitives/TextField";
 import {
   SETTINGS_GROUPS,
   exportEnv,
+  validateSettings,
   type SettingsKey,
 } from "@/lib/settings-state";
 import { cx, ui } from "@/lib/ui-classes";
 import { useWorkbench } from "@/lib/workbench-context";
+import { CredentialSetupPanel } from "./CredentialSetupPanel";
 
 export function SettingsScreen(): ReactNode {
-  const { settings, dispatchSettings, settingsDirty } = useWorkbench();
+  const {
+    settings,
+    dispatchSettings,
+    discardSettings,
+    saveSettings,
+    settingsDirty,
+    settingsError,
+    settingsLoaded,
+    settingsSaving,
+  } = useWorkbench();
+  const [notice, setNotice] = useState<string | null>(null);
+  const issues = useMemo(() => validateSettings(settings), [settings]);
 
   const handleSubmit = (e: FormEvent<HTMLFormElement>): void => {
     e.preventDefault();
-    dispatchSettings({ type: "commit" });
+    void saveSettings().then((ok) => {
+      setNotice(ok ? "Settings saved locally." : null);
+    });
   };
 
   const exportFile = (): void => {
@@ -42,10 +57,22 @@ export function SettingsScreen(): ReactNode {
       <div className={ui.screen.head}>
         <h2 className={ui.screen.title}>Model gateway settings</h2>
         <Badge variant="neutral">.env-backed</Badge>
+        {!settingsLoaded && <Badge variant="neutral">loading</Badge>}
+        {issues.length > 0 && <Badge variant="danger">required</Badge>}
         {settingsDirty && <Badge variant="warn">unsaved</Badge>}
         <span className={ui.screen.spacer} />
-        <span className={ui.screen.meta}>local draft values</span>
+        <span className={ui.screen.meta}>local persisted values</span>
       </div>
+
+      {(issues.length > 0 || settingsError !== null) && (
+        <CredentialSetupPanel issues={issues} />
+      )}
+
+      {notice !== null && settingsError === null && (
+        <div className="rounded-md border border-[hsl(142_40%_26%)] bg-[hsl(142_40%_10%_/_0.45)] px-2.5 py-2 font-mono text-[11px] text-success">
+          {notice}
+        </div>
+      )}
 
       {SETTINGS_GROUPS.map((g) => (
         <Panel key={g.id} title={g.title} description={g.description}>
@@ -95,6 +122,7 @@ export function SettingsScreen(): ReactNode {
                       {...(f.placeholder !== undefined
                         ? { placeholder: f.placeholder }
                         : {})}
+                      {...(f.helper !== undefined ? { hint: f.helper } : {})}
                     />
                   </div>
                 );
@@ -117,6 +145,7 @@ export function SettingsScreen(): ReactNode {
                     {...(f.placeholder !== undefined
                       ? { placeholder: f.placeholder }
                       : {})}
+                    {...(f.helper !== undefined ? { hint: f.helper } : {})}
                   />
                 </div>
               );
@@ -136,7 +165,8 @@ export function SettingsScreen(): ReactNode {
           className={cx(ui.button.base, ui.button.ghost)}
           disabled={!settingsDirty}
           onClick={() => {
-            dispatchSettings({ type: "discard" });
+            discardSettings();
+            setNotice(null);
           }}
         >
           Discard changes
@@ -147,9 +177,10 @@ export function SettingsScreen(): ReactNode {
         <button
           type="submit"
           className={cx(ui.button.base, ui.button.primary)}
-          disabled={!settingsDirty}
+          disabled={!settingsDirty || settingsSaving}
         >
-          <Check size={14} aria-hidden focusable={false} /> Save
+          <Check size={14} aria-hidden focusable={false} />{" "}
+          {settingsSaving ? "Saving" : "Save"}
         </button>
       </div>
     </form>

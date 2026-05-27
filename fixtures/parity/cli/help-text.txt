@@ -11,6 +11,7 @@ Generation:
 Workbench:
   start              Start the local Workbench UI from the installed package.
   stop               Stop the managed local Workbench UI process.
+  init               Add Workbench start/stop scripts to a host package.json.
 
 Human oversight (DSGVO Art. 22 / EU AI Act Art. 14):
   review list|get|decide

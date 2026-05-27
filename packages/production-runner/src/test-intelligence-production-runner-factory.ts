@@ -26,6 +26,10 @@ import {
   type ProductionRunnerSource,
 } from "./production-runner.js";
 import { PRODUCTION_FINOPS_BUDGET_ENVELOPE } from "@oscharko-dev/ti-model-gateway";
+import {
+  SUPPORTED_REGION_ATTESTATION_HOSTING_REGIONS,
+  type RegionAttestationHostingRegion,
+} from "@oscharko-dev/ti-contracts";
 import type { ProductionRunnerEventSink } from "./production-runner-events.js";
 import { type LlmGatewayClientBundle } from "@oscharko-dev/ti-model-gateway";
 import { createProductionTopologyClientBundle } from "@oscharko-dev/ti-model-gateway";
@@ -92,6 +96,10 @@ export interface ResolvedLlmConfig {
   coveragePlannerDeployment?: string;
   riskRankerDeployment?: string;
   apiKey: string;
+  caCertPath?: string;
+  regionAttestedRegion?: RegionAttestationHostingRegion;
+  regionAttestationSovereignSource?: boolean;
+  regionAttestationSigningKey?: string;
 }
 
 const readTrimmed = (
@@ -103,6 +111,29 @@ const readTrimmed = (
   const trimmed = raw.trim();
   return trimmed.length > 0 ? trimmed : undefined;
 };
+
+const readBoolean = (
+  env: NodeJS.ProcessEnv,
+  key: string,
+): boolean | undefined => {
+  const raw = readTrimmed(env, key)?.toLowerCase();
+  if (raw === undefined) return undefined;
+  if (["1", "true", "yes", "on"].includes(raw)) return true;
+  if (["0", "false", "no", "off"].includes(raw)) return false;
+  return undefined;
+};
+
+const SUPPORTED_REGION_ATTESTATION_HOSTING_REGION_SET = new Set<string>(
+  SUPPORTED_REGION_ATTESTATION_HOSTING_REGIONS,
+);
+
+const supportedRegion = (
+  value: string | undefined,
+): RegionAttestationHostingRegion | undefined =>
+  value !== undefined &&
+  SUPPORTED_REGION_ATTESTATION_HOSTING_REGION_SET.has(value)
+    ? (value as RegionAttestationHostingRegion)
+    : undefined;
 
 const resolveApiKeyFromEnv = (env: NodeJS.ProcessEnv): string | undefined => {
   return readTrimmed(env, "TEST_INTELLIGENCE_LLM_API_KEY");
@@ -162,6 +193,17 @@ export const resolveLlmConfigFromEnv = (
     env,
     "TEST_INTELLIGENCE_RISK_RANKER_DEPLOYMENT",
   );
+  const caCertPath = readTrimmed(env, "NODE_EXTRA_CA_CERTS");
+  const regionAttestedRegion = supportedRegion(
+    readTrimmed(env, "TEST_INTELLIGENCE_REGION_ATTESTED_REGION"),
+  );
+  const regionAttestationSovereignSource = readBoolean(
+    env,
+    "TEST_INTELLIGENCE_REGION_ATTESTATION_SOVEREIGN_SOURCE",
+  );
+  const regionAttestationSigningKey =
+    readTrimmed(env, "TEST_INTELLIGENCE_REGION_ATTESTATION_SIGNING_KEY") ??
+    readTrimmed(env, "WORKSPACE_TEST_SPACE_REGION_ATTESTATION_SIGNING_KEY");
   return {
     endpoint,
     deployment,
@@ -174,6 +216,14 @@ export const resolveLlmConfigFromEnv = (
       ? { coveragePlannerDeployment }
       : {}),
     ...(riskRankerDeployment !== undefined ? { riskRankerDeployment } : {}),
+    ...(caCertPath !== undefined ? { caCertPath } : {}),
+    ...(regionAttestedRegion !== undefined ? { regionAttestedRegion } : {}),
+    ...(regionAttestationSovereignSource !== undefined
+      ? { regionAttestationSovereignSource }
+      : {}),
+    ...(regionAttestationSigningKey !== undefined
+      ? { regionAttestationSigningKey }
+      : {}),
     apiKey,
   };
 };
@@ -205,6 +255,9 @@ const defaultBuildLlmBundle = (
     },
     {
       apiKeyProvider: () => config.apiKey,
+      ...(config.caCertPath !== undefined
+        ? { caCertPath: config.caCertPath }
+        : {}),
     },
   );
 
@@ -223,6 +276,7 @@ export const resolveTestIntelligenceProductionRunner = (
   const buildLlmBundle = input.buildLlmBundle ?? defaultBuildLlmBundle;
   const runner = input.runner ?? runFigmaToQcTestCases;
   let cachedBundle: LlmGatewayClientBundle | undefined;
+  let cachedConfig: ResolvedLlmConfig | undefined;
 
   // One-shot startup log: announce the active FinOps envelope so an
   // operator reading `journalctl` can confirm what cost ceiling the
@@ -239,6 +293,7 @@ export const resolveTestIntelligenceProductionRunner = (
     if (cachedBundle === undefined) {
       const config = resolveLlmConfigFromEnv(input.env);
       cachedBundle = buildLlmBundle(config);
+      cachedConfig = config;
       input.logger?.log({
         level: "info",
         event: "test_intelligence_runner_wired",
@@ -259,6 +314,26 @@ export const resolveTestIntelligenceProductionRunner = (
         maxOutputTokens: TEST_GENERATION_MAX_OUTPUT_TOKENS,
         maxWallClockMs: TEST_GENERATION_TIMEOUT_MS,
       },
+      ...(cachedConfig?.regionAttestedRegion !== undefined ||
+      cachedConfig?.regionAttestationSovereignSource !== undefined ||
+      cachedConfig?.regionAttestationSigningKey !== undefined
+        ? {
+            regionAttestation: {
+              ...(cachedConfig.regionAttestedRegion !== undefined
+                ? { pinnedRegion: cachedConfig.regionAttestedRegion }
+                : {}),
+              ...(cachedConfig.regionAttestationSovereignSource !== undefined
+                ? {
+                    sovereignSource:
+                      cachedConfig.regionAttestationSovereignSource,
+                  }
+                : {}),
+              ...(cachedConfig.regionAttestationSigningKey !== undefined
+                ? { signingKey: cachedConfig.regionAttestationSigningKey }
+                : {}),
+            },
+          }
+        : {}),
       ...(factoryInput.events !== undefined
         ? { events: factoryInput.events }
         : {}),
