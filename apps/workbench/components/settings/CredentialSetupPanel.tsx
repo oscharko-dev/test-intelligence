@@ -77,8 +77,8 @@ export function CredentialSetupPanel({
             mono
             value={importPath}
             onChange={setImportPath}
-            placeholder="/Users/.../test-intelligence.env"
-            hint="Local filesystem path read by the Workbench process."
+            placeholder=".env.local"
+            hint="Workspace-local path read by the Workbench process."
           />
         </div>
         <button

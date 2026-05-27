@@ -116,7 +116,7 @@ export interface FetchFigmaFileForTestIntelligenceInput {
   fileKey: string;
   accessToken: string;
   nodeId?: string;
-  /** Override for tests; defaults to `globalThis.fetch`. */
+  /** Override for tests; production defaults to the hardened trusted fetch. */
   fetchImpl?: typeof fetch;
   /** Optional PEM CA bundle for enterprise TLS interception. */
   caCertPath?: string;

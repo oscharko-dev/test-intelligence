@@ -178,7 +178,7 @@ describe("prepareWorkbenchRun", () => {
         "FIGMA_ACCESS_TOKEN=alias-figma-token",
         "WORKSPACE_TEST_SPACE_REGION_ATTESTATION_SIGNING_KEY=alias-signing-key",
         "WORKSPACE_TEST_SPACE_TESTCASE_MODEL_DEPLOYMENT=gpt-oss-120b-prod",
-        "NODE_EXTRA_CA_CERTS=/etc/ssl/cert.pem",
+        "NODE_EXTRA_CA_CERTS=.test-intelligence/trust/cert.pem",
       ].join("\n"),
       settingsEnv,
     );
@@ -200,12 +200,15 @@ describe("prepareWorkbenchRun", () => {
     expect(settings.TEST_INTELLIGENCE_REGION_ATTESTATION_SIGNING_KEY).toBe(
       "alias-signing-key",
     );
-    expect(settings.NODE_EXTRA_CA_CERTS).toBe("/etc/ssl/cert.pem");
+    expect(settings.NODE_EXTRA_CA_CERTS).toBe(
+      ".test-intelligence/trust/cert.pem",
+    );
   });
 
   test("imports settings from a local .env path", async () => {
     const repoRoot = await tempWorkspace();
-    const envFile = path.join(repoRoot, "customer.env");
+    const envRelativePath = "customer.env";
+    const envFile = path.join(repoRoot, envRelativePath);
     await writeFile(
       envFile,
       [
@@ -218,7 +221,7 @@ describe("prepareWorkbenchRun", () => {
     );
 
     const settings = await importWorkbenchSettingsFromEnvPath(
-      envFile,
+      envRelativePath,
       env({ WORKBENCH_REPO_ROOT: repoRoot }),
     );
 
@@ -232,6 +235,16 @@ describe("prepareWorkbenchRun", () => {
     expect(settings.TEST_INTELLIGENCE_REGION_ATTESTATION_SIGNING_KEY).toBe(
       "path-signing-key",
     );
+  });
+
+  test("rejects .env path import outside the Workbench workspace", async () => {
+    const repoRoot = await tempWorkspace();
+    await expect(
+      importWorkbenchSettingsFromEnvPath(
+        path.join(os.tmpdir(), "customer.env"),
+        env({ WORKBENCH_REPO_ROOT: repoRoot }),
+      ),
+    ).rejects.toThrow(/relative to the Workbench workspace/u);
   });
 
   test("does not override env with unchanged baseline settings", async () => {
@@ -285,6 +298,7 @@ describe("prepareWorkbenchRun", () => {
     const repoRoot = await tempWorkspace();
     vi.stubEnv("WORKBENCH_REPO_ROOT", repoRoot);
     const caPath = path.join(repoRoot, "corp-ca.pem");
+    const caRelativePath = "corp-ca.pem";
     await writeFile(
       caPath,
       "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n",
@@ -294,7 +308,7 @@ describe("prepareWorkbenchRun", () => {
     const prepared = await prepareWorkbenchRun({
       body: {
         ...baseRunBody,
-        caCerts: caPath,
+        caCerts: caRelativePath,
       },
       env: env({
         FIGMAPIPE_WORKSPACE_TEST_INTELLIGENCE: "1",
@@ -313,6 +327,7 @@ describe("prepareWorkbenchRun", () => {
     const repoRoot = await tempWorkspace();
     vi.stubEnv("WORKBENCH_REPO_ROOT", repoRoot);
     const caPath = path.join(repoRoot, "corp-ca.pem");
+    const caRelativePath = "corp-ca.pem";
     await writeFile(
       caPath,
       "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n",
@@ -323,7 +338,7 @@ describe("prepareWorkbenchRun", () => {
       body: {
         ...baseRunBody,
         settings: {
-          NODE_EXTRA_CA_CERTS: caPath,
+          NODE_EXTRA_CA_CERTS: caRelativePath,
         },
       },
       env: env({
@@ -347,6 +362,30 @@ describe("prepareWorkbenchRun", () => {
         body: {
           ...baseRunBody,
           caCerts: path.join(repoRoot, "missing-ca.pem"),
+        },
+        env: env({
+          FIGMAPIPE_WORKSPACE_TEST_INTELLIGENCE: "1",
+          TEST_INTELLIGENCE_MODEL_ENDPOINT: "https://env.test/model",
+          TEST_INTELLIGENCE_LLM_API_KEY: "env-key",
+          FIGMA_ACCESS_TOKEN: "env-figma-token",
+          TEST_INTELLIGENCE_REGION_ATTESTATION_SIGNING_KEY: "env-signing-key",
+        }),
+        now: new Date("2026-05-25T10:15:30.000Z"),
+      }),
+    ).rejects.toMatchObject({
+      code: "RUN_CONFIG_INVALID",
+      status: 400,
+    });
+  });
+
+  test("rejects an absolute per-run CA bundle path", async () => {
+    const repoRoot = await tempWorkspace();
+    vi.stubEnv("WORKBENCH_REPO_ROOT", repoRoot);
+    await expect(
+      prepareWorkbenchRun({
+        body: {
+          ...baseRunBody,
+          caCerts: path.join(repoRoot, "corp-ca.pem"),
         },
         env: env({
           FIGMAPIPE_WORKSPACE_TEST_INTELLIGENCE: "1",

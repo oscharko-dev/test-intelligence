@@ -66,6 +66,7 @@ const URL_FIELDS: readonly SettingsKey[] = [
 ];
 
 const PATH_FIELDS: readonly SettingsKey[] = ["NODE_EXTRA_CA_CERTS"];
+const WINDOWS_ABSOLUTE_PATH = /^(?:[A-Za-z]:[\\/]|\\\\)/u;
 
 export type SettingsAction =
   | { type: "set"; key: SettingsKey; value: SettingsValue }
@@ -128,11 +129,19 @@ export function validateSettings(values: Settings): ValidationIssue[] {
   for (const key of PATH_FIELDS) {
     const v = values[key];
     if (typeof v !== "string" || v.trim().length === 0) continue;
-    if (!/^([./]|[a-zA-Z]:[\\/]|\$\{?\w+\}?)/u.test(v.trim())) {
+    const trimmed = v.trim();
+    if (
+      trimmed.startsWith("..") ||
+      trimmed.includes("/../") ||
+      trimmed.includes("\\..\\") ||
+      trimmed.startsWith("/") ||
+      WINDOWS_ABSOLUTE_PATH.test(trimmed) ||
+      !/^[A-Za-z0-9._/-]+$/u.test(trimmed)
+    ) {
       issues.push({
         field: key,
         label: prettyEnv(key),
-        message: "Expected an absolute or workspace-relative path",
+        message: "Expected a workspace-relative path",
       });
     }
   }
@@ -341,9 +350,9 @@ export const SETTINGS_GROUPS: readonly SettingsGroupSpec[] = [
         env: "NODE_EXTRA_CA_CERTS",
         label: "CA bundle path",
         kind: "text",
-        placeholder: "/etc/ssl/cert.pem",
+        placeholder: ".test-intelligence/trust/company-ca.pem",
         helper:
-          "Optional. Set this when corporate TLS interception requires an operator-approved PEM CA bundle.",
+          "Optional workspace-local PEM bundle path for corporate TLS interception.",
       },
     ],
   },

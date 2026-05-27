@@ -86,7 +86,7 @@ describe("buildCli", () => {
   it("emits the full canonical invocation when all toggles are on", () => {
     const cli = buildCli({
       ...DEFAULT_FORM,
-      caCerts: "/etc/ssl/cert.pem",
+      caCerts: ".test-intelligence/trust/cert.pem",
       figmaUrl: "https://www.figma.com/design/ABC/Name?node-id=1-2",
       customContext: "test-case/ABC/JIRA_STORY.md",
       outputDir: ".out",
@@ -95,7 +95,9 @@ describe("buildCli", () => {
       allowPolicyBlocked: true,
       jobIdOverride: "ti-workbench-42",
     });
-    expect(cli).toContain("NODE_EXTRA_CA_CERTS=/etc/ssl/cert.pem");
+    expect(cli).toContain(
+      "NODE_EXTRA_CA_CERTS=.test-intelligence/trust/cert.pem",
+    );
     expect(cli).toContain("pnpm exec test-intelligence run");
     expect(cli).toContain("--figma-url");
     expect(cli).toContain("--custom-context-markdown");

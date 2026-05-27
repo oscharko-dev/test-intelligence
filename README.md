@@ -44,10 +44,10 @@ Then open:
 For production-style package installs, the Workbench does not read credentials
 from a checked-in `.env` by default. Configure credentials through the
 Workbench **Model Settings** screen, either manually or by importing an `.env`
-file by local path/upload. Use the included `import.env` template for the
-required keys. If your network intercepts TLS, include `NODE_EXTRA_CA_CERTS`
-with an operator-approved PEM bundle path so Figma REST and image export calls
-trust the local enterprise CA. Region-attestation evidence also requires
+file by workspace-local path/upload. Use the included `import.env` template for
+the required keys. If your network intercepts TLS, include `NODE_EXTRA_CA_CERTS`
+with a workspace-local operator-approved PEM bundle path so Figma REST and image
+export calls trust the local enterprise CA. Region-attestation evidence also requires
 `TEST_INTELLIGENCE_REGION_ATTESTATION_SIGNING_KEY`; use an operator-managed,
 tenant-local HMAC key. Saved values are written only to the local workspace
 runtime state under `.test-intelligence/local-runtime/` and are ignored by Git.

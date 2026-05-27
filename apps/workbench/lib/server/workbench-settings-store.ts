@@ -41,7 +41,7 @@ TEST_INTELLIGENCE_LOGIC_JUDGE_DEPLOYMENT=gpt-oss-120b
 TEST_INTELLIGENCE_VISUAL_PRIMARY_DEPLOYMENT=llama-4-maverick-vision
 TEST_INTELLIGENCE_VISUAL_FALLBACK_DEPLOYMENT=phi-4-multimodal-instruct
 
-# Optional enterprise TLS trust bundle for Figma REST/image export calls.
+# Optional workspace-local enterprise TLS trust bundle for Figma REST/image export calls.
 NODE_EXTRA_CA_CERTS=
 
 # Optional gateway metadata, if your platform exposes a separate gateway resource.
@@ -77,6 +77,38 @@ const settingsFilePath = (env: NodeJS.ProcessEnv): string =>
     "local-runtime",
     "workbench-settings.json",
   );
+
+const WINDOWS_ABSOLUTE_PATH = /^(?:[A-Za-z]:[\\/]|\\\\)/u;
+
+const resolveWorkspaceLocalPath = (
+  filePath: string,
+  env: NodeJS.ProcessEnv,
+): string => {
+  const repoRoot = resolveRepoRootFromEnv(env);
+  const trimmed = filePath.trim();
+  if (
+    trimmed.length === 0 ||
+    path.isAbsolute(trimmed) ||
+    WINDOWS_ABSOLUTE_PATH.test(trimmed) ||
+    !/^[A-Za-z0-9._/-]+$/u.test(trimmed)
+  ) {
+    throw new Error(
+      "Selected .env path must be relative to the Workbench workspace.",
+    );
+  }
+  const normalized = path.normalize(trimmed);
+  if (
+    normalized === "." ||
+    normalized.startsWith("..") ||
+    path.isAbsolute(normalized) ||
+    WINDOWS_ABSOLUTE_PATH.test(normalized)
+  ) {
+    throw new Error(
+      "Selected .env path must be relative to the Workbench workspace.",
+    );
+  }
+  return path.join(repoRoot, normalized);
+};
 
 const normalizeSettings = (value: unknown): Partial<Settings> => {
   if (typeof value !== "object" || value === null) return {};
@@ -284,7 +316,7 @@ export const importWorkbenchSettingsFromEnvPath = async (
   filePath: string,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<Settings> => {
-  const resolvedPath = path.resolve(filePath);
+  const resolvedPath = resolveWorkspaceLocalPath(filePath, env);
   const info = await stat(resolvedPath);
   if (!info.isFile()) {
     throw new Error("Selected .env path is not a file.");

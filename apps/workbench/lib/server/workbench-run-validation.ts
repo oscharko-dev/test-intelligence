@@ -193,6 +193,32 @@ const resolveAllowedOutputRoots = (
 export const safeRelativePath = (root: string, filePath: string): string =>
   path.relative(root, filePath).split(path.sep).join("/");
 
+const WINDOWS_ABSOLUTE_PATH = /^(?:[A-Za-z]:[\\/]|\\\\)/u;
+
+const resolveWorkspaceRelativePath = (
+  repoRoot: string,
+  rawPath: string,
+): string | null => {
+  const trimmed = rawPath.trim();
+  if (
+    trimmed.length === 0 ||
+    path.isAbsolute(trimmed) ||
+    WINDOWS_ABSOLUTE_PATH.test(trimmed)
+  ) {
+    return null;
+  }
+  const normalized = path.normalize(trimmed);
+  if (
+    normalized === "." ||
+    normalized.startsWith("..") ||
+    path.isAbsolute(normalized) ||
+    WINDOWS_ABSOLUTE_PATH.test(normalized)
+  ) {
+    return null;
+  }
+  return path.join(repoRoot, normalized);
+};
+
 export const formatTimestampForRunSubdir = (generatedAt: string): string =>
   generatedAt.replaceAll(":", "-").replaceAll(".", "-");
 
@@ -500,7 +526,21 @@ export const prepareWorkbenchRun = async ({
   const configuredCaCerts =
     config.caCerts || requestedEnv.NODE_EXTRA_CA_CERTS?.trim() || "";
   if (configuredCaCerts) {
-    const candidate = path.resolve(repoRoot, configuredCaCerts);
+    const candidate = resolveWorkspaceRelativePath(repoRoot, configuredCaCerts);
+    if (candidate === null) {
+      throw new WorkbenchRunValidationError({
+        status: 400,
+        code: "RUN_CONFIG_INVALID",
+        message: "Run configuration is invalid.",
+        issues: [
+          {
+            field: "caCerts",
+            label: "NODE_EXTRA_CA_CERTS",
+            message: "CA bundle path must be relative to the workspace.",
+          },
+        ],
+      });
+    }
     const info = await stat(candidate).catch(() => null);
     if (info === null || !info.isFile()) {
       throw new WorkbenchRunValidationError({

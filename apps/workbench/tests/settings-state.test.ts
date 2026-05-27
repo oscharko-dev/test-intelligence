@@ -98,6 +98,16 @@ describe("validateSettings", () => {
       ),
     ).toBe(true);
   });
+
+  it("requires CA bundle paths to be workspace-relative", () => {
+    const broken = settingsReducer(SETTINGS_BASELINE, {
+      type: "set",
+      key: "NODE_EXTRA_CA_CERTS",
+      value: "/etc/ssl/cert.pem",
+    });
+    const issues = validateSettings(broken);
+    expect(issues.some((i) => i.field === "NODE_EXTRA_CA_CERTS")).toBe(true);
+  });
 });
 
 describe("diffSettings", () => {

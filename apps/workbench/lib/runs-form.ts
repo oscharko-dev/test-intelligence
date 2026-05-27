@@ -73,11 +73,18 @@ export function validateForm(f: RunConfig): ValidationIssue[] {
     });
   }
   const ca = f.caCerts.trim();
-  if (ca && !/^([./]|[a-zA-Z]:[\\/]|\$\{?\w+\}?)/.test(ca)) {
+  if (
+    ca &&
+    (ca.startsWith("/") ||
+      ca.startsWith("..") ||
+      ca.includes("/../") ||
+      /^(?:[A-Za-z]:[\\/]|\\\\)/u.test(ca) ||
+      !/^[A-Za-z0-9._/-]+$/u.test(ca))
+  ) {
     issues.push({
       field: "caCerts",
       label: "NODE_EXTRA_CA_CERTS",
-      message: "Expected an absolute or workspace-relative path",
+      message: "Expected a workspace-relative path",
     });
   }
   return issues;

@@ -21,6 +21,7 @@ import {
   ProductionRunnerError,
   runFigmaToQcTestCases,
   type ProductionRunnerLlmDraftCase,
+  type ProductionRunnerSource,
 } from "./production-runner.js";
 import {
   REGION_ATTESTATION_PINNED_REGION_ENV,
@@ -45,6 +46,16 @@ const TEST_GENERATION_CAPS: LlmGatewayCapabilities = {
 const node = (
   partial: Partial<FigmaRestNode> & { id: string; type: string },
 ): FigmaRestNode => partial as FigmaRestNode;
+
+const figmaUrlSource = (
+  figmaUrl: string,
+  accessToken = "opaque-figma-token",
+): ProductionRunnerSource => ({
+  kind: "figma_url",
+  figmaUrl,
+  accessToken,
+  fetchImpl: globalThis.fetch,
+});
 
 const SAMPLE_DRAFT: ProductionRunnerLlmDraftCase = {
   title: "Eingabe einer gültigen Investitionssumme",
@@ -164,11 +175,7 @@ void test("production runner adversarial: rejects SSRF/IMDS/RFC1918 URLs and red
         runFigmaToQcTestCases({
           jobId: `job-ssrf-${createHash("sha256").update(figmaUrl).digest("hex").slice(0, 8)}`,
           generatedAt: "2026-05-04T10:00:00Z",
-          source: {
-            kind: "figma_url",
-            figmaUrl,
-            accessToken: "opaque-figma-token",
-          },
+          source: figmaUrlSource(figmaUrl),
           outputRoot: tempRoot,
           llm: { client },
         }),
@@ -191,12 +198,9 @@ void test("production runner adversarial: rejects SSRF/IMDS/RFC1918 URLs and red
       runFigmaToQcTestCases({
         jobId: "job-redirect-internal",
         generatedAt: "2026-05-04T10:00:00Z",
-        source: {
-          kind: "figma_url",
-          figmaUrl:
-            "https://www.figma.com/design/ABC/Test-View?node-id=1-1&access_token=opaque-query-token",
-          accessToken: "opaque-figma-token",
-        },
+        source: figmaUrlSource(
+          "https://www.figma.com/design/ABC/Test-View?node-id=1-1&access_token=opaque-query-token",
+        ),
         outputRoot: tempRoot,
         llm: { client },
       }),
@@ -328,11 +332,10 @@ void test("production runner adversarial: persisted artifacts never leak figma t
     const result = await runFigmaToQcTestCases({
       jobId: "job-token-redaction",
       generatedAt: "2026-05-04T10:00:00Z",
-      source: {
-        kind: "figma_url",
-        figmaUrl: `https://www.figma.com/design/ABC/Test-View?node-id=1-1&access_token=${queryToken}`,
-        accessToken: figmaAccessToken,
-      },
+      source: figmaUrlSource(
+        `https://www.figma.com/design/ABC/Test-View?node-id=1-1&access_token=${queryToken}`,
+        figmaAccessToken,
+      ),
       outputRoot: tempRoot,
       llm: { client },
     });

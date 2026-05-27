@@ -687,6 +687,8 @@ export type ProductionRunnerSource =
       kind: "figma_url";
       figmaUrl: string;
       accessToken: string;
+      /** Test seam; production callers omit this to use the hardened trusted fetch. */
+      fetchImpl?: typeof fetch;
       caCertPath?: string;
     }
   | { kind: "figma_paste_normalized"; file: FigmaRestFileSnapshot }
@@ -2937,6 +2939,9 @@ export const runFigmaToQcTestCases = async (
       const captures = await fetchFigmaScreenCapturesForTestIntelligence({
         fileKey: figmaFile.fileKey,
         accessToken: input.source.accessToken,
+        ...(input.source.fetchImpl !== undefined
+          ? { fetchImpl: input.source.fetchImpl }
+          : {}),
         ...(input.source.caCertPath !== undefined
           ? { caCertPath: input.source.caCertPath }
           : {}),
@@ -7818,6 +7823,7 @@ const resolveFigmaSource = async (
     return await fetchFigmaFileForTestIntelligence({
       fileKey: parsed.fileKey,
       accessToken: source.accessToken,
+      ...(source.fetchImpl !== undefined ? { fetchImpl: source.fetchImpl } : {}),
       ...(source.caCertPath !== undefined
         ? { caCertPath: source.caCertPath }
         : {}),
