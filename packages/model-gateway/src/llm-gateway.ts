@@ -761,9 +761,13 @@ const createTrustedGatewayFetch = (
   ) {
     return fetch;
   }
-  const agentPromise = loadGatewayCaCertificates(caCertPath).then(
-    (ca) => new HttpsAgent({ ca, keepAlive: true, maxSockets: 32 }),
-  );
+  let agentPromise: Promise<HttpsAgent> | undefined;
+  const resolveAgent = (): Promise<HttpsAgent> => {
+    agentPromise ??= loadGatewayCaCertificates(caCertPath).then(
+      (ca) => new HttpsAgent({ ca, keepAlive: true, maxSockets: 32 }),
+    );
+    return agentPromise;
+  };
   return (async (input: string | URL | Request, init?: RequestInit) => {
     const url = resolveRequestUrl(input);
     const request = input instanceof Request ? input : undefined;
@@ -773,7 +777,7 @@ const createTrustedGatewayFetch = (
       );
     }
     const body = resolveRequestBody(input, init);
-    const agent = await agentPromise;
+    const agent = await resolveAgent();
     return await new Promise<Response>((resolve, reject) => {
       const req = httpsRequest(
         url,

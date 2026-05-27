@@ -11,6 +11,11 @@ All notable public changes are tracked here.
   back to the native fetch trust path on older Node runtimes.
 - Added Azure Foundry `/openai` to `/openai/v1` chat-completions fallback and
   clarified Workbench endpoint templates to prefer v1 base URLs.
+- Hardened Workbench settings APIs so credential-bearing responses are never
+  cacheable and `.env` content imports enforce the same size limit as file
+  imports.
+- Removed a workflow shell interpolation pattern flagged by GitHub code
+  scanning.
 
 ## 0.1.0-beta.4 - 2026-05-27
 

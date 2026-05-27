@@ -205,6 +205,16 @@ describe("prepareWorkbenchRun", () => {
     );
   });
 
+  test("rejects uploaded .env content above the import size cap", async () => {
+    const repoRoot = await tempWorkspace();
+    await expect(
+      importWorkbenchSettingsFromEnvContent(
+        `TEST_INTELLIGENCE_MODEL_ENDPOINT=https://too-large.test/${"x".repeat(128 * 1024)}`,
+        env({ WORKBENCH_REPO_ROOT: repoRoot }),
+      ),
+    ).rejects.toThrow(/too large/u);
+  });
+
   test("imports settings from a local .env path", async () => {
     const repoRoot = await tempWorkspace();
     const envRelativePath = "customer.env";

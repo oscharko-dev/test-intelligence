@@ -309,6 +309,9 @@ export const importWorkbenchSettingsFromEnvContent = async (
   content: string,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<Settings> => {
+  if (Buffer.byteLength(content, "utf8") > MAX_IMPORT_ENV_BYTES) {
+    throw new Error("Uploaded .env content is too large for Workbench import.");
+  }
   const imported = settingsFromEnv(parseDotenv(content));
   const current = await readWorkbenchSettings(env);
   return writeWorkbenchSettings({ ...current, ...imported }, env);

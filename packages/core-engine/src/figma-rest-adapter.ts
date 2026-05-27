@@ -546,9 +546,13 @@ const createTrustedFigmaFetch = (
   ) {
     return fetch;
   }
-  const agentPromise = loadFigmaCaCertificates(caCertPath).then(
-    (ca) => new HttpsAgent({ ca, keepAlive: true, maxSockets: 32 }),
-  );
+  let agentPromise: Promise<HttpsAgent> | undefined;
+  const resolveAgent = (): Promise<HttpsAgent> => {
+    agentPromise ??= loadFigmaCaCertificates(caCertPath).then(
+      (ca) => new HttpsAgent({ ca, keepAlive: true, maxSockets: 32 }),
+    );
+    return agentPromise;
+  };
   return (async (input: string | URL | Request, init?: RequestInit) => {
     const url = resolveRequestUrl(input);
     const request = input instanceof Request ? input : undefined;
@@ -563,7 +567,7 @@ const createTrustedFigmaFetch = (
     ) {
       throw new TypeError("custom CA fetch does not support request bodies");
     }
-    const agent = await agentPromise;
+    const agent = await resolveAgent();
     return await new Promise<Response>((resolve, reject) => {
       const req = httpsRequest(
         url,
