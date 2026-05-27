@@ -1,6 +1,6 @@
 {
   "name": "@oscharko-dev/test-intelligence",
-  "version": "0.1.0-beta.3",
+  "version": "0.1.0-beta.4",
   "description": "Test Intelligence is a standalone enterprise package for regulated quality and testing intelligence workloads.",
   "type": "module",
   "engines": {
@@ -42,6 +42,7 @@
     "README.md",
     "LICENSE",
     "NOTICE",
+    "import.env",
     "GOVERNANCE.md",
     "CONTRIBUTING.md",
     "SECURITY.md",

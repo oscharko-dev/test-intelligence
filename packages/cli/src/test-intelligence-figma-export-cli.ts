@@ -72,6 +72,8 @@ export interface FigmaExportArgs {
   readonly figmaToken: string;
   readonly timeoutMs?: number;
   readonly nowUtcIso?: string;
+  /** Test seam; CLI parsing never sets this, so production uses trusted fetch. */
+  readonly fetchImpl?: typeof fetch;
 }
 
 const parseArgValue = (
@@ -221,6 +223,7 @@ export const runFigmaExport = async (
     accessToken: args.figmaToken,
     ...(nodeId !== undefined ? { nodeId } : {}),
     ...(args.timeoutMs !== undefined ? { timeoutMs: args.timeoutMs } : {}),
+    ...(args.fetchImpl !== undefined ? { fetchImpl: args.fetchImpl } : {}),
   });
   const payload = buildPayload(snapshot, exportedAt);
   const serialized = `${JSON.stringify(payload, null, 2)}\n`;

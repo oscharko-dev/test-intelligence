@@ -1,6 +1,28 @@
 import { expect, test, type Page } from "@playwright/test";
+import type { Settings } from "@/lib/settings-state";
 
 const FIXED_NOW = "2026-05-25T10:15:30.000Z";
+const VISUAL_TEST_SETTINGS: Settings = {
+  TEST_INTELLIGENCE_LLM_GATEWAY_ENDPOINT:
+    "https://visual-test-gateway.example.test/openai",
+  TEST_INTELLIGENCE_LLM_GATEWAY_API_VERSION: "2024-10-01-preview",
+  TEST_INTELLIGENCE_LLM_GATEWAY_API_KEY: "visual-test-api-key",
+  TEST_INTELLIGENCE_FIGMA_ACCESS_TOKEN: "visual-test-figma-token",
+  TEST_INTELLIGENCE_MODEL_ENDPOINT:
+    "https://visual-test-foundry.example.test/openai",
+  TEST_INTELLIGENCE_VISUAL_MODEL_ENDPOINT:
+    "https://visual-test-vision.example.test/openai",
+  TEST_INTELLIGENCE_TESTCASE_MODEL_DEPLOYMENT: "gpt-oss-120b",
+  TEST_INTELLIGENCE_LOGIC_JUDGE_DEPLOYMENT: "gpt-oss-120b",
+  TEST_INTELLIGENCE_VISUAL_PRIMARY_DEPLOYMENT: "llama-4-maverick-vision",
+  TEST_INTELLIGENCE_VISUAL_FALLBACK_DEPLOYMENT: "phi-4-multimodal-instruct",
+  TEST_INTELLIGENCE_REGION_ATTESTED_REGION: "eu-north-1",
+  TEST_INTELLIGENCE_REGION_ATTESTATION_SOVEREIGN_SOURCE: true,
+  TEST_INTELLIGENCE_REGION_ATTESTATION_SIGNING_KEY:
+    "visual-test-region-signing-key",
+  TEST_INTELLIGENCE_ALLOW_POLICY_BLOCKED: false,
+  NODE_EXTRA_CA_CERTS: "",
+};
 
 async function preparePage(page: Page): Promise<void> {
   await page.addInitScript({
@@ -40,6 +62,19 @@ async function openWorkbench(page: Page, path: string): Promise<void> {
   });
 }
 
+async function mockWorkbenchSettings(page: Page, settings: Settings): Promise<void> {
+  await page.route("**/api/workbench/settings", async (route, request) => {
+    if (request.method() !== "GET") {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ settings }),
+    });
+  });
+}
+
 test.beforeEach(async ({ page }) => {
   await preparePage(page);
 });
@@ -56,11 +91,13 @@ test("captures the run draft screen", async ({ page }) => {
 
 test("captures a completed run detail screen", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
+  await mockWorkbenchSettings(page, VISUAL_TEST_SETTINGS);
   await openWorkbench(page, "/runs");
 
   await page.getByRole("button", { name: "Seed demo" }).click();
   await page.getByRole("button", { name: "Advanced" }).click();
   await page.getByLabel("Job ID override").fill("ti-workbench-visual-fixed");
+  await expect(page.getByRole("button", { name: "Launch run" })).toBeEnabled();
   const started = page.waitForResponse((response) => {
     return (
       response.request().method() === "POST" &&

@@ -76,6 +76,7 @@ export interface ResolveRegionAttestationObservationInput {
   readonly observedAtUtc: string;
   readonly fetchImpl?: typeof fetch;
   readonly pinnedRegion?: RegionAttestationHostingRegion;
+  readonly sovereignSource?: boolean;
 }
 
 const supportedRegions = (
@@ -147,10 +148,14 @@ const isMockGatewayEndpoint = (endpointReference: string): boolean => {
  * air-gap mode implies sovereign-cloud attestation because IMDS / TLS
  * probes are unreachable under the air-gap fetch guard.
  */
-const isSovereignAttestationSourceEnabled = (): boolean =>
+const isSovereignAttestationSourceEnabled = (
+  explicitSovereignSource: boolean | undefined,
+): boolean =>
+  explicitSovereignSource === true ||
   REGION_ATTESTATION_SOVEREIGN_SOURCE_ENV_ALIASES.some((name) =>
     truthyEnv(process.env[name]),
-  ) || isAirGapModeEnabled();
+  ) ||
+  isAirGapModeEnabled();
 
 const buildObservationId = (input: {
   sourceLabel: AgentSourceLabel;
@@ -280,7 +285,7 @@ export const resolveRegionAttestationObservation = async (
   // pinned region is the authoritative source and carries the
   // `sovereign-cloud` attestation label so audit can distinguish it
   // from the legacy `operator-pinned` fallback.
-  if (isSovereignAttestationSourceEnabled()) {
+  if (isSovereignAttestationSourceEnabled(input.sovereignSource)) {
     const sovereignPinned = readPinnedRegion(input.pinnedRegion);
     if (sovereignPinned === undefined) {
       throw new RangeError(
@@ -385,8 +390,10 @@ const readSigningKey = (deploymentId: string): string => {
 const signRegionAttestation = (input: {
   artifactHash: string;
   observation: RegionAttestationObservation;
+  signingKey?: string;
 }): string => {
-  const signingKey = readSigningKey(input.observation.deploymentId);
+  const signingKey =
+    input.signingKey ?? readSigningKey(input.observation.deploymentId);
   const payload = {
     schemaVersion: REGION_ATTESTATION_SCHEMA_VERSION,
     artifactHash: input.artifactHash,
@@ -406,6 +413,7 @@ const signRegionAttestation = (input: {
 export const buildArtifactRegionAttestations = (input: {
   artifactHash: string;
   observations: readonly RegionAttestationObservation[];
+  signingKey?: string;
 }): RegionAttestation[] =>
   input.observations.map((observation) => ({
     schemaVersion: REGION_ATTESTATION_SCHEMA_VERSION,
@@ -420,6 +428,9 @@ export const buildArtifactRegionAttestations = (input: {
     attestationSignatureHex: signRegionAttestation({
       artifactHash: input.artifactHash,
       observation,
+      ...(input.signingKey !== undefined
+        ? { signingKey: input.signingKey }
+        : {}),
     }),
   }));
 

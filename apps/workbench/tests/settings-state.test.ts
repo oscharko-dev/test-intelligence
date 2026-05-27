@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   REQUIRED_SETTINGS,
   SETTINGS_BASELINE,
+  extractSettingsOverrides,
   diffSettings,
   exportEnv,
   formatDiffValue,
@@ -52,12 +53,22 @@ describe("validateSettings", () => {
   });
 
   it("returns no issues once required fields are filled in", () => {
-    const filled = settingsReducer(SETTINGS_BASELINE, {
+    const apiKeyFilled = settingsReducer(SETTINGS_BASELINE, {
       type: "set",
       key: "TEST_INTELLIGENCE_LLM_GATEWAY_API_KEY",
       value: "sk-test-fill-not-a-real-key",
     });
-    expect(validateSettings(filled)).toEqual([]);
+    const figmaTokenFilled = settingsReducer(apiKeyFilled, {
+      type: "set",
+      key: "TEST_INTELLIGENCE_FIGMA_ACCESS_TOKEN",
+      value: "figd-test-fill-not-a-real-token",
+    });
+    const signingKeyFilled = settingsReducer(figmaTokenFilled, {
+      type: "set",
+      key: "TEST_INTELLIGENCE_REGION_ATTESTATION_SIGNING_KEY",
+      value: "region-attestation-signing-key",
+    });
+    expect(validateSettings(signingKeyFilled)).toEqual([]);
   });
 
   it("flags malformed url fields", () => {
@@ -86,6 +97,16 @@ describe("validateSettings", () => {
           i.message.includes("protocol"),
       ),
     ).toBe(true);
+  });
+
+  it("requires CA bundle paths to be workspace-relative", () => {
+    const broken = settingsReducer(SETTINGS_BASELINE, {
+      type: "set",
+      key: "NODE_EXTRA_CA_CERTS",
+      value: "/etc/ssl/cert.pem",
+    });
+    const issues = validateSettings(broken);
+    expect(issues.some((i) => i.field === "NODE_EXTRA_CA_CERTS")).toBe(true);
   });
 });
 
@@ -168,9 +189,25 @@ describe("prettyEnv / isSettingsDirty", () => {
     expect(isSettingsDirty(next)).toBe(true);
   });
 
+  it("extracts only non-baseline settings as overrides", () => {
+    const withChange = settingsReducer(SETTINGS_BASELINE, {
+      type: "set",
+      key: "TEST_INTELLIGENCE_REGION_ATTESTED_REGION",
+      value: "us-east-1",
+    });
+    const overrides = extractSettingsOverrides(withChange);
+    expect(overrides.TEST_INTELLIGENCE_REGION_ATTESTED_REGION).toBe(
+      "us-east-1",
+    );
+    expect("TEST_INTELLIGENCE_LLM_GATEWAY_API_KEY" in overrides).toBe(false);
+  });
+
   it("REQUIRED_SETTINGS includes all gateway-essential keys", () => {
     expect(REQUIRED_SETTINGS).toContain(
       "TEST_INTELLIGENCE_LLM_GATEWAY_API_KEY",
+    );
+    expect(REQUIRED_SETTINGS).toContain(
+      "TEST_INTELLIGENCE_REGION_ATTESTATION_SIGNING_KEY",
     );
   });
 });

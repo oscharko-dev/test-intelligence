@@ -2,6 +2,15 @@
 
 All notable public changes are tracked here.
 
+## 0.1.0-beta.4 - 2026-05-27
+
+- Added local Workbench credential onboarding with `.env` path import, `.env`
+  upload, template download, and persisted UI settings for npm installations.
+- Hardened Figma REST and model-gateway HTTPS calls to use the platform trust
+  store plus optional operator-provided `NODE_EXTRA_CA_CERTS`.
+- Propagated persisted model, Figma, enterprise TLS, and region-attestation
+  settings into Workbench runs without requiring repository-local `.env` files.
+
 ## 0.1.0-beta.3 - 2026-05-26
 
 - Added an installable packaged Workbench runtime to the npm artifact.

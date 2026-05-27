@@ -1,8 +1,18 @@
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import isPathInside from "is-path-inside";
+import {
+  SUPPORTED_REGION_ATTESTATION_HOSTING_REGIONS,
+  type RegionAttestationHostingRegion,
+} from "@oscharko-dev/ti-contracts";
 import type { RunConfig, ValidationIssue } from "@/lib/types";
 import { looksLikeFigmaDesignUrl } from "@/lib/runs-form";
+import {
+  SETTINGS_BASELINE,
+  SETTINGS_KEYS,
+  type SettingsKey,
+} from "@/lib/settings-state";
+import { readPersistedWorkbenchSettingsOverrides } from "./workbench-settings-store";
 
 export interface WorkbenchEnvStatus {
   featureGate: boolean;
@@ -24,6 +34,9 @@ export interface ResolvedWorkbenchEnv {
   visualEndpoint: string;
   visualPrimaryDeployment: string;
   visualFallbackDeployment: string;
+  regionAttestedRegion: RegionAttestationHostingRegion;
+  regionAttestationSovereignSource: boolean;
+  regionAttestationSigningKey: string;
   logicJudgeDeployment?: string;
   a11yJudgeDeployment?: string;
   coveragePlannerDeployment?: string;
@@ -39,6 +52,7 @@ export interface PreparedWorkbenchRun {
   outputRoot: string;
   allowedOutputRoots: string[];
   artifactDir: string;
+  caCertPath?: string;
   customContextMarkdown?: string;
   env: ResolvedWorkbenchEnv;
 }
@@ -85,6 +99,18 @@ const truthy = (value: string | undefined): boolean => {
   );
 };
 
+const SUPPORTED_REGION_ATTESTATION_HOSTING_REGION_SET = new Set<string>(
+  SUPPORTED_REGION_ATTESTATION_HOSTING_REGIONS,
+);
+
+const supportedRegion = (
+  value: string | undefined,
+): RegionAttestationHostingRegion | undefined =>
+  value !== undefined &&
+  SUPPORTED_REGION_ATTESTATION_HOSTING_REGION_SET.has(value)
+    ? (value as RegionAttestationHostingRegion)
+    : undefined;
+
 const readFirstEnv = (
   env: NodeJS.ProcessEnv,
   names: readonly string[],
@@ -98,8 +124,49 @@ const readFirstEnv = (
   return undefined;
 };
 
-export const resolveRepoRoot = (): string => {
-  const explicit = process.env.WORKBENCH_REPO_ROOT?.trim();
+const readWorkbenchRequestSettings = (
+  value: unknown,
+): Partial<Record<SettingsKey, string | boolean>> => {
+  if (typeof value !== "object" || value === null) return {};
+  const raw = value as Record<string, unknown>;
+  const out: Partial<Record<SettingsKey, string | boolean>> = {};
+  for (const key of SETTINGS_KEYS) {
+    const v = raw[key];
+    if (v === undefined) continue;
+    const baseline = SETTINGS_BASELINE[key];
+    if (v === baseline) continue;
+    if (typeof v === "string") {
+      out[key] = v;
+    } else if (typeof v === "boolean") {
+      out[key] = v;
+    }
+  }
+  return out;
+};
+
+const mergeWorkbenchEnvWithSettings = (
+  env: NodeJS.ProcessEnv,
+  settings: Partial<Record<SettingsKey, string | boolean>>,
+): NodeJS.ProcessEnv => {
+  if (Object.keys(settings).length === 0) return env;
+  const resolved = { ...env };
+  for (const key of SETTINGS_KEYS) {
+    const value = settings[key];
+    if (value === undefined) continue;
+    if (typeof value === "string" && value.trim().length === 0) continue;
+    if (typeof value === "boolean") {
+      resolved[key] = value ? "1" : "0";
+    } else {
+      resolved[key] = value;
+    }
+  }
+  return resolved;
+};
+
+export const resolveRepoRoot = (
+  env: NodeJS.ProcessEnv = process.env,
+): string => {
+  const explicit = env.WORKBENCH_REPO_ROOT?.trim();
   if (explicit) return path.resolve(explicit);
   const cwd = process.cwd();
   return cwd.endsWith(path.join("apps", "workbench"))
@@ -125,6 +192,32 @@ const resolveAllowedOutputRoots = (
 
 export const safeRelativePath = (root: string, filePath: string): string =>
   path.relative(root, filePath).split(path.sep).join("/");
+
+const WINDOWS_ABSOLUTE_PATH = /^(?:[A-Za-z]:[\\/]|\\\\)/u;
+
+const resolveWorkspaceRelativePath = (
+  repoRoot: string,
+  rawPath: string,
+): string | null => {
+  const trimmed = rawPath.trim();
+  if (
+    trimmed.length === 0 ||
+    path.isAbsolute(trimmed) ||
+    WINDOWS_ABSOLUTE_PATH.test(trimmed)
+  ) {
+    return null;
+  }
+  const normalized = path.normalize(trimmed);
+  if (
+    normalized === "." ||
+    normalized.startsWith("..") ||
+    path.isAbsolute(normalized) ||
+    WINDOWS_ABSOLUTE_PATH.test(normalized)
+  ) {
+    return null;
+  }
+  return path.join(repoRoot, normalized);
+};
 
 export const formatTimestampForRunSubdir = (generatedAt: string): string =>
   generatedAt.replaceAll(":", "-").replaceAll(".", "-");
@@ -160,6 +253,9 @@ export const resolveWorkbenchEnv = (
       visualEndpoint: "mock://test-intelligence-visual",
       visualPrimaryDeployment: "mock-visual-primary",
       visualFallbackDeployment: "mock-visual-fallback",
+      regionAttestedRegion: "eu-north-1",
+      regionAttestationSovereignSource: true,
+      regionAttestationSigningKey: "mock-region-attestation-signing-key",
       status: {
         featureGate: true,
         modelEndpoint: true,
@@ -173,7 +269,7 @@ export const resolveWorkbenchEnv = (
     };
   }
 
-  const featureGate =
+  const featureGateOverride =
     truthy(readFirstEnv(env, ["TEST_INTELLIGENCE_ENABLED"])) ||
     truthy(readFirstEnv(env, ["FIGMAPIPE_WORKSPACE_TEST_INTELLIGENCE"]));
   const endpoint = readFirstEnv(env, [
@@ -183,6 +279,7 @@ export const resolveWorkbenchEnv = (
   const apiKey = readFirstEnv(env, [
     "TEST_INTELLIGENCE_LLM_API_KEY",
     "WORKSPACE_TEST_SPACE_LLM_API_KEY",
+    "TEST_INTELLIGENCE_LLM_GATEWAY_API_KEY",
   ]);
   const deployment =
     readFirstEnv(env, [
@@ -208,6 +305,11 @@ export const resolveWorkbenchEnv = (
     "FIGMA_ACCESS_TOKEN",
     "TEST_INTELLIGENCE_FIGMA_ACCESS_TOKEN",
   ]);
+  const featureGate =
+    featureGateOverride ||
+    (endpoint !== undefined &&
+      apiKey !== undefined &&
+      figmaToken !== undefined);
   const ictRegisterRef =
     readFirstEnv(env, [
       "TEST_INTELLIGENCE_ICT_REGISTER_REF",
@@ -228,6 +330,30 @@ export const resolveWorkbenchEnv = (
   const riskRankerDeployment = readFirstEnv(env, [
     "TEST_INTELLIGENCE_RISK_RANKER_DEPLOYMENT",
     "WORKSPACE_TEST_SPACE_RISK_RANKER_DEPLOYMENT",
+  ]);
+  const baselineRegion =
+    typeof SETTINGS_BASELINE.TEST_INTELLIGENCE_REGION_ATTESTED_REGION ===
+    "string"
+      ? SETTINGS_BASELINE.TEST_INTELLIGENCE_REGION_ATTESTED_REGION
+      : undefined;
+  const regionAttestedRegion = supportedRegion(
+    readFirstEnv(env, [
+      "TEST_INTELLIGENCE_REGION_ATTESTED_REGION",
+      "WORKSPACE_TEST_SPACE_REGION_ATTESTED_REGION",
+    ]) ?? baselineRegion,
+  );
+  const regionAttestationSovereignSource = truthy(
+    readFirstEnv(env, [
+      "TEST_INTELLIGENCE_REGION_ATTESTATION_SOVEREIGN_SOURCE",
+      "WORKSPACE_TEST_SPACE_REGION_ATTESTATION_SOVEREIGN_SOURCE",
+    ]) ??
+      (SETTINGS_BASELINE.TEST_INTELLIGENCE_REGION_ATTESTATION_SOVEREIGN_SOURCE
+        ? "1"
+        : "0"),
+  );
+  const regionAttestationSigningKey = readFirstEnv(env, [
+    "TEST_INTELLIGENCE_REGION_ATTESTATION_SIGNING_KEY",
+    "WORKSPACE_TEST_SPACE_REGION_ATTESTATION_SIGNING_KEY",
   ]);
   const status: WorkbenchEnvStatus = {
     featureGate,
@@ -252,17 +378,29 @@ export const resolveWorkbenchEnv = (
   }
   if (apiKey === undefined) {
     missing.push(
-      "TEST_INTELLIGENCE_LLM_API_KEY or WORKSPACE_TEST_SPACE_LLM_API_KEY",
+      "TEST_INTELLIGENCE_LLM_API_KEY, TEST_INTELLIGENCE_LLM_GATEWAY_API_KEY, or WORKSPACE_TEST_SPACE_LLM_API_KEY",
     );
   }
   if (figmaToken === undefined) {
     missing.push("FIGMA_ACCESS_TOKEN or TEST_INTELLIGENCE_FIGMA_ACCESS_TOKEN");
   }
+  if (regionAttestedRegion === undefined) {
+    missing.push(
+      `TEST_INTELLIGENCE_REGION_ATTESTED_REGION (${SUPPORTED_REGION_ATTESTATION_HOSTING_REGIONS.join(", ")})`,
+    );
+  }
+  if (regionAttestationSigningKey === undefined) {
+    missing.push(
+      "TEST_INTELLIGENCE_REGION_ATTESTATION_SIGNING_KEY or WORKSPACE_TEST_SPACE_REGION_ATTESTATION_SIGNING_KEY",
+    );
+  }
   if (
     missing.length > 0 ||
     endpoint === undefined ||
     apiKey === undefined ||
-    figmaToken === undefined
+    figmaToken === undefined ||
+    regionAttestedRegion === undefined ||
+    regionAttestationSigningKey === undefined
   ) {
     throw new WorkbenchRunValidationError({
       status: 503,
@@ -279,6 +417,9 @@ export const resolveWorkbenchEnv = (
     visualEndpoint: visualEndpoint ?? endpoint,
     visualPrimaryDeployment,
     visualFallbackDeployment,
+    regionAttestedRegion,
+    regionAttestationSovereignSource,
+    regionAttestationSigningKey,
     ...(logicJudgeDeployment !== undefined ? { logicJudgeDeployment } : {}),
     ...(a11yJudgeDeployment !== undefined ? { a11yJudgeDeployment } : {}),
     ...(coveragePlannerDeployment !== undefined
@@ -317,6 +458,20 @@ const parseConfig = (value: unknown): RunConfig => {
   };
 };
 
+interface WorkbenchRunPayload {
+  config: RunConfig;
+  settings: Partial<Record<SettingsKey, string | boolean>>;
+}
+
+const parsePayload = (body: unknown): WorkbenchRunPayload => {
+  const config = parseConfig(body);
+  const settings =
+    typeof body === "object" && body !== null && "settings" in body
+      ? readWorkbenchRequestSettings((body as { settings?: unknown }).settings)
+      : {};
+  return { config, settings };
+};
+
 export const prepareWorkbenchRun = async ({
   body,
   env,
@@ -326,7 +481,13 @@ export const prepareWorkbenchRun = async ({
   env: NodeJS.ProcessEnv;
   now?: Date;
 }): Promise<PreparedWorkbenchRun> => {
-  const config = parseConfig(body);
+  const parsed = parsePayload(body);
+  const config = parsed.config;
+  const persistedSettings = await readPersistedWorkbenchSettingsOverrides(env);
+  const requestedEnv = mergeWorkbenchEnvWithSettings(
+    mergeWorkbenchEnvWithSettings(env, persistedSettings),
+    parsed.settings,
+  );
   const issues: ValidationIssue[] = [];
   const figma = looksLikeFigmaDesignUrl(config.figmaUrl);
   if (!figma.ok) {
@@ -351,17 +512,6 @@ export const prepareWorkbenchRun = async ({
         "Use 3-96 letters, numbers, dot, underscore or dash; path separators are not allowed.",
     });
   }
-  if (config.caCerts) {
-    const configured = env.NODE_EXTRA_CA_CERTS?.trim();
-    if (configured !== path.resolve(config.caCerts)) {
-      issues.push({
-        field: "caCerts",
-        label: "NODE_EXTRA_CA_CERTS",
-        message:
-          "NODE_EXTRA_CA_CERTS must be configured before starting the Workbench process.",
-      });
-    }
-  }
   if (issues.length > 0) {
     throw new WorkbenchRunValidationError({
       status: 400,
@@ -371,10 +521,46 @@ export const prepareWorkbenchRun = async ({
     });
   }
 
-  const repoRoot = resolveRepoRoot();
+  const repoRoot = resolveRepoRoot(requestedEnv);
+  let caCertPath: string | undefined;
+  const configuredCaCerts =
+    config.caCerts || requestedEnv.NODE_EXTRA_CA_CERTS?.trim() || "";
+  if (configuredCaCerts) {
+    const candidate = resolveWorkspaceRelativePath(repoRoot, configuredCaCerts);
+    if (candidate === null) {
+      throw new WorkbenchRunValidationError({
+        status: 400,
+        code: "RUN_CONFIG_INVALID",
+        message: "Run configuration is invalid.",
+        issues: [
+          {
+            field: "caCerts",
+            label: "NODE_EXTRA_CA_CERTS",
+            message: "CA bundle path must be relative to the workspace.",
+          },
+        ],
+      });
+    }
+    const info = await stat(candidate).catch(() => null);
+    if (info === null || !info.isFile()) {
+      throw new WorkbenchRunValidationError({
+        status: 400,
+        code: "RUN_CONFIG_INVALID",
+        message: "Run configuration is invalid.",
+        issues: [
+          {
+            field: "caCerts",
+            label: "NODE_EXTRA_CA_CERTS",
+            message: "CA bundle path must point to a readable file.",
+          },
+        ],
+      });
+    }
+    caCertPath = candidate;
+  }
   const outputRoot = path.resolve(repoRoot, config.outputDir);
-  const allowedOutputRoots = resolveAllowedOutputRoots(repoRoot, env);
-  const mockRunnerMode = env.WORKBENCH_RUNNER_MODE === "mock";
+  const allowedOutputRoots = resolveAllowedOutputRoots(repoRoot, requestedEnv);
+  const mockRunnerMode = requestedEnv.WORKBENCH_RUNNER_MODE === "mock";
   if (!allowedOutputRoots.some((root) => isPathInside(outputRoot, root))) {
     throw new WorkbenchRunValidationError({
       status: 400,
@@ -432,7 +618,7 @@ export const prepareWorkbenchRun = async ({
     jobId,
     generatedAt,
   });
-  const resolvedEnv = resolveWorkbenchEnv(env);
+  const resolvedEnv = resolveWorkbenchEnv(requestedEnv);
 
   return {
     config,
@@ -442,6 +628,7 @@ export const prepareWorkbenchRun = async ({
     outputRoot,
     allowedOutputRoots,
     artifactDir,
+    ...(caCertPath !== undefined ? { caCertPath } : {}),
     ...(customContextMarkdown !== undefined ? { customContextMarkdown } : {}),
     env: resolvedEnv,
   };

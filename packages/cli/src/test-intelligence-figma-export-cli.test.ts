@@ -127,30 +127,22 @@ void test("runFigmaExport packages the snapshot under the canonical schema and e
         { status: 200, headers: { "content-type": "application/json" } },
       );
     };
-    // Patch globalThis.fetch temporarily — the figma-rest-adapter uses
-    // globalThis.fetch by default and the CLI doesn't expose fetchImpl
-    // injection.
-    const priorFetch = globalThis.fetch;
-    globalThis.fetch = fakeFetch as typeof globalThis.fetch;
-    try {
-      const destination = join(outputDir, "figma-payload.json");
-      const result = await runFigmaExport({
-        figmaUrl: "https://figma.com/design/abc/title",
-        outputPath: destination,
-        figmaToken: "t",
-        nowUtcIso: "2026-05-11T11:00:00.000Z",
-      });
-      assert.equal(result.path, destination);
-      assert.equal(result.fileKey, "abc");
-      const raw = await readFile(destination, "utf8");
-      const payload = JSON.parse(raw) as Record<string, unknown>;
-      assert.equal(payload.schemaVersion, FIGMA_PAYLOAD_SCHEMA_VERSION);
-      assert.equal(payload.exportedAt, "2026-05-11T11:00:00.000Z");
-      assert.equal(payload.fileKey, "abc");
-      assert.equal(payload.name, "Test File");
-    } finally {
-      globalThis.fetch = priorFetch;
-    }
+    const destination = join(outputDir, "figma-payload.json");
+    const result = await runFigmaExport({
+      figmaUrl: "https://figma.com/design/abc/title",
+      outputPath: destination,
+      figmaToken: "t",
+      nowUtcIso: "2026-05-11T11:00:00.000Z",
+      fetchImpl: fakeFetch,
+    });
+    assert.equal(result.path, destination);
+    assert.equal(result.fileKey, "abc");
+    const raw = await readFile(destination, "utf8");
+    const payload = JSON.parse(raw) as Record<string, unknown>;
+    assert.equal(payload.schemaVersion, FIGMA_PAYLOAD_SCHEMA_VERSION);
+    assert.equal(payload.exportedAt, "2026-05-11T11:00:00.000Z");
+    assert.equal(payload.fileKey, "abc");
+    assert.equal(payload.name, "Test File");
   } finally {
     await rm(outputDir, { recursive: true, force: true });
   }
@@ -167,18 +159,13 @@ void test("runFigmaExport writes into a directory when --output is a folder path
         }),
         { status: 200, headers: { "content-type": "application/json" } },
       );
-    const priorFetch = globalThis.fetch;
-    globalThis.fetch = fakeFetch as typeof globalThis.fetch;
-    try {
-      const result = await runFigmaExport({
-        figmaUrl: "https://figma.com/design/abc",
-        outputPath: outputDir,
-        figmaToken: "t",
-      });
-      assert.equal(result.path, join(outputDir, "figma-payload.json"));
-    } finally {
-      globalThis.fetch = priorFetch;
-    }
+    const result = await runFigmaExport({
+      figmaUrl: "https://figma.com/design/abc",
+      outputPath: outputDir,
+      figmaToken: "t",
+      fetchImpl: fakeFetch,
+    });
+    assert.equal(result.path, join(outputDir, "figma-payload.json"));
   } finally {
     await rm(outputDir, { recursive: true, force: true });
   }

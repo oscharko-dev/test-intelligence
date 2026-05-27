@@ -25,6 +25,9 @@
 
 import { sanitizeErrorMessage } from "@oscharko-dev/ti-security";
 import { redactHighRiskSecrets } from "@oscharko-dev/ti-security";
+import { readFile } from "node:fs/promises";
+import { request as httpsRequest } from "node:https";
+import { getCACertificates } from "node:tls";
 
 const FIGMA_REST_HOST = "api.figma.com" as const;
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -113,8 +116,10 @@ export interface FetchFigmaFileForTestIntelligenceInput {
   fileKey: string;
   accessToken: string;
   nodeId?: string;
-  /** Override for tests; defaults to `globalThis.fetch`. */
+  /** Override for tests; production defaults to the hardened trusted fetch. */
   fetchImpl?: typeof fetch;
+  /** Optional PEM CA bundle for enterprise TLS interception. */
+  caCertPath?: string;
   /** Wall-clock timeout in ms (defaults to 30_000). */
   timeoutMs?: number;
   /** Hard upper bound on the response body, in bytes (defaults to 32 MiB). */
@@ -128,6 +133,7 @@ export interface FetchFigmaScreenCapturesForTestIntelligenceInput {
   accessToken: string;
   screens: ReadonlyArray<{ screenId: string; screenName?: string }>;
   fetchImpl?: typeof fetch;
+  caCertPath?: string;
   timeoutMs?: number;
   maxResponseBytes?: number;
   scale?: number;
@@ -208,7 +214,7 @@ export const fetchFigmaFileForTestIntelligence = async (
       retryable: false,
     });
   }
-  const fetchImpl = input.fetchImpl ?? globalThis.fetch.bind(globalThis);
+  const fetchImpl = resolveFigmaFetch(input.fetchImpl, input.caCertPath);
   const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxResponseBytes = input.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
   const url = buildFigmaRestUrl(
@@ -359,7 +365,7 @@ export const fetchFigmaScreenCapturesForTestIntelligence = async (
       retryable: false,
     });
   }
-  const fetchImpl = input.fetchImpl ?? globalThis.fetch.bind(globalThis);
+  const fetchImpl = resolveFigmaFetch(input.fetchImpl, input.caCertPath);
   const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxResponseBytes = input.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
   const scale = clampImageScale(input.scale ?? DEFAULT_FIGMA_IMAGE_SCALE);
@@ -431,6 +437,142 @@ const buildFigmaImageLookupUrl = (input: {
 
 const clampImageScale = (value: number): number =>
   Math.max(0.5, Math.min(3, value));
+
+const resolveFigmaFetch = (
+  fetchImpl: typeof fetch | undefined,
+  caCertPath: string | undefined,
+): typeof fetch => {
+  if (fetchImpl !== undefined) return fetchImpl;
+  return createTrustedFigmaFetch(caCertPath);
+};
+
+const headersToRecord = (
+  headers: RequestInit["headers"] | undefined,
+): Record<string, string> => {
+  if (headers === undefined) return {};
+  if (headers instanceof Headers) {
+    const out: Record<string, string> = {};
+    headers.forEach((value, key) => {
+      out[key] = value;
+    });
+    return out;
+  }
+  if (Array.isArray(headers)) {
+    return Object.fromEntries(headers.map(([key, value]) => [key, value]));
+  }
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(
+    headers as Record<string, string | readonly string[] | undefined>,
+  )) {
+    if (value === undefined) continue;
+    out[key] = typeof value === "string" ? value : value.join(", ");
+  }
+  return out;
+};
+
+const responseHeadersToRecord = (
+  headers: import("node:http").IncomingHttpHeaders,
+): Record<string, string> => {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    if (value === undefined) continue;
+    out[key] = Array.isArray(value) ? value.join(", ") : String(value);
+  }
+  return out;
+};
+
+const resolveRequestUrl = (input: string | URL | Request): URL => {
+  if (input instanceof URL) return input;
+  if (typeof input === "string") return new URL(input);
+  return new URL(input.url);
+};
+
+const readRuntimeCaBundlePath = (
+  caCertPath: string | undefined,
+): string | undefined => {
+  const configured =
+    caCertPath?.trim() || process.env.NODE_EXTRA_CA_CERTS?.trim();
+  return configured === undefined || configured.length === 0
+    ? undefined
+    : configured;
+};
+
+const loadFigmaCaCertificates = async (
+  caCertPath: string | undefined,
+): Promise<string[]> => {
+  const certificates = new Set<string>();
+  for (const source of ["default", "system"] as const) {
+    for (const certificate of getCACertificates(source)) {
+      if (certificate.trim().length > 0) certificates.add(certificate);
+    }
+  }
+  const runtimeCaBundlePath = readRuntimeCaBundlePath(caCertPath);
+  if (runtimeCaBundlePath !== undefined) {
+    certificates.add(await readFile(runtimeCaBundlePath, "utf8"));
+  }
+  return [...certificates];
+};
+
+const createTrustedFigmaFetch = (
+  caCertPath: string | undefined,
+): typeof fetch => {
+  const caPromise = loadFigmaCaCertificates(caCertPath);
+  return (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = resolveRequestUrl(input);
+    const request = input instanceof Request ? input : undefined;
+    if (url.protocol !== "https:") {
+      throw new TypeError(
+        `custom CA fetch only supports https URLs: ${url.protocol}`,
+      );
+    }
+    if (
+      init?.body !== undefined ||
+      (request !== undefined && request.body !== null)
+    ) {
+      throw new TypeError("custom CA fetch does not support request bodies");
+    }
+    const ca = await caPromise;
+    return await new Promise<Response>((resolve, reject) => {
+      const req = httpsRequest(
+        url,
+        {
+          ca,
+          headers: headersToRecord(init?.headers ?? request?.headers),
+          method: init?.method ?? request?.method ?? "GET",
+          signal: init?.signal ?? request?.signal ?? undefined,
+        },
+        (res) => {
+          const chunks: Buffer[] = [];
+          res.on("data", (chunk: Buffer | string) => {
+            chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          });
+          res.once("error", reject);
+          res.once("end", () => {
+            const status = res.statusCode ?? 0;
+            if (init?.redirect === "error" && status >= 300 && status <= 399) {
+              reject(new TypeError("redirect refused by fetch policy"));
+              return;
+            }
+            const responseInit: ResponseInit =
+              res.statusMessage === undefined
+                ? {
+                    headers: responseHeadersToRecord(res.headers),
+                    status,
+                  }
+                : {
+                    headers: responseHeadersToRecord(res.headers),
+                    status,
+                    statusText: res.statusMessage,
+                  };
+            resolve(new Response(Buffer.concat(chunks), responseInit));
+          });
+        },
+      );
+      req.once("error", reject);
+      req.end();
+    });
+  }) as typeof fetch;
+};
 
 const dispatchOnce = async (input: {
   url: string;
@@ -922,7 +1064,7 @@ const isTlsTrustFailure = (input: unknown): boolean => {
 
 const normalizeFigmaTransportErrorMessage = (input: unknown): string => {
   if (isTlsTrustFailure(input)) {
-    return "Figma REST TLS trust validation failed. Configure NODE_EXTRA_CA_CERTS with an operator-approved CA bundle before starting the Workbench or CLI process.";
+    return "Figma REST TLS trust validation failed. Configure NODE_EXTRA_CA_CERTS or the Workbench NODE_EXTRA_CA_CERTS path with an operator-approved CA bundle.";
   }
   return redactBoundedMessage(
     sanitizeErrorMessage({
