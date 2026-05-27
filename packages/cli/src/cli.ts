@@ -70,8 +70,10 @@ import {
   TestIntelligenceTmsPushOperatorError,
 } from "./test-intelligence-tms-push-cli.js";
 import {
+  runWorkbenchInitCommand,
   runWorkbenchStartCommand,
   runWorkbenchStopCommand,
+  TEST_INTELLIGENCE_WORKBENCH_INIT_HELP,
   TEST_INTELLIGENCE_WORKBENCH_START_HELP,
   TEST_INTELLIGENCE_WORKBENCH_STOP_HELP,
 } from "./workbench-app-cli.js";
@@ -104,6 +106,7 @@ Generation:
 Workbench:
   start              Start the local Workbench UI from the installed package.
   stop               Stop the managed local Workbench UI process.
+  init               Add Workbench start/stop scripts to a host package.json.
 
 Human oversight (DSGVO Art. 22 / EU AI Act Art. 14):
   review list|get|decide
@@ -440,6 +443,17 @@ const runWorkbenchStop = async (
   return runWorkbenchStopCommand(args, sink);
 };
 
+const runWorkbenchInit = async (
+  args: ReadonlyArray<string>,
+  sink: CommandSink,
+): Promise<number> => {
+  if (isHelpFlag(args[0])) {
+    sink.stdout(`${TEST_INTELLIGENCE_WORKBENCH_INIT_HELP}\n`);
+    return 0;
+  }
+  return runWorkbenchInitCommand(args, sink);
+};
+
 /**
  * Dispatch a single CLI invocation to the matching command handler.
  *
@@ -492,6 +506,8 @@ export const runCli = async (
       return runWorkbenchStart(rest, sink);
     case "stop":
       return runWorkbenchStop(rest, sink);
+    case "init":
+      return runWorkbenchInit(rest, sink);
     default:
       writeOperatorError(
         sink,

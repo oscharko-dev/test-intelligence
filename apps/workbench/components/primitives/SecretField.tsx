@@ -12,6 +12,7 @@ export interface SecretFieldProps {
   value: string;
   onChange: (next: string) => void;
   placeholder?: string;
+  hint?: ReactNode;
   id?: string;
 }
 
@@ -22,6 +23,7 @@ export function SecretField({
   value,
   onChange,
   placeholder,
+  hint,
   id,
 }: SecretFieldProps): ReactNode {
   const [revealed, setRevealed] = useState(false);
@@ -48,6 +50,7 @@ export function SecretField({
       value={value}
       onChange={onChange}
       {...(placeholder !== undefined ? { placeholder } : {})}
+      {...(hint !== undefined ? { hint } : {})}
       type={revealed ? "text" : "password"}
       mono
       rightSlot={

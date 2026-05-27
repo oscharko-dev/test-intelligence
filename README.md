@@ -15,20 +15,42 @@ Install the published package:
 npm install @oscharko-dev/test-intelligence
 ```
 
-Start the packaged Workbench from the directory that contains your `.env`,
-`test-case/`, and `.test-intelligence/` workspace:
+or `yarn add @oscharko-dev/test-intelligence` / `pnpm add @oscharko-dev/test-intelligence`.
+
+Initialize start/stop scripts in your host `package.json`:
+
+```bash
+npx test-intelligence init
+```
+
+Start and stop locally:
+
+```bash
+npm run test-intelligence:start
+npm run test-intelligence:stop
+```
+
+You can also run the binary directly from CLI:
 
 ```bash
 npx test-intelligence start
-```
-
-Open `http://localhost:1983`.
-
-Stop the managed packaged Workbench process:
-
-```bash
 npx test-intelligence stop
 ```
+
+Then open:
+
+`http://localhost:1983`.
+
+For production-style package installs, the Workbench does not read credentials
+from a checked-in `.env` by default. Configure credentials through the
+Workbench **Model Settings** screen, either manually or by importing an `.env`
+file by local path/upload. Use the included `import.env` template for the
+required keys. If your network intercepts TLS, include `NODE_EXTRA_CA_CERTS`
+with an operator-approved PEM bundle path so Figma REST and image export calls
+trust the local enterprise CA. Region-attestation evidence also requires
+`TEST_INTELLIGENCE_REGION_ATTESTATION_SIGNING_KEY`; use an operator-managed,
+tenant-local HMAC key. Saved values are written only to the local workspace
+runtime state under `.test-intelligence/local-runtime/` and are ignored by Git.
 
 Use `npx test-intelligence start --mock` for UI-only local runs without live
 Figma or LLM calls. The packaged Workbench uses the current directory as the
@@ -63,6 +85,10 @@ pnpm run local:start:mock       # UI-only mock runner, no live Figma/LLM calls
 pnpm run local:start:prod       # production Next.js mode
 pnpm run local:start -- --env-file=.env.local
 ```
+
+`local:start` does not load `.env` automatically. On first launch, configure
+credentials in the Workbench Model Settings screen by importing an `.env` file
+or entering the values manually.
 
 Runtime state, PID files, and logs are written under
 `.test-intelligence/local-runtime/` and are intentionally ignored by Git.

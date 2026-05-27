@@ -136,6 +136,7 @@ import {
   RISK_RANKING_ARTIFACT_FILENAME,
   SUPPORTED_REGION_ATTESTATION_HOSTING_REGIONS,
   WORKFLOW_TOPOLOGY_ARTIFACT_FILENAME,
+  type RegionAttestationHostingRegion,
   type RegionAttestationArtifactEntry,
 } from "@oscharko-dev/ti-contracts";
 import {
@@ -682,7 +683,12 @@ interface LlmDraftResponse {
 
 /** Runner input source variants. */
 export type ProductionRunnerSource =
-  | { kind: "figma_url"; figmaUrl: string; accessToken: string }
+  | {
+      kind: "figma_url";
+      figmaUrl: string;
+      accessToken: string;
+      caCertPath?: string;
+    }
   | { kind: "figma_paste_normalized"; file: FigmaRestFileSnapshot }
   | {
       kind: "figma_rest_file";
@@ -1203,6 +1209,15 @@ export interface RunFigmaToQcTestCasesInput {
    * `CUSTOM_CONTEXT_MARKDOWN_INVALID` before any LLM call is dispatched.
    */
   customContextMarkdown?: string;
+  /**
+   * Optional operator-supplied region-attestation pins. Server/UI callers
+   * pass these explicitly because their settings may not live in process.env.
+   */
+  regionAttestation?: {
+    readonly pinnedRegion?: RegionAttestationHostingRegion;
+    readonly sovereignSource?: boolean;
+    readonly signingKey?: string;
+  };
   /**
    * Optional explicit customer evaluation rubric. Unlike
    * `customContextMarkdown`, this is not treated as a business evidence source;
@@ -2726,6 +2741,12 @@ export const runFigmaToQcTestCases = async (
         deploymentId: args.deploymentId,
         endpointReference: args.endpointReference,
         observedAtUtc: args.observedAtUtc ?? input.generatedAt,
+        ...(input.regionAttestation?.pinnedRegion !== undefined
+          ? { pinnedRegion: input.regionAttestation.pinnedRegion }
+          : {}),
+        ...(input.regionAttestation?.sovereignSource !== undefined
+          ? { sovereignSource: input.regionAttestation.sovereignSource }
+          : {}),
       });
       regionAttestationObservations.push(observation);
       return observation;
@@ -2916,6 +2937,9 @@ export const runFigmaToQcTestCases = async (
       const captures = await fetchFigmaScreenCapturesForTestIntelligence({
         fileKey: figmaFile.fileKey,
         accessToken: input.source.accessToken,
+        ...(input.source.caCertPath !== undefined
+          ? { caCertPath: input.source.caCertPath }
+          : {}),
         screens: intent.screens.map((screen) => ({
           screenId: screen.screenId,
           screenName: screen.screenName,
@@ -7355,6 +7379,9 @@ export const runFigmaToQcTestCases = async (
           observations: collectRegionAttestationsForSources({
             observations: regionAttestationObservations,
           }),
+          ...(input.regionAttestation?.signingKey !== undefined
+            ? { signingKey: input.regionAttestation.signingKey }
+            : {}),
         }),
       };
     });
@@ -7393,6 +7420,9 @@ export const runFigmaToQcTestCases = async (
         observations: collectRegionAttestationsForSources({
           observations: regionAttestationObservations,
         }),
+        ...(input.regionAttestation?.signingKey !== undefined
+          ? { signingKey: input.regionAttestation.signingKey }
+          : {}),
       }),
     });
     const evidenceManifest = buildWave1ValidationEvidenceManifest({
@@ -7788,6 +7818,9 @@ const resolveFigmaSource = async (
     return await fetchFigmaFileForTestIntelligence({
       fileKey: parsed.fileKey,
       accessToken: source.accessToken,
+      ...(source.caCertPath !== undefined
+        ? { caCertPath: source.caCertPath }
+        : {}),
       maxResponseBytes: maxPayloadBytes,
       ...(parsed.nodeId !== undefined ? { nodeId: parsed.nodeId } : {}),
     });

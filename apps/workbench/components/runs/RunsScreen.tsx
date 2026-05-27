@@ -5,6 +5,7 @@ import { AlertTriangle } from "lucide-react";
 import { DEFAULT_FORM } from "@/lib/runs-form";
 import { cx, ui } from "@/lib/ui-classes";
 import { useWorkbench } from "@/lib/workbench-context";
+import { CredentialSetupPanel } from "@/components/settings/CredentialSetupPanel";
 import { RunDetail } from "./RunDetail";
 import { RunsForm } from "./RunsForm";
 import { SeedHint } from "./SeedHint";
@@ -19,6 +20,7 @@ export function RunsScreen(): ReactNode {
     resetRun,
     runBusy,
     runError,
+    settingsIssues,
   } = useWorkbench();
 
   const launch = useCallback(async (): Promise<void> => {
@@ -48,8 +50,14 @@ export function RunsScreen(): ReactNode {
           setForm={setRunForm}
           issues={runFormIssues}
           onSubmit={launch}
+          launchDisabled={settingsIssues.length > 0}
           submitting={runBusy}
         />
+        {settingsIssues.length > 0 && (
+          <div className="mx-auto max-w-[980px]">
+            <CredentialSetupPanel issues={settingsIssues} showManualLink />
+          </div>
+        )}
         {runError !== null && (
           <div
             role="alert"

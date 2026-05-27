@@ -22,7 +22,7 @@ const usage = `Usage: pnpm run local:start -- [options]
 Options:
   --mode=dev|prod       Start Next.js in dev mode or production mode. Default: dev.
   --port=<port>         Workbench port. Default: 1983.
-  --env-file=<path>     Dotenv file to load before starting. Default: .env.
+  --env-file=<path>     Optional dotenv file to load before starting. Default: none.
   --no-env-file         Do not load a dotenv file.
   --mock                Start with WORKBENCH_RUNNER_MODE=mock for UI-only local runs.
   --help                Print this help.
@@ -30,7 +30,7 @@ Options:
 
 const parseArgs = (argv) => {
   const options = {
-    envFile: path.join(repoRoot, ".env"),
+    envFile: null,
     mode: "dev",
     mock: false,
     port: 1983,

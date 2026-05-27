@@ -21,7 +21,7 @@ export interface PackageIdentity {
 
 export const PACKAGE_NAME: string = "@oscharko-dev/test-intelligence";
 
-export const PACKAGE_VERSION: string = "0.1.0-beta.3";
+export const PACKAGE_VERSION: string = "0.1.0-beta.4";
 
 export function resolveReleaseStage(version: string): ReleaseStage {
   const separatorIndex = version.indexOf("-");
