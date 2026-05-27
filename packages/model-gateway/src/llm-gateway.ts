@@ -24,7 +24,7 @@ import type { IncomingHttpHeaders } from "node:http";
 import { readFile } from "node:fs/promises";
 import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import * as net from "node:net";
-import { getCACertificates } from "node:tls";
+import * as tls from "node:tls";
 
 import { sanitizeErrorMessage } from "@oscharko-dev/ti-security";
 import { redactHighRiskSecrets } from "@oscharko-dev/ti-security";
@@ -712,12 +712,36 @@ const readRuntimeCaBundlePath = (
     : configured;
 };
 
+type RuntimeTlsModule = typeof tls & {
+  getCACertificates?: (source?: "default" | "system") => readonly string[];
+};
+
+const readRuntimeCaCertificates = (
+  source: "default" | "system",
+): readonly string[] => {
+  // Node 22.14 satisfies our engines range but does not expose this API yet.
+  // Keep the namespace lookup lazy so the published CLI can load there.
+  const getRuntimeCaCertificates = (tls as RuntimeTlsModule)
+    .getCACertificates;
+  if (typeof getRuntimeCaCertificates === "function") {
+    try {
+      return getRuntimeCaCertificates(source);
+    } catch {
+      return [];
+    }
+  }
+  return source === "default" ? tls.rootCertificates : [];
+};
+
+const runtimeProvidesSystemCaCertificates = (): boolean =>
+  typeof (tls as RuntimeTlsModule).getCACertificates === "function";
+
 const loadGatewayCaCertificates = async (
   caCertPath: string | undefined,
 ): Promise<string[]> => {
   const certificates = new Set<string>();
   for (const source of ["default", "system"] as const) {
-    for (const certificate of getCACertificates(source)) {
+    for (const certificate of readRuntimeCaCertificates(source)) {
       if (certificate.trim().length > 0) certificates.add(certificate);
     }
   }
@@ -731,19 +755,29 @@ const loadGatewayCaCertificates = async (
 const createTrustedGatewayFetch = (
   caCertPath: string | undefined,
 ): typeof fetch => {
-  const agentPromise = loadGatewayCaCertificates(caCertPath).then(
-    (ca) => new HttpsAgent({ ca, keepAlive: true, maxSockets: 32 }),
-  );
+  if (
+    readRuntimeCaBundlePath(caCertPath) === undefined &&
+    !runtimeProvidesSystemCaCertificates()
+  ) {
+    return fetch;
+  }
+  let agentPromise: Promise<HttpsAgent> | undefined;
+  const resolveAgent = (): Promise<HttpsAgent> => {
+    agentPromise ??= loadGatewayCaCertificates(caCertPath).then(
+      (ca) => new HttpsAgent({ ca, keepAlive: true, maxSockets: 32 }),
+    );
+    return agentPromise;
+  };
   return (async (input: string | URL | Request, init?: RequestInit) => {
     const url = resolveRequestUrl(input);
     const request = input instanceof Request ? input : undefined;
     if (url.protocol !== "https:") {
       throw new TypeError(
-        `custom CA gateway fetch only supports https URLs: ${url.protocol}`,
+        `trusted gateway fetch only supports https URLs: ${url.protocol}`,
       );
     }
     const body = resolveRequestBody(input, init);
-    const agent = await agentPromise;
+    const agent = await resolveAgent();
     return await new Promise<Response>((resolve, reject) => {
       const req = httpsRequest(
         url,
@@ -831,7 +865,7 @@ const dispatchOnce = async ({
   });
   // Compatibility mode is enforced eagerly in `validateConfig`; the type
   // system narrows it to the only currently-supported wire protocol here.
-  const url = buildOpenAiChatUrl(config.baseUrl);
+  const urls = buildOpenAiChatUrlCandidates(config.baseUrl);
   const body = buildOpenAiChatBody(config, request);
   const headers = await buildAuthHeaders(config, apiKeyProvider, attempt);
   if ("error" in headers) return headers.error;
@@ -863,15 +897,22 @@ const dispatchOnce = async ({
   const upstreamWasAborted = (): boolean =>
     upstreamSignal !== undefined && upstreamSignal.aborted;
 
-  let response: Response;
+  let response: Response | undefined;
   try {
-    response = await fetchImpl(url, {
-      method: "POST",
-      headers: headers.headers,
-      body: JSON.stringify(body),
-      redirect: "error",
-      signal: fetchSignal,
-    });
+    for (let index = 0; index < urls.length; index += 1) {
+      response = await fetchImpl(urls[index]!, {
+        method: "POST",
+        headers: headers.headers,
+        body: JSON.stringify(body),
+        redirect: "error",
+        signal: fetchSignal,
+      });
+      if (index === 0 && response.status === 404 && urls.length > 1) {
+        await cancelResponseBody(response);
+        continue;
+      }
+      break;
+    }
   } catch (err) {
     clearTimeout(timer);
     if (isAbortLikeError(err)) {
@@ -907,6 +948,16 @@ const dispatchOnce = async ({
       attempt,
     };
   }
+  if (response === undefined) {
+    clearTimeout(timer);
+    return {
+      outcome: "error",
+      errorClass: "transport",
+      message: "gateway dispatch produced no response",
+      retryable: true,
+      attempt,
+    };
+  }
 
   try {
     return await parseOpenAiChatResponse({
@@ -923,9 +974,28 @@ const dispatchOnce = async ({
   }
 };
 
-const buildOpenAiChatUrl = (baseUrl: string): string => {
+const appendOpenAiChatPath = (baseUrl: string): string => {
+  const url = new URL(baseUrl);
+  const trimmedPath = url.pathname.replace(/\/+$/u, "");
+  url.pathname = `${trimmedPath}/chat/completions`;
+  return url.href;
+};
+
+const buildAzureOpenAiV1FallbackUrl = (baseUrl: string): string | undefined => {
+  const url = new URL(baseUrl);
+  const trimmedPath = url.pathname.replace(/\/+$/u, "");
+  if (!trimmedPath.endsWith("/openai")) return undefined;
+  url.pathname = `${trimmedPath}/v1/chat/completions`;
+  return url.href;
+};
+
+const buildOpenAiChatUrlCandidates = (baseUrl: string): readonly string[] => {
   const trimmed = baseUrl.endsWith("/") ? baseUrl.slice(0, -1) : baseUrl;
-  return `${trimmed}/chat/completions`;
+  const primary = appendOpenAiChatPath(trimmed);
+  const azureV1Fallback = buildAzureOpenAiV1FallbackUrl(trimmed);
+  return azureV1Fallback !== undefined && azureV1Fallback !== primary
+    ? [azureV1Fallback, primary]
+    : [primary];
 };
 
 /**

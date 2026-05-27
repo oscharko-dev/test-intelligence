@@ -7,6 +7,23 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+const SENSITIVE_JSON_HEADERS = {
+  "cache-control": "no-store",
+  pragma: "no-cache",
+} as const;
+
+const settingsImportJson = (
+  body: unknown,
+  init?: ResponseInit,
+): NextResponse =>
+  NextResponse.json(body, {
+    ...init,
+    headers: {
+      ...SENSITIVE_JSON_HEADERS,
+      ...init?.headers,
+    },
+  });
+
 const jsonError = ({
   status,
   code,
@@ -15,7 +32,8 @@ const jsonError = ({
   status: number;
   code: string;
   message: string;
-}): NextResponse => NextResponse.json({ error: { code, message } }, { status });
+}): NextResponse =>
+  settingsImportJson({ error: { code, message } }, { status });
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
   let body: unknown;
@@ -42,12 +60,12 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   const content = typeof raw.content === "string" ? raw.content : "";
   try {
     if (envPath.length > 0) {
-      return NextResponse.json({
+      return settingsImportJson({
         settings: await importWorkbenchSettingsFromEnvPath(envPath),
       });
     }
     if (content.trim().length > 0) {
-      return NextResponse.json({
+      return settingsImportJson({
         settings: await importWorkbenchSettingsFromEnvContent(content),
       });
     }

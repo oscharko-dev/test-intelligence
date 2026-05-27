@@ -1,6 +1,6 @@
 {
   "name": "@oscharko-dev/ti-server",
-  "version": "0.1.0-beta.4",
+  "version": "0.1.0-beta.5",
   "description": "HTTP API under /api/v1/: run submission, status, evidence, TMS export, four-eyes approval.",
   "private": true,
   "type": "module",

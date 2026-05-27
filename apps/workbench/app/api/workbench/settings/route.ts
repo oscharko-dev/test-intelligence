@@ -7,6 +7,20 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+const SENSITIVE_JSON_HEADERS = {
+  "cache-control": "no-store",
+  pragma: "no-cache",
+} as const;
+
+const settingsJson = (body: unknown, init?: ResponseInit): NextResponse =>
+  NextResponse.json(body, {
+    ...init,
+    headers: {
+      ...SENSITIVE_JSON_HEADERS,
+      ...init?.headers,
+    },
+  });
+
 const jsonError = ({
   status,
   code,
@@ -15,11 +29,12 @@ const jsonError = ({
   status: number;
   code: string;
   message: string;
-}): NextResponse => NextResponse.json({ error: { code, message } }, { status });
+}): NextResponse =>
+  settingsJson({ error: { code, message } }, { status });
 
 export async function GET(): Promise<NextResponse> {
   try {
-    return NextResponse.json({ settings: await readWorkbenchSettings() });
+    return settingsJson({ settings: await readWorkbenchSettings() });
   } catch {
     return jsonError({
       status: 500,
@@ -46,7 +61,7 @@ export async function PUT(request: NextRequest): Promise<NextResponse> {
       typeof body === "object" && body !== null && "settings" in body
         ? (body as { settings?: unknown }).settings
         : body;
-    return NextResponse.json({
+    return settingsJson({
       settings: await writeWorkbenchSettings(settings),
     });
   } catch {

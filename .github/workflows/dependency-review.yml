@@ -54,10 +54,12 @@ jobs:
       - name: Lockfile advisory fallback
         if: github.event_name == 'pull_request' && steps.dependency_review.outcome == 'failure'
         shell: bash
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
           set -euo pipefail
 
-          if [ "${{ github.base_ref }}" = "main" ]; then
+          if [ "${BASE_REF}" = "main" ]; then
             echo "GitHub Dependency Review was unavailable or failed; running runtime lockfile audit fallback."
             pnpm audit --prod --audit-level moderate
           else
