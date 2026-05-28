@@ -1,5 +1,9 @@
+const packageVersion = process.env.npm_package_version ?? "local";
+const workbenchBuildId = `test-intelligence-workbench-${packageVersion.replaceAll(/[^A-Za-z0-9._-]/gu, "-")}`;
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  generateBuildId: async () => workbenchBuildId,
   reactStrictMode: true,
   poweredByHeader: false,
   typedRoutes: true,

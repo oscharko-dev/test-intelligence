@@ -1,6 +1,6 @@
 {
   "name": "@oscharko-dev/ti-core-engine",
-  "version": "0.1.0-beta.5",
+  "version": "0.1.0-beta.6",
   "description": "Domain logic: intent derivation, reconciliation, test-design model, workflow state machine.",
   "private": true,
   "type": "module",
@@ -25,6 +25,6 @@
     "@oscharko-dev/ti-contracts": "workspace:*",
     "@oscharko-dev/ti-security": "workspace:*",
     "@oscharko-dev/ti-tenant": "workspace:*",
-    "zod": "^4.4.2"
+    "zod": "^4.4.3"
   }
 }

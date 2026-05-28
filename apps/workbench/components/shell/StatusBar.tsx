@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useSyncExternalStore, type ReactNode } from "react";
 import { Clock, Globe } from "lucide-react";
 import { useWorkbench } from "@/lib/workbench-context";
 import type { RunStatus } from "@/lib/types";
@@ -23,17 +23,11 @@ function dotClass(status: RunStatus): string {
 
 export function StatusBar(): ReactNode {
   const { runState, lastRunAt, gatewayState } = useWorkbench();
-  const [time, setTime] = useState(INITIAL_CLOCK_LABEL);
-
-  useEffect(() => {
-    setTime(formatTime(new Date()));
-    const t = setInterval(() => {
-      setTime(formatTime(new Date()));
-    }, 1000);
-    return () => {
-      clearInterval(t);
-    };
-  }, []);
+  const time = useSyncExternalStore(
+    subscribeClock,
+    getClockSnapshot,
+    getClockServerSnapshot,
+  );
 
   return (
     <footer role="contentinfo" className={ui.statusbar.root}>
@@ -85,4 +79,19 @@ export function StatusBar(): ReactNode {
 
 function formatTime(d: Date): string {
   return d.toISOString().slice(11, 19) + "Z";
+}
+
+function subscribeClock(onStoreChange: () => void): () => void {
+  const timer = setInterval(onStoreChange, 1000);
+  return () => {
+    clearInterval(timer);
+  };
+}
+
+function getClockSnapshot(): string {
+  return formatTime(new Date());
+}
+
+function getClockServerSnapshot(): string {
+  return INITIAL_CLOCK_LABEL;
 }
