@@ -38,7 +38,15 @@
  */
 
 import { mkdir, readdir, rename, rm, writeFile } from "node:fs/promises";
-import { basename, dirname, join, relative } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import type { Meter, Tracer } from "@opentelemetry/api";
 
@@ -1620,6 +1628,46 @@ const replaceArtifactExtension = (
 
 const SAFE_CUSTOMER_ARTIFACT_FILENAME_PATTERN =
   /^[a-z0-9](?:[a-z0-9._-]{0,95})\.(?:md|pdf|txt)$/u;
+
+const resolveArtifactPathWithinRunDir = (
+  runDir: string,
+  artifactPath: string,
+): string => {
+  if (artifactPath.includes("\0")) {
+    throw new ProductionRunnerError({
+      failureClass: "PERSIST_FAILED",
+      message: "Artifact path rejected: invalid path segment.",
+      retryable: false,
+    });
+  }
+  const normalized = artifactPath.replaceAll("\\", "/");
+  if (isAbsolute(artifactPath) || /^[a-zA-Z]:/.test(artifactPath)) {
+    throw new ProductionRunnerError({
+      failureClass: "PERSIST_FAILED",
+      message: "Artifact path rejected: absolute paths are not allowed.",
+      retryable: false,
+    });
+  }
+  const segments = normalized.split("/").filter((segment) => segment.length > 0);
+  if (segments.some((segment) => segment === "." || segment === "..")) {
+    throw new ProductionRunnerError({
+      failureClass: "PERSIST_FAILED",
+      message: "Artifact path rejected: traversal segments are not allowed.",
+      retryable: false,
+    });
+  }
+  const resolvedRunDir = resolve(runDir);
+  const candidate = resolve(runDir, normalized);
+  const rel = relative(resolvedRunDir, candidate);
+  if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+    throw new ProductionRunnerError({
+      failureClass: "PERSIST_FAILED",
+      message: "Artifact path rejected: resolved outside run directory.",
+      retryable: false,
+    });
+  }
+  return candidate;
+};
 
 const assertSafeCustomerArtifactFilename = (
   filename: string,
@@ -6759,20 +6807,35 @@ export const runFigmaToQcTestCases = async (
       ...(acceptanceCriteria !== undefined ? { acceptanceCriteria } : {}),
       ...(input.showConfidence === true ? { showConfidence: true } : {}),
     });
-    const markdownDir = join(artifactDir, "customer-markdown");
-    const customerPdfDir = join(artifactDir, "customer-pdf");
-    const customerTxtDir = join(artifactDir, "customer-txt");
+    const markdownDir = resolveArtifactPathWithinRunDir(
+      artifactDir,
+      "customer-markdown",
+    );
+    const customerPdfDir = resolveArtifactPathWithinRunDir(
+      artifactDir,
+      "customer-pdf",
+    );
+    const customerTxtDir = resolveArtifactPathWithinRunDir(
+      artifactDir,
+      "customer-txt",
+    );
     await mkdir(markdownDir, { recursive: true });
     await mkdir(customerPdfDir, { recursive: true });
     await mkdir(customerTxtDir, { recursive: true });
-    const combinedMarkdownPath = join(markdownDir, "testfaelle.md");
+    const combinedMarkdownPath = resolveArtifactPathWithinRunDir(
+      artifactDir,
+      "customer-markdown/testfaelle.md",
+    );
     const combinedMarkdownBytes = Buffer.from(
       rendered.combinedMarkdown,
       "utf8",
     );
     await writeAtomicText(combinedMarkdownPath, rendered.combinedMarkdown);
     const combinedText = markdownToCustomerPlainText(rendered.combinedMarkdown);
-    const combinedTextPath = join(customerTxtDir, "testfaelle.txt");
+    const combinedTextPath = resolveArtifactPathWithinRunDir(
+      artifactDir,
+      "customer-txt/testfaelle.txt",
+    );
     const combinedTextBytes = Buffer.from(combinedText, "utf8");
     await writeAtomicText(combinedTextPath, combinedText);
     const perCasePaths: string[] = [];
@@ -6786,7 +6849,10 @@ export const runFigmaToQcTestCases = async (
         file.filename,
         ".md",
       );
-      const filePath = join(markdownDir, markdownFilename);
+      const filePath = resolveArtifactPathWithinRunDir(
+        artifactDir,
+        `customer-markdown/${markdownFilename}`,
+      );
       await writeAtomicText(filePath, file.body);
       perCasePaths.push(filePath);
       const textFilename = assertSafeCustomerArtifactFilename(
@@ -6794,7 +6860,10 @@ export const runFigmaToQcTestCases = async (
         ".txt",
       );
       const textBody = markdownToCustomerPlainText(file.body);
-      const textPath = join(customerTxtDir, textFilename);
+      const textPath = resolveArtifactPathWithinRunDir(
+        artifactDir,
+        `customer-txt/${textFilename}`,
+      );
       const textBytes = Buffer.from(textBody, "utf8");
       await writeAtomicText(textPath, textBody);
       perCaseTextPaths.push(textPath);
@@ -6814,7 +6883,10 @@ export const runFigmaToQcTestCases = async (
         jobId: input.jobId,
         markdown: file.body,
       });
-      const singleCasePdfPath = join(customerPdfDir, pdfFilename);
+      const singleCasePdfPath = resolveArtifactPathWithinRunDir(
+        artifactDir,
+        `customer-pdf/${pdfFilename}`,
+      );
       await writeAtomicBytes(singleCasePdfPath, singleCasePdfBytes);
       perCasePdfPaths.push(singleCasePdfPath);
       perCasePdfArtifacts.push({
@@ -6854,8 +6926,14 @@ export const runFigmaToQcTestCases = async (
       testfaelleMarkdown: rendered.combinedMarkdown,
       screenshots: mappeScreenshots,
     });
-    const pdfPath = join(markdownDir, "testfaelle.pdf");
-    const customerPdfMappePath = join(customerPdfDir, "testfaelle.pdf");
+    const pdfPath = resolveArtifactPathWithinRunDir(
+      artifactDir,
+      "customer-markdown/testfaelle.pdf",
+    );
+    const customerPdfMappePath = resolveArtifactPathWithinRunDir(
+      artifactDir,
+      "customer-pdf/testfaelle.pdf",
+    );
     await writeAtomicBytes(pdfPath, pdfBytes);
     await writeAtomicBytes(customerPdfMappePath, pdfBytes);
     const visualSidecarSummary =
