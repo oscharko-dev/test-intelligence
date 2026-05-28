@@ -19,6 +19,7 @@
     "a11y_judge",
     "coverage_planner",
     "logic_judge",
+    "requirements_synthesis",
     "risk_ranker",
     "test_generation",
     "visual_fallback",
