@@ -94,6 +94,8 @@ const MODEL_ROUTING_ROLE_DESCRIPTIONS: Readonly<
 > = Object.freeze({
   test_generation:
     "Generates the candidate test-case list from the typed business intent IR. Heavy-tier reasoning model; output is constrained-decoded against the GeneratedTestCaseList JSON schema.",
+  requirements_synthesis:
+    "Synthesizes business requirements, Jira Stories, acceptance criteria, and open questions from normalized visual/UI evidence. Text-only role; final artifact rendering stays deterministic.",
   logic_judge:
     "Evaluates each generated test case against the policy gate, repair instructions, and coverage budget. Cross-family secondary slot is required for adversarial diversity (#2099).",
   coverage_planner:

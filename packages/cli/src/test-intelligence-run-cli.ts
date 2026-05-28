@@ -158,6 +158,8 @@ const TEST_INTELLIGENCE_ENABLE_MUTATION_EVAL_ENV =
 const TEST_INTELLIGENCE_GENERATOR_RECOMMENDED_DEPLOYMENT = "mistral-large-3";
 const TEST_INTELLIGENCE_GENERATOR_LEGACY_DEPLOYMENT = "gpt-oss-120b";
 const TEST_INTELLIGENCE_LOGIC_JUDGE_RECOMMENDED_DEPLOYMENT = "gpt-oss-120b";
+const TEST_INTELLIGENCE_REQUIREMENTS_SYNTHESIS_RECOMMENDED_DEPLOYMENT =
+  "gpt-oss-120b";
 const TEST_INTELLIGENCE_VISUAL_PRIMARY_RECOMMENDED_DEPLOYMENT =
   "llama-4-maverick-vision";
 const TEST_INTELLIGENCE_VISUAL_FALLBACK_RECOMMENDED_DEPLOYMENT =
@@ -203,6 +205,7 @@ type TopologyRoleStatus = "configured" | "disabled" | "skipped";
 export interface TopologyInputSources {
   modelDeployment: TopologyInputSource;
   logicJudgeDeployment: TopologyInputSource;
+  requirementsSynthesisDeployment?: TopologyInputSource;
   coveragePlannerDeployment: TopologyInputSource;
   riskRankerDeployment: TopologyInputSource;
   visualPrimaryDeployment: TopologyInputSource;
@@ -214,6 +217,7 @@ interface TopologyRoleReportEntry {
   role:
     | "generator"
     | "logic_judge"
+    | "requirements_synthesis"
     | "visual_primary"
     | "visual_fallback"
     | "coverage_planner"
@@ -295,6 +299,7 @@ type DoctorRoleStatus = "ok" | "warning" | "error";
 export interface TestIntelligenceDoctorOptions {
   modelDeployment: string;
   logicJudgeDeployment: string | undefined;
+  requirementsSynthesisDeployment?: string | undefined;
   coveragePlannerDeployment: string | undefined;
   riskRankerDeployment: string | undefined;
   visualPrimaryDeployment: string | undefined;
@@ -434,6 +439,13 @@ export interface TestIntelligenceRunOptions {
    */
   logicJudgeDeployment: string | undefined;
   /**
+   * Optional dedicated deployment for Requirements Synthesis. When set, Auto
+   * Jira Story generation uses this text-only role to transform normalized
+   * visual evidence into a Jira Story and acceptance criteria. When unset, the
+   * production topology reuses `modelDeployment`.
+   */
+  requirementsSynthesisDeployment?: string | undefined;
+  /**
    * Optional dedicated deployment for the Coverage-Planner augmentation
    * (Issue #1934). When set, the runner may ask this model to strengthen the
    * deterministic coverage plan before prompt compilation. When `undefined`,
@@ -469,9 +481,9 @@ export interface TestIntelligenceRunOptions {
   noVisualSidecar: boolean;
   /**
    * When true, no manual `--custom-context-markdown` file is read. The runner
-   * generates a Jira Story with acceptance criteria from the Figma screenshot
-   * using the configured visual-primary model and feeds that canonicalized
-   * Markdown into the normal custom-context path.
+   * generates a Jira Story with acceptance criteria from normalized Figma and
+   * visual-sidecar evidence using the text-only Requirements Synthesis role,
+   * then feeds that canonicalized Markdown into the normal custom-context path.
    */
   autoJiraStoryFromVisual?: boolean;
   /**
@@ -644,6 +656,9 @@ export const parseTestIntelligenceRunArgs = (
     PRODUCTION_RUNNER_TEST_GENERATION_DEPLOYMENT;
   let logicJudgeDeployment: string | undefined =
     env.TEST_INTELLIGENCE_LOGIC_JUDGE_DEPLOYMENT?.trim() || undefined;
+  let requirementsSynthesisDeployment: string | undefined =
+    env.TEST_INTELLIGENCE_REQUIREMENTS_SYNTHESIS_DEPLOYMENT?.trim() ||
+    undefined;
   let coveragePlannerDeployment: string | undefined =
     env.TEST_INTELLIGENCE_COVERAGE_PLANNER_DEPLOYMENT?.trim() || undefined;
   let riskRankerDeployment: string | undefined =
@@ -721,6 +736,13 @@ export const parseTestIntelligenceRunArgs = (
     logicJudgeDeployment:
       readTrimmedEnv(env, "TEST_INTELLIGENCE_LOGIC_JUDGE_DEPLOYMENT") !==
       undefined
+        ? "env"
+        : "default",
+    requirementsSynthesisDeployment:
+      readTrimmedEnv(
+        env,
+        "TEST_INTELLIGENCE_REQUIREMENTS_SYNTHESIS_DEPLOYMENT",
+      ) !== undefined
         ? "env"
         : "default",
     coveragePlannerDeployment:
@@ -849,6 +871,19 @@ export const parseTestIntelligenceRunArgs = (
       }
       logicJudgeDeployment = value;
       topologyInputSources.logicJudgeDeployment = "cli";
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--requirements-synthesis-deployment") {
+      const value = next?.trim();
+      if (!value) {
+        throw new TestIntelligenceRunOperatorError(
+          "--requirements-synthesis-deployment requires a non-empty deployment name",
+        );
+      }
+      requirementsSynthesisDeployment = value;
+      topologyInputSources.requirementsSynthesisDeployment = "cli";
       index += 1;
       continue;
     }
@@ -1315,6 +1350,7 @@ export const parseTestIntelligenceRunArgs = (
     modelEndpoint,
     modelDeployment,
     logicJudgeDeployment,
+    requirementsSynthesisDeployment,
     coveragePlannerDeployment,
     riskRankerDeployment,
     visualPrimaryDeployment,
@@ -1370,6 +1406,9 @@ export const parseTestIntelligenceDoctorArgs = (
     PRODUCTION_RUNNER_TEST_GENERATION_DEPLOYMENT;
   let logicJudgeDeployment: string | undefined =
     env.TEST_INTELLIGENCE_LOGIC_JUDGE_DEPLOYMENT?.trim() || undefined;
+  let requirementsSynthesisDeployment: string | undefined =
+    env.TEST_INTELLIGENCE_REQUIREMENTS_SYNTHESIS_DEPLOYMENT?.trim() ||
+    undefined;
   let coveragePlannerDeployment: string | undefined =
     env.TEST_INTELLIGENCE_COVERAGE_PLANNER_DEPLOYMENT?.trim() || undefined;
   let riskRankerDeployment: string | undefined =
@@ -1391,6 +1430,13 @@ export const parseTestIntelligenceDoctorArgs = (
     logicJudgeDeployment:
       readTrimmedEnv(env, "TEST_INTELLIGENCE_LOGIC_JUDGE_DEPLOYMENT") !==
       undefined
+        ? "env"
+        : "default",
+    requirementsSynthesisDeployment:
+      readTrimmedEnv(
+        env,
+        "TEST_INTELLIGENCE_REQUIREMENTS_SYNTHESIS_DEPLOYMENT",
+      ) !== undefined
         ? "env"
         : "default",
     coveragePlannerDeployment:
@@ -1446,6 +1492,19 @@ export const parseTestIntelligenceDoctorArgs = (
       }
       logicJudgeDeployment = value;
       topologyInputSources.logicJudgeDeployment = "cli";
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--requirements-synthesis-deployment") {
+      const value = next?.trim();
+      if (!value) {
+        throw new TestIntelligenceRunOperatorError(
+          "--requirements-synthesis-deployment requires a non-empty deployment name",
+        );
+      }
+      requirementsSynthesisDeployment = value;
+      topologyInputSources.requirementsSynthesisDeployment = "cli";
       index += 1;
       continue;
     }
@@ -1523,6 +1582,7 @@ export const parseTestIntelligenceDoctorArgs = (
   return {
     modelDeployment,
     logicJudgeDeployment,
+    requirementsSynthesisDeployment,
     coveragePlannerDeployment,
     riskRankerDeployment,
     visualPrimaryDeployment,
@@ -2462,6 +2522,12 @@ export const buildLiveVisualSidecarBundle = (
       ...(options.logicJudgeDeployment !== undefined
         ? { logicJudgeDeployment: options.logicJudgeDeployment }
         : {}),
+      ...(options.requirementsSynthesisDeployment !== undefined
+        ? {
+            requirementsSynthesisDeployment:
+              options.requirementsSynthesisDeployment,
+          }
+        : {}),
       ...(a11yJudgeDeployment !== undefined ? { a11yJudgeDeployment } : {}),
       ...(options.coveragePlannerDeployment !== undefined
         ? { coveragePlannerDeployment: options.coveragePlannerDeployment }
@@ -2603,6 +2669,25 @@ const buildTopologyPreflightReport = ({
   if (INCOMPATIBLE_OPENAI_CHAT_DEPLOYMENTS.has(options.modelDeployment)) {
     errors.push(
       `generator deployment "${options.modelDeployment}" is incompatible with the openai_chat role contract`,
+    );
+  }
+
+  const requirementsSynthesisDeployment =
+    options.requirementsSynthesisDeployment ?? options.modelDeployment;
+  roles.push({
+    role: "requirements_synthesis",
+    deployment: requirementsSynthesisDeployment,
+    source: optionSources?.requirementsSynthesisDeployment ?? "default",
+    status: "configured",
+  });
+  if (requirementsSynthesisDeployment.trim().length === 0) {
+    errors.push("requirements-synthesis deployment must be non-empty");
+  }
+  if (
+    INCOMPATIBLE_OPENAI_CHAT_DEPLOYMENTS.has(requirementsSynthesisDeployment)
+  ) {
+    errors.push(
+      `requirements-synthesis deployment "${requirementsSynthesisDeployment}" is incompatible with the openai_chat role contract`,
     );
   }
 
@@ -2909,6 +2994,56 @@ const buildDoctorReport = (
       fix: joinFixes(
         `set TEST_INTELLIGENCE_TESTCASE_MODEL_DEPLOYMENT=${TEST_INTELLIGENCE_GENERATOR_RECOMMENDED_DEPLOYMENT}`,
         `pass --model-deployment ${TEST_INTELLIGENCE_GENERATOR_RECOMMENDED_DEPLOYMENT}`,
+      ),
+    });
+  }
+
+  const requirementsSynthesisDeployment =
+    options.requirementsSynthesisDeployment ?? options.modelDeployment;
+  if (
+    INCOMPATIBLE_OPENAI_CHAT_DEPLOYMENTS.has(requirementsSynthesisDeployment)
+  ) {
+    pushRole({
+      role: "requirements_synthesis",
+      deployment: requirementsSynthesisDeployment,
+      source:
+        options.topologyInputSources.requirementsSynthesisDeployment ??
+        "default",
+      status: "error",
+      summary: `deployment "${requirementsSynthesisDeployment}" is incompatible with the openai_chat requirements-synthesis role contract`,
+      fix: joinFixes(
+        `set TEST_INTELLIGENCE_REQUIREMENTS_SYNTHESIS_DEPLOYMENT=${TEST_INTELLIGENCE_REQUIREMENTS_SYNTHESIS_RECOMMENDED_DEPLOYMENT}`,
+        `pass --requirements-synthesis-deployment ${TEST_INTELLIGENCE_REQUIREMENTS_SYNTHESIS_RECOMMENDED_DEPLOYMENT}`,
+      ),
+    });
+  } else if (
+    requirementsSynthesisDeployment ===
+    TEST_INTELLIGENCE_REQUIREMENTS_SYNTHESIS_RECOMMENDED_DEPLOYMENT
+  ) {
+    pushRole({
+      role: "requirements_synthesis",
+      deployment: requirementsSynthesisDeployment,
+      source:
+        options.topologyInputSources.requirementsSynthesisDeployment ??
+        "default",
+      status: "ok",
+      summary:
+        options.requirementsSynthesisDeployment === undefined
+          ? "inherits the generator deployment and matches the runbook recommendation for requirements synthesis"
+          : "matches the runbook recommendation for requirements synthesis",
+    });
+  } else {
+    pushRole({
+      role: "requirements_synthesis",
+      deployment: requirementsSynthesisDeployment,
+      source:
+        options.topologyInputSources.requirementsSynthesisDeployment ??
+        "default",
+      status: "warning",
+      summary: `deployment "${requirementsSynthesisDeployment}" is valid but differs from the runbook recommendation ${TEST_INTELLIGENCE_REQUIREMENTS_SYNTHESIS_RECOMMENDED_DEPLOYMENT}`,
+      fix: joinFixes(
+        `set TEST_INTELLIGENCE_REQUIREMENTS_SYNTHESIS_DEPLOYMENT=${TEST_INTELLIGENCE_REQUIREMENTS_SYNTHESIS_RECOMMENDED_DEPLOYMENT}`,
+        `pass --requirements-synthesis-deployment ${TEST_INTELLIGENCE_REQUIREMENTS_SYNTHESIS_RECOMMENDED_DEPLOYMENT}`,
       ),
     });
   }
@@ -4222,6 +4357,7 @@ export const runTestIntelligenceCommand = async (
         `  source kind   : ${resolved.source.kind}`,
         `  deployment    : ${options.modelDeployment}`,
         `  judge deploy  : ${options.logicJudgeDeployment ?? "(reuses generator deployment)"}`,
+        `  req synth     : ${options.requirementsSynthesisDeployment ?? "(reuses generator deployment)"}`,
         `  planner deploy: ${options.coveragePlannerDeployment ?? "(disabled; deterministic-only)"}`,
         `  ranker deploy : ${options.riskRankerDeployment ?? "(disabled; deterministic-only)"}`,
         `  policy profile: ${options.policyProfile ?? "(default)"}`,
@@ -4239,7 +4375,7 @@ export const runTestIntelligenceCommand = async (
         `  output subdir : ${outputRunSubdirMode ?? "(none)"}`,
         `  harness mode  : off (dry_run never reaches the harness)`,
         `  custom md ctx : ${customContextMarkdownBody !== undefined ? `loaded (${Buffer.byteLength(customContextMarkdownBody, "utf8")} bytes)` : "(none)"}`,
-        `  auto Jira    : ${options.autoJiraStoryFromVisual === true ? "enabled (visual-primary)" : "disabled"}`,
+        `  auto Jira    : ${options.autoJiraStoryFromVisual === true ? "enabled (requirements_synthesis)" : "disabled"}`,
         `  customer eval : ${customerEvalMarkdownBody !== undefined ? `loaded (${Buffer.byteLength(customerEvalMarkdownBody, "utf8")} bytes)` : "(none)"}`,
         `  customer prof : ${customerProfileInput !== undefined ? `loaded (${customerProfileRawBytes} bytes)` : "(none)"}`,
         `  tenant bundle : ${tenantBundleInput !== undefined ? `loaded (${tenantBundleRawBytes} bytes)` : "(none)"}`,
@@ -4385,6 +4521,9 @@ export const runTestIntelligenceCommand = async (
         options.topologyInputSources?.logicJudgeDeployment ?? "default",
       judge_secondary:
         options.topologyInputSources?.logicJudgeDeployment ?? "default",
+      requirements_synthesis:
+        options.topologyInputSources?.requirementsSynthesisDeployment ??
+        "default",
       coverage_planner:
         options.topologyInputSources?.coveragePlannerDeployment ?? "default",
       risk_ranker:
@@ -4585,6 +4724,13 @@ LLM (defaults from environment):
                              gpt-oss-120b judge) so a self-consistency
                              bias from the generator is not amplified
                              by reusing the same model on the judge.
+  --requirements-synthesis-deployment <name>
+                             Optional dedicated text-only deployment for
+                             Auto Jira Story requirements synthesis.
+                             Default: env
+                             TEST_INTELLIGENCE_REQUIREMENTS_SYNTHESIS_DEPLOYMENT
+                             (falls back to the generator deployment
+                             when unset).
   --coverage-planner-deployment <name>
                              Optional dedicated deployment for the
                              Coverage-Planner augmentation (Issue #1934).
@@ -4783,6 +4929,8 @@ Usage:
 Deployments (defaults from environment):
   --model-deployment <name>             default: env TEST_INTELLIGENCE_TESTCASE_MODEL_DEPLOYMENT
   --logic-judge-deployment <name>       default: env TEST_INTELLIGENCE_LOGIC_JUDGE_DEPLOYMENT
+  --requirements-synthesis-deployment <name>
+                                        default: env TEST_INTELLIGENCE_REQUIREMENTS_SYNTHESIS_DEPLOYMENT
   --coverage-planner-deployment <name>  default: env TEST_INTELLIGENCE_COVERAGE_PLANNER_DEPLOYMENT
   --risk-ranker-deployment <name>       default: env TEST_INTELLIGENCE_RISK_RANKER_DEPLOYMENT
   --visual-primary-deployment <name>    default: env TEST_INTELLIGENCE_VISUAL_PRIMARY_DEPLOYMENT

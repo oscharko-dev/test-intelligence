@@ -35,6 +35,7 @@ export interface BuildProductionTopologyClientConfigsInput {
   deployment: string;
   visualPrimaryDeployment: string;
   visualFallbackDeployment: string;
+  requirementsSynthesisDeployment?: string;
   logicJudgeDeployment?: string;
   a11yJudgeDeployment?: string;
   coveragePlannerDeployment?: string;
@@ -48,6 +49,7 @@ export interface BuildProductionTopologyClientConfigsInput {
 
 type ProductionTopologyRole =
   | "test_generation"
+  | "requirements_synthesis"
   | "logic_judge"
   | "coverage_planner"
   | "risk_ranker"
@@ -103,6 +105,7 @@ const wireStructuredOutputOverrideForDeployment = (
 const maxRetriesForProductionRole = (role: ProductionTopologyRole): number => {
   switch (role) {
     case "test_generation":
+    case "requirements_synthesis":
     case "logic_judge":
     case "coverage_planner":
     case "risk_ranker":
@@ -176,6 +179,7 @@ export const buildProductionRoleClientConfig = (input: {
 
   switch (input.role) {
     case "test_generation":
+    case "requirements_synthesis":
     case "logic_judge":
       return withOptionalIctRef(
         {
@@ -273,6 +277,16 @@ export const buildProductionTopologyClientConfigs = (
           }),
         }
       : {}),
+    requirementsSynthesis: buildProductionRoleClientConfig({
+      role: "requirements_synthesis",
+      endpoint: input.endpoint,
+      deployment: deploymentFor("requirements_synthesis"),
+      modelRevisionSuffix: input.modelRevisionSuffix,
+      gatewayRelease: input.gatewayRelease,
+      ...(input.ictRegisterRef !== undefined
+        ? { ictRegisterRef: input.ictRegisterRef }
+        : {}),
+    }),
     visualPrimary: buildProductionRoleClientConfig({
       role: "visual_primary",
       endpoint: input.visualEndpoint,
@@ -358,6 +372,15 @@ export const resolveProductionTopologyModelRoutingPolicy = (
         role: "test_generation",
         deployment: input.deployment,
         modelRevision: `${input.deployment}@${input.modelRevisionSuffix}`,
+        gatewayRelease: input.gatewayRelease,
+        ...(input.ictRegisterRef !== undefined
+          ? { ictRegisterRef: input.ictRegisterRef }
+          : {}),
+      },
+      {
+        role: "requirements_synthesis",
+        deployment: input.requirementsSynthesisDeployment ?? input.deployment,
+        modelRevision: `${input.requirementsSynthesisDeployment ?? input.deployment}@${input.modelRevisionSuffix}`,
         gatewayRelease: input.gatewayRelease,
         ...(input.ictRegisterRef !== undefined
           ? { ictRegisterRef: input.ictRegisterRef }

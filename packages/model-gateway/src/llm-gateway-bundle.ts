@@ -28,6 +28,16 @@ export interface LlmGatewayClientBundle {
    * model family can cast the 4th vote.
    */
   testGenerationSecondary?: LlmGatewayClient;
+  /**
+   * Optional dedicated text-only requirements synthesizer. When set, the
+   * production runner uses this client to turn normalized visual/UI evidence
+   * into business requirements such as Jira Stories and acceptance criteria.
+   *
+   * The client must declare role `"requirements_synthesis"` and must NOT
+   * advertise image-input support. Multimodal extraction stays owned by the
+   * visual sidecar; this role consumes only structured evidence.
+   */
+  requirementsSynthesis?: LlmGatewayClient;
   visualPrimary: LlmGatewayClient;
   visualFallback: LlmGatewayClient;
   /**
@@ -75,6 +85,7 @@ export interface LlmGatewayClientBundle {
 export interface LlmGatewayClientBundleConfigs {
   testGeneration: LlmGatewayClientConfig;
   testGenerationSecondary?: LlmGatewayClientConfig;
+  requirementsSynthesis?: LlmGatewayClientConfig;
   visualPrimary: LlmGatewayClientConfig;
   visualFallback: LlmGatewayClientConfig;
   a11yJudge?: LlmGatewayClientConfig;
@@ -86,6 +97,7 @@ export interface LlmGatewayClientBundleConfigs {
 export interface MockLlmGatewayClientBundleInputs {
   testGeneration: CreateMockLlmGatewayClientInput;
   testGenerationSecondary?: CreateMockLlmGatewayClientInput;
+  requirementsSynthesis?: CreateMockLlmGatewayClientInput;
   visualPrimary: CreateMockLlmGatewayClientInput;
   visualFallback: CreateMockLlmGatewayClientInput;
   a11yJudge?: CreateMockLlmGatewayClientInput;
@@ -106,6 +118,7 @@ export interface LlmGatewayBundleProbeResult {
 
 const ROLE_ORDER = [
   "test_generation",
+  "requirements_synthesis",
   "visual_primary",
   "visual_fallback",
   "a11y_judge",
@@ -145,6 +158,18 @@ const assertBundle = (bundle: LlmGatewayClientBundle): void => {
     if (bundle.testGenerationSecondary.declaredCapabilities.imageInputSupport) {
       throw new RangeError(
         "LlmGatewayClientBundle: testGenerationSecondary must not declare image input support",
+      );
+    }
+  }
+  if (bundle.requirementsSynthesis !== undefined) {
+    assertRole({
+      actual: bundle.requirementsSynthesis.role,
+      expected: "requirements_synthesis",
+      label: "requirementsSynthesis",
+    });
+    if (bundle.requirementsSynthesis.declaredCapabilities.imageInputSupport) {
+      throw new RangeError(
+        "LlmGatewayClientBundle: requirementsSynthesis must not declare image input support",
       );
     }
   }
@@ -237,6 +262,14 @@ export const createLlmGatewayClientBundle = (
           ),
         }
       : {}),
+    ...(configs.requirementsSynthesis !== undefined
+      ? {
+          requirementsSynthesis: createLlmGatewayClient(
+            configs.requirementsSynthesis,
+            runtime,
+          ),
+        }
+      : {}),
     visualPrimary: createLlmGatewayClient(configs.visualPrimary, runtime),
     visualFallback: createLlmGatewayClient(configs.visualFallback, runtime),
     ...(configs.a11yJudge !== undefined
@@ -275,6 +308,13 @@ export const createMockLlmGatewayClientBundle = (
           ),
         }
       : {}),
+    ...(inputs.requirementsSynthesis !== undefined
+      ? {
+          requirementsSynthesis: createMockLlmGatewayClient(
+            inputs.requirementsSynthesis,
+          ),
+        }
+      : {}),
     visualPrimary: createMockLlmGatewayClient(inputs.visualPrimary),
     visualFallback: createMockLlmGatewayClient(inputs.visualFallback),
     ...(inputs.a11yJudge !== undefined
@@ -308,6 +348,9 @@ export const probeLlmGatewayClientBundle = async ({
   assertBundle(bundle);
   const byRole: Partial<Record<LlmGatewayRole, LlmGatewayClient>> = {
     test_generation: bundle.testGeneration,
+    ...(bundle.requirementsSynthesis !== undefined
+      ? { requirements_synthesis: bundle.requirementsSynthesis }
+      : {}),
     visual_primary: bundle.visualPrimary,
     visual_fallback: bundle.visualFallback,
     ...(bundle.a11yJudge !== undefined ? { a11y_judge: bundle.a11yJudge } : {}),

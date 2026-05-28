@@ -2226,6 +2226,7 @@ export const ALLOWED_LLM_GATEWAY_ROLES = [
   "test_generation",
   "visual_primary",
   "visual_fallback",
+  "requirements_synthesis",
   "logic_judge",
   "a11y_judge",
   "coverage_planner",
@@ -3483,6 +3484,7 @@ export type ModelRoutingRouteSlot = (typeof MODEL_ROUTING_ROUTE_SLOTS)[number];
  */
 export const MODEL_ROUTING_ROLES = [
   "test_generation",
+  "requirements_synthesis",
   "logic_judge",
   "coverage_planner",
   "risk_ranker",
@@ -9701,6 +9703,7 @@ export const ALLOWED_AGENT_SOURCE_LABELS = [
   "visual_primary",
   "visual_fallback",
   "generator",
+  "requirements_synthesis",
   "coverage_planner",
   "risk_ranker",
   "adversarial_critic",

@@ -14,6 +14,7 @@ import {
 
 export type LiveRoleContractSmokeRole =
   | "generator"
+  | "requirements_synthesis"
   | "logic_judge"
   | "coverage_planner"
   | "risk_ranker"
@@ -100,6 +101,20 @@ const validateLogicJudgeContent = (content: unknown): string | undefined => {
   if (!Array.isArray(content["findings"])) return "findings must be an array";
   if (!Array.isArray(content["repairInstructions"])) {
     return "repairInstructions must be an array";
+  }
+  return undefined;
+};
+
+const validateRequirementsSynthesisContent = (
+  content: unknown,
+): string | undefined => {
+  if (!isRecord(content)) return "expected object root";
+  if (!isNonEmptyString(content["summary"])) {
+    return "summary must be non-empty";
+  }
+  const criteriaRaw = content["acceptanceCriteria"];
+  if (!Array.isArray(criteriaRaw) || criteriaRaw.length === 0) {
+    return "acceptanceCriteria must contain at least one entry";
   }
   return undefined;
 };
@@ -279,6 +294,36 @@ const buildRoleDescriptors = (
       validateContent: validateVisualContent,
     },
   ];
+
+  if (bundle.requirementsSynthesis !== undefined) {
+    descriptors.push({
+      role: "requirements_synthesis",
+      client: bundle.requirementsSynthesis,
+      request: {
+        jobId: "live-role-contract-requirements-synthesis",
+        systemPrompt:
+          "You are a requirements-synthesis role smoke probe. Return only JSON that matches the supplied schema.",
+        userPrompt:
+          "Return a concise summary and exactly one observable acceptance criterion for a visible form submit action.",
+        responseSchema: {
+          type: "object",
+          additionalProperties: false,
+          required: ["summary", "acceptanceCriteria"],
+          properties: {
+            summary: { type: "string", minLength: 1 },
+            acceptanceCriteria: {
+              type: "array",
+              minItems: 1,
+              items: { type: "string", minLength: 1 },
+            },
+          },
+        },
+        responseSchemaName:
+          "test-intelligence-live-role-contract-requirements-synthesis-v1",
+      },
+      validateContent: validateRequirementsSynthesisContent,
+    });
+  }
 
   if (bundle.logicJudge !== undefined) {
     descriptors.push({

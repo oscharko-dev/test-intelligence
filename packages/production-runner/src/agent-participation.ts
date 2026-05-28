@@ -25,6 +25,7 @@ export const AGENT_PARTICIPATION_ROLES = [
   "generator",
   "logic_judge",
   "judge_secondary",
+  "requirements_synthesis",
   "coverage_planner",
   "risk_ranker",
   "adversarial_critic",
@@ -36,8 +37,7 @@ export const AGENT_PARTICIPATION_ROLES = [
   "test_generation_repair",
 ] as const;
 
-export type AgentParticipationRole =
-  (typeof AGENT_PARTICIPATION_ROLES)[number];
+export type AgentParticipationRole = (typeof AGENT_PARTICIPATION_ROLES)[number];
 
 export const AGENT_PARTICIPATION_CONFIGURATION_SOURCES = [
   "cli",
@@ -142,6 +142,7 @@ const DEPLOYED_LLM_SIDECAR_ROLES = new Set<AgentParticipationRole>([
   "generator",
   "logic_judge",
   "judge_secondary",
+  "requirements_synthesis",
   "coverage_planner",
   "risk_ranker",
   "visual_primary",
@@ -178,7 +179,9 @@ export const buildAgentParticipationArtifact = (
   const normalizedRoles = [...input.roles]
     .map((entry) => ({
       role: entry.role,
-      ...(entry.deployment !== undefined ? { deployment: entry.deployment } : {}),
+      ...(entry.deployment !== undefined
+        ? { deployment: entry.deployment }
+        : {}),
       configurationSource: entry.configurationSource,
       status: entry.status,
       attemptCount: entry.attemptCount,
@@ -210,10 +213,12 @@ export const buildAgentParticipationArtifact = (
                 ? {
                     regionAttestation: {
                       distinctRegions: [
-                        ...entry.costAttribution.regionAttestation.distinctRegions,
+                        ...entry.costAttribution.regionAttestation
+                          .distinctRegions,
                       ],
                       attestedCallCount:
-                        entry.costAttribution.regionAttestation.attestedCallCount,
+                        entry.costAttribution.regionAttestation
+                          .attestedCallCount,
                       warningCount:
                         entry.costAttribution.regionAttestation.warningCount,
                     },

@@ -28,9 +28,7 @@ const inferFamilyFromDeployment = (
   return undefined;
 };
 
-export const isModelRoutingRole = (
-  value: unknown,
-): value is ModelRoutingRole =>
+export const isModelRoutingRole = (value: unknown): value is ModelRoutingRole =>
   typeof value === "string" &&
   (MODEL_ROUTING_ROLES as readonly string[]).includes(value);
 
@@ -157,6 +155,14 @@ export const EU_BANKING_DEFAULT_MODEL_ROUTING_POLICY: ModelRoutingPolicy =
         tierLabel: "light",
         modelBinding: createAzurePortfolioBinding({
           deployment: "phi-4-mini-instruct",
+        }),
+      },
+      {
+        role: "requirements_synthesis",
+        slot: "primary",
+        tierLabel: "heavy",
+        modelBinding: createAzurePortfolioBinding({
+          deployment: "gpt-oss-120b",
         }),
       },
       {
@@ -339,7 +345,8 @@ export const applyModelRoutingOverride = (input: {
         slot,
         tierLabel: overrideRoute.tierLabel ?? existing.tierLabel,
         modelBinding: overrideRoute.modelBinding ?? existing.modelBinding,
-        ...((overrideRoute.modelRevision ?? existing.modelRevision) !== undefined
+        ...((overrideRoute.modelRevision ?? existing.modelRevision) !==
+        undefined
           ? {
               modelRevision:
                 overrideRoute.modelRevision ?? existing.modelRevision,

@@ -21,6 +21,7 @@ export const STATIC_AGENT_SOURCE_LABELS = [
   "visual_primary",
   "visual_fallback",
   "generator",
+  "requirements_synthesis",
   "coverage_planner",
   "risk_ranker",
   "adversarial_critic",
@@ -226,13 +227,12 @@ export const recordPerSourceAttempt = (input: {
     input.accumulator.tierLabel = input.tierLabel;
   }
   if (input.constrainedDecoding !== undefined) {
-    const current =
-      input.accumulator.constrainedDecoding ?? {
-        adapterId: input.constrainedDecoding.adapterId,
-        enforcement: input.constrainedDecoding.enforcement,
-        activeCallCount: 0,
-        fallbackCallCount: 0,
-      };
+    const current = input.accumulator.constrainedDecoding ?? {
+      adapterId: input.constrainedDecoding.adapterId,
+      enforcement: input.constrainedDecoding.enforcement,
+      activeCallCount: 0,
+      fallbackCallCount: 0,
+    };
     current.adapterId = input.constrainedDecoding.adapterId;
     current.enforcement = input.constrainedDecoding.enforcement;
     if (input.constrainedDecoding.fallback) {
@@ -337,8 +337,7 @@ export const finalizePerSourceCostBreakdown = (input: {
                 constrainedDecoding: {
                   adapterId: entry.constrainedDecoding.adapterId,
                   enforcement: entry.constrainedDecoding.enforcement,
-                  activeCallCount:
-                    entry.constrainedDecoding.activeCallCount,
+                  activeCallCount: entry.constrainedDecoding.activeCallCount,
                   fallbackCallCount:
                     entry.constrainedDecoding.fallbackCallCount,
                   ...(entry.constrainedDecoding.fallbackReasons !== undefined &&

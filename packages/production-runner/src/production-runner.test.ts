@@ -2841,6 +2841,48 @@ void test("runFigmaToQcTestCases can generate Jira Story context from visual evi
         gatewayRelease: "mock",
         declaredCapabilities: TEST_GENERATION_CAPS,
       },
+      requirementsSynthesis: {
+        role: "requirements_synthesis",
+        deployment: "gpt-oss-120b",
+        modelRevision: "gpt-oss-120b@test",
+        gatewayRelease: "mock",
+        declaredCapabilities: TEST_GENERATION_CAPS,
+        responder: (request, attempt) => {
+          assert.equal(
+            request.responseSchemaName,
+            "test-intelligence-auto-jira-story-v1",
+          );
+          assert.equal(request.imageInputs, undefined);
+          return {
+            outcome: "success" as const,
+            content: {
+              summary:
+                "Die Maske Bedarfsermittlung erfasst eine Investitionssumme und führt den Anwender weiter.",
+              userStory:
+                "Als Firmenkundenberater möchte ich eine Investitionssumme erfassen, damit die Finanzierung fachlich geprüft werden kann.",
+              businessContext:
+                "Die Story basiert auf der sichtbaren Figma-Maske und den durch das Vision-Modell erkannten Feldern.",
+              functionalScope: [
+                "Erfassung der Investitionssumme.",
+                "Fortsetzung über die Aktion Weiter.",
+              ],
+              acceptanceCriteria: [
+                "Eine gültige Investitionssumme kann eingegeben werden.",
+                "Nach Auswahl von Weiter bleibt der Ablauf fachlich nachvollziehbar.",
+              ],
+              assumptionsAndOpenQuestions: [
+                "Konkrete Grenzwerte sind im Screenshot nicht sichtbar.",
+              ],
+            },
+            finishReason: "stop" as const,
+            usage: { inputTokens: 80, outputTokens: 120 },
+            modelDeployment: "gpt-oss-120b",
+            modelRevision: "gpt-oss-120b@test",
+            gatewayRelease: "mock",
+            attempt,
+          };
+        },
+      },
       visualPrimary: {
         role: "visual_primary",
         deployment: "llama-4-maverick-vision",
@@ -2848,40 +2890,6 @@ void test("runFigmaToQcTestCases can generate Jira Story context from visual evi
         gatewayRelease: "mock",
         declaredCapabilities: VISUAL_CAPS,
         responder: (request, attempt) => {
-          if (
-            request.responseSchemaName ===
-            "test-intelligence-auto-jira-story-v1"
-          ) {
-            assert.equal(request.imageInputs?.length, 1);
-            return {
-              outcome: "success" as const,
-              content: {
-                summary:
-                  "Die Maske Bedarfsermittlung erfasst eine Investitionssumme und führt den Anwender weiter.",
-                userStory:
-                  "Als Firmenkundenberater möchte ich eine Investitionssumme erfassen, damit die Finanzierung fachlich geprüft werden kann.",
-                businessContext:
-                  "Die Story basiert auf der sichtbaren Figma-Maske und den durch das Vision-Modell erkannten Feldern.",
-                functionalScope: [
-                  "Erfassung der Investitionssumme.",
-                  "Fortsetzung über die Aktion Weiter.",
-                ],
-                acceptanceCriteria: [
-                  "Eine gültige Investitionssumme kann eingegeben werden.",
-                  "Nach Auswahl von Weiter bleibt der Ablauf fachlich nachvollziehbar.",
-                ],
-                assumptionsAndOpenQuestions: [
-                  "Konkrete Grenzwerte sind im Screenshot nicht sichtbar.",
-                ],
-              },
-              finishReason: "stop" as const,
-              usage: { inputTokens: 80, outputTokens: 120 },
-              modelDeployment: "llama-4-maverick-vision",
-              modelRevision: "llama-4-maverick-vision@test",
-              gatewayRelease: "mock",
-              attempt,
-            };
-          }
           if (
             request.responseSchemaName ===
             "test-intelligence-faithfulness-judge-v1"
@@ -2992,6 +3000,36 @@ void test("runFigmaToQcTestCases can generate Jira Story context from visual evi
       }>;
     };
     assert.equal(seal.customContextMarkdownHashes?.length, 1);
+    const finopsReport = JSON.parse(
+      await readFile(result.artifactPaths.finopsReport, "utf8"),
+    ) as {
+      bySource: {
+        requirements_synthesis: { callCount: number; deployment?: string };
+      };
+    };
+    assert.equal(finopsReport.bySource.requirements_synthesis.callCount, 1);
+    assert.equal(
+      finopsReport.bySource.requirements_synthesis.deployment,
+      "gpt-oss-120b",
+    );
+    const participation = JSON.parse(
+      await readFile(result.artifactPaths.agentParticipation, "utf8"),
+    ) as {
+      roles: Array<{
+        role: string;
+        status: string;
+        attemptCount: number;
+        artifactReferences: string[];
+      }>;
+    };
+    const requirementsRole = participation.roles.find(
+      (role) => role.role === "requirements_synthesis",
+    );
+    assert.equal(requirementsRole?.status, "succeeded");
+    assert.equal(requirementsRole?.attemptCount, 1);
+    assert.deepEqual(requirementsRole?.artifactReferences, [
+      "auto-jira-story.md",
+    ]);
   } finally {
     globalThis.fetch = originalFetch;
     await rm(tempRoot, { recursive: true, force: true });
@@ -3020,6 +3058,74 @@ void test("runFigmaToQcTestCases repairs an auto-generated Jira Story before fai
         gatewayRelease: "mock",
         declaredCapabilities: TEST_GENERATION_CAPS,
       },
+      requirementsSynthesis: {
+        role: "requirements_synthesis",
+        deployment: "gpt-oss-120b",
+        modelRevision: "gpt-oss-120b@test",
+        gatewayRelease: "mock",
+        declaredCapabilities: TEST_GENERATION_CAPS,
+        responder: (request, attempt) => {
+          autoStoryCalls += 1;
+          assert.equal(
+            request.responseSchemaName,
+            "test-intelligence-auto-jira-story-v1",
+          );
+          assert.equal(request.imageInputs, undefined);
+          if (autoStoryCalls === 1) {
+            return {
+              outcome: "success" as const,
+              content: {
+                summary:
+                  "Die Maske erfasst Investitionsdaten für einen Finanzierungsbedarf.",
+                userStory:
+                  "Als Firmenkundenberater möchte ich Investitionsdaten erfassen.",
+                businessContext:
+                  "Die Story basiert auf der sichtbaren Figma-Maske.",
+                functionalScope: ["Erfassung von Kaufpreis und Nebenkosten."],
+                acceptanceCriteria: [],
+                assumptionsAndOpenQuestions: [
+                  "Konkrete Grenzwerte sind nicht sichtbar.",
+                ],
+              },
+              finishReason: "stop" as const,
+              usage: { inputTokens: 80, outputTokens: 80 },
+              modelDeployment: "gpt-oss-120b",
+              modelRevision: "gpt-oss-120b@test",
+              gatewayRelease: "mock",
+              attempt,
+            };
+          }
+          assert.match(request.userPrompt, /missing_acceptance_criteria_item/u);
+          return {
+            outcome: "success" as const,
+            content: {
+              summary:
+                "Die Maske erfasst Investitionsdaten für einen Finanzierungsbedarf.",
+              userStory:
+                "Als Firmenkundenberater möchte ich Investitionsdaten erfassen, damit der Finanzierungsbedarf nachvollziehbar vorbereitet werden kann.",
+              businessContext:
+                "Die Story basiert auf der sichtbaren Figma-Maske.",
+              functionalScope: [
+                "Erfassung von Kaufpreis und Nebenkosten.",
+                "Anzeige des ermittelten Finanzierungsbedarfs.",
+              ],
+              acceptanceCriteria: [
+                "Pflichtfelder und ausgewählte Optionen bleiben im Formular nachvollziehbar sichtbar.",
+                "Der ermittelte Finanzierungsbedarf wird aus den sichtbaren Eingaben angezeigt.",
+              ],
+              assumptionsAndOpenQuestions: [
+                "Konkrete Grenzwerte sind nicht sichtbar.",
+              ],
+            },
+            finishReason: "stop" as const,
+            usage: { inputTokens: 120, outputTokens: 140 },
+            modelDeployment: "gpt-oss-120b",
+            modelRevision: "gpt-oss-120b@test",
+            gatewayRelease: "mock",
+            attempt,
+          };
+        },
+      },
       visualPrimary: {
         role: "visual_primary",
         deployment: "llama-4-maverick-vision",
@@ -3027,69 +3133,6 @@ void test("runFigmaToQcTestCases repairs an auto-generated Jira Story before fai
         gatewayRelease: "mock",
         declaredCapabilities: VISUAL_CAPS,
         responder: (request, attempt) => {
-          if (
-            request.responseSchemaName ===
-            "test-intelligence-auto-jira-story-v1"
-          ) {
-            autoStoryCalls += 1;
-            assert.equal(request.imageInputs?.length, 1);
-            if (autoStoryCalls === 1) {
-              return {
-                outcome: "success" as const,
-                content: {
-                  summary:
-                    "Die Maske erfasst Investitionsdaten für einen Finanzierungsbedarf.",
-                  userStory:
-                    "Als Firmenkundenberater möchte ich Investitionsdaten erfassen.",
-                  businessContext:
-                    "Die Story basiert auf der sichtbaren Figma-Maske.",
-                  functionalScope: ["Erfassung von Kaufpreis und Nebenkosten."],
-                  acceptanceCriteria: [],
-                  assumptionsAndOpenQuestions: [
-                    "Konkrete Grenzwerte sind nicht sichtbar.",
-                  ],
-                },
-                finishReason: "stop" as const,
-                usage: { inputTokens: 80, outputTokens: 80 },
-                modelDeployment: "llama-4-maverick-vision",
-                modelRevision: "llama-4-maverick-vision@test",
-                gatewayRelease: "mock",
-                attempt,
-              };
-            }
-            assert.match(
-              request.userPrompt,
-              /missing_acceptance_criteria_item/u,
-            );
-            return {
-              outcome: "success" as const,
-              content: {
-                summary:
-                  "Die Maske erfasst Investitionsdaten für einen Finanzierungsbedarf.",
-                userStory:
-                  "Als Firmenkundenberater möchte ich Investitionsdaten erfassen, damit der Finanzierungsbedarf nachvollziehbar vorbereitet werden kann.",
-                businessContext:
-                  "Die Story basiert auf der sichtbaren Figma-Maske.",
-                functionalScope: [
-                  "Erfassung von Kaufpreis und Nebenkosten.",
-                  "Anzeige des ermittelten Finanzierungsbedarfs.",
-                ],
-                acceptanceCriteria: [
-                  "Pflichtfelder und ausgewählte Optionen bleiben im Formular nachvollziehbar sichtbar.",
-                  "Der ermittelte Finanzierungsbedarf wird aus den sichtbaren Eingaben angezeigt.",
-                ],
-                assumptionsAndOpenQuestions: [
-                  "Konkrete Grenzwerte sind nicht sichtbar.",
-                ],
-              },
-              finishReason: "stop" as const,
-              usage: { inputTokens: 120, outputTokens: 140 },
-              modelDeployment: "llama-4-maverick-vision",
-              modelRevision: "llama-4-maverick-vision@test",
-              gatewayRelease: "mock",
-              attempt,
-            };
-          }
           if (
             request.responseSchemaName ===
             "test-intelligence-faithfulness-judge-v1"
@@ -4561,6 +4604,7 @@ void test("Issue #2014: agent-participation always lists repair roles so missing
       "generator",
       "logic_judge",
       "judge_secondary",
+      "requirements_synthesis",
       "coverage_planner",
       "risk_ranker",
       "visual_primary",
@@ -5279,6 +5323,7 @@ void test("Issue #1998: runFigmaToQcTestCases persists agent participation with 
         generator: "cli",
         logic_judge: "env",
         judge_secondary: "env",
+        requirements_synthesis: "default",
         coverage_planner: "default",
         risk_ranker: "env",
         visual_primary: "env",
@@ -5310,6 +5355,12 @@ void test("Issue #1998: runFigmaToQcTestCases persists agent participation with 
     assert.equal(role("judge_secondary")?.configurationSource, "env");
     assert.equal(role("judge_secondary")?.status, "succeeded");
     assert.ok((role("judge_secondary")?.attemptCount ?? 0) >= 1);
+    assert.equal(
+      role("requirements_synthesis")?.configurationSource,
+      "default",
+    );
+    assert.equal(role("requirements_synthesis")?.status, "skipped");
+    assert.equal(role("requirements_synthesis")?.attemptCount, 0);
     assert.equal(role("coverage_planner")?.configurationSource, "default");
     assert.equal(role("coverage_planner")?.status, "succeeded");
     assert.equal(role("coverage_planner")?.attemptCount, 1);

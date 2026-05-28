@@ -185,14 +185,14 @@ export const probeLlmCapabilities = async (
     }
     if (
       capability === "imageInputSupport" &&
-      input.client.role === "test_generation"
+      (input.client.role === "test_generation" ||
+        input.client.role === "requirements_synthesis")
     ) {
       records.push({
         capability,
         declared: true,
         outcome: "unsupported",
-        detail:
-          "test_generation role rejects image payloads by policy; probe skipped",
+        detail: `${input.client.role} role rejects image payloads by policy; probe skipped`,
       });
       continue;
     }
