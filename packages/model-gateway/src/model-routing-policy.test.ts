@@ -54,6 +54,14 @@ void test("eu-banking default policy: declares cross-family diversity slots from
   assert.equal(logicTriage!.modelBinding.modelId, "phi-4-mini-instruct");
   assert.equal(logicTriage!.tierLabel, "light");
 
+  const requirementsSynthesis = findRoute(
+    policy,
+    "requirements_synthesis",
+    "primary",
+  );
+  assert.equal(requirementsSynthesis?.modelBinding.modelId, "gpt-oss-120b");
+  assert.equal(requirementsSynthesis?.tierLabel, "heavy");
+
   const faithfulnessPrimary = findRoute(
     policy,
     "faithfulness_judge",
@@ -245,6 +253,16 @@ void test("production topology configs do not cap FinOps retry budgets below pro
     configs.testGenerationSecondary.circuitBreaker.failureThreshold,
     configs.testGenerationSecondary.maxRetries + 1,
   );
+  assert.equal(configs.requirementsSynthesis?.deployment, "mistral-large-3");
+  assert.equal(configs.requirementsSynthesis.maxRetries, expectedTextRetries);
+  assert.equal(
+    configs.requirementsSynthesis.timeoutMs,
+    PRODUCTION_GENERATOR_WALL_CLOCK_MS,
+  );
+  assert.equal(
+    configs.requirementsSynthesis.circuitBreaker.failureThreshold,
+    configs.requirementsSynthesis.maxRetries + 1,
+  );
   assert.equal(configs.logicJudge?.maxRetries, expectedTextRetries);
   assert.equal(configs.coveragePlanner?.maxRetries, expectedTextRetries);
   assert.equal(configs.riskRanker?.maxRetries, expectedTextRetries);
@@ -274,6 +292,10 @@ void test("production topology configs do not cap FinOps retry budgets below pro
     policyProfileId: EU_BANKING_DEFAULT_POLICY_PROFILE_ID,
   });
   assert.equal(legacyPrimaryConfigs.testGeneration.deployment, "gpt-oss-120b");
+  assert.equal(
+    legacyPrimaryConfigs.requirementsSynthesis?.deployment,
+    "gpt-oss-120b",
+  );
   assert.equal(
     legacyPrimaryConfigs.testGenerationSecondary?.deployment,
     "mistral-large-3",

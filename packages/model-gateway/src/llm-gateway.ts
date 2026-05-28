@@ -486,12 +486,14 @@ const guardImagePayload = (
   role: LlmGatewayRole,
   request: LlmGenerationRequest,
 ): LlmGenerationFailure | undefined => {
-  if (role === "test_generation" && (request.imageInputs?.length ?? 0) > 0) {
+  if (
+    (role === "test_generation" || role === "requirements_synthesis") &&
+    (request.imageInputs?.length ?? 0) > 0
+  ) {
     return {
       outcome: "error",
       errorClass: "image_payload_rejected",
-      message:
-        "test_generation role refuses image payloads; route screenshots through a visual sidecar role",
+      message: `${role} role refuses image payloads; route screenshots through a visual sidecar role`,
       retryable: false,
       attempt: 0,
     };
@@ -721,8 +723,7 @@ const readRuntimeCaCertificates = (
 ): readonly string[] => {
   // Node 22.14 satisfies our engines range but does not expose this API yet.
   // Keep the namespace lookup lazy so the published CLI can load there.
-  const getRuntimeCaCertificates = (tls as RuntimeTlsModule)
-    .getCACertificates;
+  const getRuntimeCaCertificates = (tls as RuntimeTlsModule).getCACertificates;
   if (typeof getRuntimeCaCertificates === "function") {
     try {
       return getRuntimeCaCertificates(source);
@@ -1993,11 +1994,12 @@ const validateConfig = (config: LlmGatewayClientConfig): void => {
     );
   }
   if (
-    config.role === "test_generation" &&
+    (config.role === "test_generation" ||
+      config.role === "requirements_synthesis") &&
     config.declaredCapabilities.imageInputSupport
   ) {
     throw new RangeError(
-      "LlmGatewayClient: test_generation role must not declare imageInputSupport",
+      `LlmGatewayClient: ${config.role} role must not declare imageInputSupport`,
     );
   }
   if (!Number.isFinite(config.timeoutMs) || config.timeoutMs <= 0) {

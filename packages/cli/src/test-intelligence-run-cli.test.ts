@@ -96,6 +96,7 @@ const baseOptions = (): TestIntelligenceRunOptions => ({
   modelEndpoint: undefined,
   modelDeployment: "gpt-oss-120b",
   logicJudgeDeployment: undefined,
+  requirementsSynthesisDeployment: undefined,
   coveragePlannerDeployment: undefined,
   riskRankerDeployment: undefined,
   visualPrimaryDeployment: undefined,
@@ -122,6 +123,7 @@ const baseOptions = (): TestIntelligenceRunOptions => ({
 const baseDoctorOptions = (): TestIntelligenceDoctorOptions => ({
   modelDeployment: "mistral-large-3",
   logicJudgeDeployment: "gpt-oss-120b",
+  requirementsSynthesisDeployment: "gpt-oss-120b",
   coveragePlannerDeployment: "phi-4-mini-instruct",
   riskRankerDeployment: "phi-4",
   visualPrimaryDeployment: "llama-4-maverick-vision",
@@ -130,6 +132,7 @@ const baseDoctorOptions = (): TestIntelligenceDoctorOptions => ({
   topologyInputSources: {
     modelDeployment: "env",
     logicJudgeDeployment: "env",
+    requirementsSynthesisDeployment: "env",
     coveragePlannerDeployment: "env",
     riskRankerDeployment: "env",
     visualPrimaryDeployment: "env",
@@ -323,17 +326,23 @@ void test("parseTestIntelligenceRunArgs: env defaults flow into options when fla
     {
       TEST_INTELLIGENCE_MODEL_ENDPOINT: "https://aoai.example/openai/v1",
       TEST_INTELLIGENCE_TESTCASE_MODEL_DEPLOYMENT: "gpt-oss-120b",
+      TEST_INTELLIGENCE_REQUIREMENTS_SYNTHESIS_DEPLOYMENT: "gpt-oss-120b",
       TEST_INTELLIGENCE_LLM_API_KEY: "k-key",
       FIGMA_ACCESS_TOKEN: "figd_xxx",
     },
   );
   assert.equal(options.modelEndpoint, "https://aoai.example/openai/v1");
   assert.equal(options.modelDeployment, "gpt-oss-120b");
+  assert.equal(options.requirementsSynthesisDeployment, "gpt-oss-120b");
   assert.equal(options.modelApiKey, "k-key");
   assert.equal(options.figmaToken, "figd_xxx");
   assert.equal(options.mode, "deterministic_llm");
   assert.equal(options.visualPrimaryDeployment, "llama-4-maverick-vision");
   assert.equal(options.visualFallbackDeployment, "phi-4-multimodal-instruct");
+  assert.equal(
+    options.topologyInputSources!.requirementsSynthesisDeployment,
+    "env",
+  );
   assert.equal(
     options.topologyInputSources!.visualPrimaryDeployment,
     "default",
@@ -708,6 +717,7 @@ void test("parseTestIntelligenceDoctorArgs: env defaults flow into doctor option
   const options = parseTestIntelligenceDoctorArgs([], {
     TEST_INTELLIGENCE_TESTCASE_MODEL_DEPLOYMENT: "mistral-large-3",
     TEST_INTELLIGENCE_LOGIC_JUDGE_DEPLOYMENT: "gpt-oss-120b",
+    TEST_INTELLIGENCE_REQUIREMENTS_SYNTHESIS_DEPLOYMENT: "gpt-oss-120b",
     TEST_INTELLIGENCE_COVERAGE_PLANNER_DEPLOYMENT: "phi-4-mini-instruct",
     TEST_INTELLIGENCE_RISK_RANKER_DEPLOYMENT: "phi-4",
     TEST_INTELLIGENCE_VISUAL_PRIMARY_DEPLOYMENT: "llama-4-maverick-vision",
@@ -716,6 +726,7 @@ void test("parseTestIntelligenceDoctorArgs: env defaults flow into doctor option
   });
   assert.equal(options.modelDeployment, "mistral-large-3");
   assert.equal(options.logicJudgeDeployment, "gpt-oss-120b");
+  assert.equal(options.requirementsSynthesisDeployment, "gpt-oss-120b");
   assert.equal(options.coveragePlannerDeployment, "phi-4-mini-instruct");
   assert.equal(options.riskRankerDeployment, "phi-4");
   assert.equal(options.visualPrimaryDeployment, "llama-4-maverick-vision");
@@ -747,6 +758,8 @@ void test("parseTestIntelligenceDoctorArgs: CLI overrides doctor deployment defa
       "mistral-large-3",
       "--logic-judge-deployment",
       "gpt-oss-120b",
+      "--requirements-synthesis-deployment",
+      "gpt-oss-120b",
       "--coverage-planner-deployment",
       "phi-4-mini-instruct",
       "--risk-ranker-deployment",
@@ -761,6 +774,7 @@ void test("parseTestIntelligenceDoctorArgs: CLI overrides doctor deployment defa
     {
       TEST_INTELLIGENCE_TESTCASE_MODEL_DEPLOYMENT: "gpt-oss-120b",
       TEST_INTELLIGENCE_LOGIC_JUDGE_DEPLOYMENT: "phi-4",
+      TEST_INTELLIGENCE_REQUIREMENTS_SYNTHESIS_DEPLOYMENT: "phi-4",
       TEST_INTELLIGENCE_COVERAGE_PLANNER_DEPLOYMENT: "gpt-oss-120b",
       TEST_INTELLIGENCE_RISK_RANKER_DEPLOYMENT: "gpt-oss-120b",
       TEST_INTELLIGENCE_VISUAL_PRIMARY_DEPLOYMENT: "stale-primary",
@@ -770,6 +784,7 @@ void test("parseTestIntelligenceDoctorArgs: CLI overrides doctor deployment defa
   );
   assert.equal(options.modelDeployment, "mistral-large-3");
   assert.equal(options.logicJudgeDeployment, "gpt-oss-120b");
+  assert.equal(options.requirementsSynthesisDeployment, "gpt-oss-120b");
   assert.equal(options.coveragePlannerDeployment, "phi-4-mini-instruct");
   assert.equal(options.riskRankerDeployment, "phi-4");
   assert.equal(options.visualPrimaryDeployment, "llama-4-maverick-vision");
@@ -777,6 +792,10 @@ void test("parseTestIntelligenceDoctorArgs: CLI overrides doctor deployment defa
   assert.equal(options.a11yJudgeDeployment, "phi-4-multimodal-instruct");
   assert.equal(options.topologyInputSources!.modelDeployment, "cli");
   assert.equal(options.topologyInputSources!.logicJudgeDeployment, "cli");
+  assert.equal(
+    options.topologyInputSources!.requirementsSynthesisDeployment,
+    "cli",
+  );
   assert.equal(options.topologyInputSources!.visualPrimaryDeployment, "cli");
 });
 
@@ -2037,6 +2056,7 @@ void test("buildLiveVisualSidecarBundle: CLI deployment overrides beat env defau
       modelApiKey: "k-key",
       mode: "deterministic_llm",
       enableVisualSidecar: true,
+      requirementsSynthesisDeployment: "gpt-oss-120b",
       visualPrimaryDeployment: "llama-4-maverick-vision",
       visualFallbackDeployment: "phi-4-multimodal-instruct",
       a11yJudgeDeployment: "phi-4-multimodal-instruct",
@@ -2052,6 +2072,7 @@ void test("buildLiveVisualSidecarBundle: CLI deployment overrides beat env defau
 
   assert.equal(bundle.visualPrimary.deployment, "llama-4-maverick-vision");
   assert.equal(bundle.visualFallback.deployment, "phi-4-multimodal-instruct");
+  assert.equal(bundle.requirementsSynthesis?.deployment, "gpt-oss-120b");
   assert.equal(bundle.a11yJudge?.deployment, "phi-4-multimodal-instruct");
 });
 
@@ -2470,6 +2491,7 @@ void test("runTestIntelligenceCommand: strict preflight writes sanitized topolog
     generator: "cli",
     logic_judge: "cli",
     judge_secondary: "cli",
+    requirements_synthesis: "default",
     coverage_planner: "cli",
     risk_ranker: "cli",
     visual_primary: "cli",
@@ -2852,7 +2874,10 @@ void test("runTestIntelligenceCommand: dry_run reports auto Jira Story mode", as
     },
   );
   assert.equal(exitCode, 0, stderr.join(""));
-  assert.match(stdout.join(""), /auto Jira\s*: enabled \(visual-primary\)/u);
+  assert.match(
+    stdout.join(""),
+    /auto Jira\s*: enabled \(requirements_synthesis\)/u,
+  );
 });
 
 void test("runTestIntelligenceCommand: dry_run with --customer-eval-markdown reports loaded byte count", async () => {

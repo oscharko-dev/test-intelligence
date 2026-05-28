@@ -289,6 +289,76 @@ void test("bundle: optional testGenerationSecondary slot accepts a second text-o
   );
 });
 
+void test("bundle: optional requirementsSynthesis slot accepts a text-only requirements client", () => {
+  const bundle = createMockLlmGatewayClientBundle({
+    testGeneration: {
+      role: "test_generation",
+      deployment: "gpt-oss-120b",
+      modelRevision: "rev",
+      gatewayRelease: "rel",
+      declaredCapabilities: testGenerationCapabilities,
+    },
+    requirementsSynthesis: {
+      role: "requirements_synthesis",
+      deployment: "gpt-oss-120b",
+      modelRevision: "rev",
+      gatewayRelease: "rel",
+      declaredCapabilities: testGenerationCapabilities,
+    },
+    visualPrimary: {
+      role: "visual_primary",
+      deployment: "llama-4-maverick-vision",
+      modelRevision: "rev",
+      gatewayRelease: "rel",
+      declaredCapabilities: visualCapabilities,
+    },
+    visualFallback: {
+      role: "visual_fallback",
+      deployment: "phi-4-multimodal-poc",
+      modelRevision: "rev",
+      gatewayRelease: "rel",
+      declaredCapabilities: visualCapabilities,
+    },
+  });
+  assert.equal(bundle.requirementsSynthesis!.role, "requirements_synthesis");
+  assert.equal(bundle.requirementsSynthesis!.deployment, "gpt-oss-120b");
+
+  assert.throws(
+    () =>
+      createMockLlmGatewayClientBundle({
+        testGeneration: {
+          role: "test_generation",
+          deployment: "gpt-oss-120b",
+          modelRevision: "rev",
+          gatewayRelease: "rel",
+          declaredCapabilities: testGenerationCapabilities,
+        },
+        requirementsSynthesis: {
+          role: "requirements_synthesis",
+          deployment: "gpt-oss-120b",
+          modelRevision: "rev",
+          gatewayRelease: "rel",
+          declaredCapabilities: visualCapabilities,
+        },
+        visualPrimary: {
+          role: "visual_primary",
+          deployment: "llama-4-maverick-vision",
+          modelRevision: "rev",
+          gatewayRelease: "rel",
+          declaredCapabilities: visualCapabilities,
+        },
+        visualFallback: {
+          role: "visual_fallback",
+          deployment: "phi-4-multimodal-poc",
+          modelRevision: "rev",
+          gatewayRelease: "rel",
+          declaredCapabilities: visualCapabilities,
+        },
+      }),
+    /requirements_synthesis role must not declare imageInputSupport|requirementsSynthesis must not declare image input support/,
+  );
+});
+
 void test("bundle: optional a11yJudge slot accepts an image-capable a11y_judge client and rejects non-visual configs (Issue #1940)", () => {
   const bundle = createMockLlmGatewayClientBundle({
     testGeneration: {
@@ -556,6 +626,64 @@ void test("bundle: probes the logic_judge slot when wired (Issue #1932)", async 
     );
     assert.ok(judgeArtifact !== undefined);
     assert.equal(judgeArtifact.artifact.deployment, "gpt-oss-120b");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+void test("bundle: probes the requirements_synthesis slot when wired", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "llm-bundle-reqs-"));
+  try {
+    const bundle = createMockLlmGatewayClientBundle({
+      testGeneration: {
+        role: "test_generation",
+        deployment: "mistral-large-3",
+        modelRevision: "mistral-large-3@2026-04-25",
+        gatewayRelease: "mock@2026.04",
+        declaredCapabilities: testGenerationCapabilities,
+      },
+      requirementsSynthesis: {
+        role: "requirements_synthesis",
+        deployment: "gpt-oss-120b",
+        modelRevision: "gpt-oss-120b@2026-04-25",
+        gatewayRelease: "mock@2026.04",
+        declaredCapabilities: testGenerationCapabilities,
+      },
+      visualPrimary: {
+        role: "visual_primary",
+        deployment: "llama-4-maverick-vision",
+        modelRevision: "llama-4-maverick-vision@2026-04-25",
+        gatewayRelease: "mock@2026.04",
+        declaredCapabilities: visualCapabilities,
+      },
+      visualFallback: {
+        role: "visual_fallback",
+        deployment: "phi-4-multimodal-poc",
+        modelRevision: "phi-4-multimodal-poc@2026-04-25",
+        gatewayRelease: "mock@2026.04",
+        declaredCapabilities: visualCapabilities,
+      },
+    });
+    const result = await probeLlmGatewayClientBundle({
+      bundle,
+      jobId: "job-bundle-reqs",
+      generatedAt: "2026-04-25T00:00:00Z",
+      destinationDir: dir,
+    });
+    assert.deepEqual(
+      result.artifacts.map((artifact) => artifact.role),
+      [
+        "test_generation",
+        "requirements_synthesis",
+        "visual_primary",
+        "visual_fallback",
+      ],
+    );
+    const synthesisArtifact = result.artifacts.find(
+      (artifact) => artifact.role === "requirements_synthesis",
+    );
+    assert.ok(synthesisArtifact !== undefined);
+    assert.equal(synthesisArtifact.artifact.deployment, "gpt-oss-120b");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

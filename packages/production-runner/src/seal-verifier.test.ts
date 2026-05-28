@@ -83,6 +83,7 @@ const buildFixtureBundle = async (input?: {
         costMinorUnits: 0,
       },
       manager: emptyPerSourceCost,
+      requirements_synthesis: emptyPerSourceCost,
       judge_primary: emptyPerSourceCost,
       judge_secondary: emptyPerSourceCost,
       visual_primary: emptyPerSourceCost,

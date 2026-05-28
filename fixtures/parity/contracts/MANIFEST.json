@@ -3,7 +3,7 @@
   "fileCount": 3,
   "files": {
     "contract-versions.json": "sha256:a2fda5e4f796d087ae255ad7ca3490ef161dd04dd5e232ac2e26c91303bae556",
-    "enum-surface.json": "sha256:26287e74d3c336c6fd35d8592b116f298e8929638cc126f82550cdd99772524b",
+    "enum-surface.json": "sha256:931d9eda30aa800ba2f4278d9b30ad0a3d48b27989b13bcd8bc9afac5e57bf83",
     "exports-list.json": "sha256:2693aa0ae09fde0c85a1cf9dd0dbc854bc1670ae5d715ee91bc9676912c69c52"
   },
   "scenario": "contracts",

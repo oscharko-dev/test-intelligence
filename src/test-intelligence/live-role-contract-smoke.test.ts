@@ -151,6 +151,28 @@ const createHappyBundle = () =>
         }
       },
     },
+    requirementsSynthesis: {
+      role: "requirements_synthesis",
+      deployment: "gpt-oss-120b",
+      modelRevision: "rev",
+      gatewayRelease: "rel",
+      declaredCapabilities: textCapabilities,
+      responder: (_request, attempt) => ({
+        outcome: "success",
+        content: {
+          summary: "A visible form submit action is available.",
+          acceptanceCriteria: [
+            "Submitting the visible form produces an observable success state.",
+          ],
+        },
+        finishReason: "stop",
+        usage: {},
+        modelDeployment: "requirements-synthesis",
+        modelRevision: "rev",
+        gatewayRelease: "rel",
+        attempt,
+      }),
+    },
     visualPrimary: {
       role: "visual_primary",
       deployment: "llama-4-maverick-vision",
@@ -312,6 +334,9 @@ void test("live role contract smoke passes every configured role when mocks retu
   assert.equal(
     report.results.every((entry) => entry.status === "ok"),
     true,
+  );
+  assert.ok(
+    report.results.some((entry) => entry.role === "requirements_synthesis"),
   );
 });
 

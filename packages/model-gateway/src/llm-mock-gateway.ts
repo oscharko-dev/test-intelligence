@@ -159,12 +159,14 @@ const guardImagePayload = (
   role: LlmGatewayRole,
   request: LlmGenerationRequest,
 ): LlmGenerationFailure | undefined => {
-  if (role === "test_generation" && (request.imageInputs?.length ?? 0) > 0) {
+  if (
+    (role === "test_generation" || role === "requirements_synthesis") &&
+    (request.imageInputs?.length ?? 0) > 0
+  ) {
     return {
       outcome: "error",
       errorClass: "image_payload_rejected",
-      message:
-        "test_generation role refuses image payloads; route screenshots through a visual sidecar role",
+      message: `${role} role refuses image payloads; route screenshots through a visual sidecar role`,
       retryable: false,
       attempt: 0,
     };
@@ -271,7 +273,6 @@ const looksLikeLogicJudgeIntent = (content: unknown): boolean => {
   return Object.prototype.hasOwnProperty.call(obj, "verdict");
 };
 
-
 /**
  * Build the default success envelope. Fully deterministic given the request
  * shape — `attempt` is encoded so retries are observable in fixtures.
@@ -304,11 +305,12 @@ export const createMockLlmGatewayClient = (
     input.declaredCapabilities ?? DEFAULT_CAPABILITIES;
 
   if (
-    input.role === "test_generation" &&
+    (input.role === "test_generation" ||
+      input.role === "requirements_synthesis") &&
     declaredCapabilities.imageInputSupport
   ) {
     throw new RangeError(
-      "createMockLlmGatewayClient: test_generation role must not declare imageInputSupport",
+      `createMockLlmGatewayClient: ${input.role} role must not declare imageInputSupport`,
     );
   }
   if (

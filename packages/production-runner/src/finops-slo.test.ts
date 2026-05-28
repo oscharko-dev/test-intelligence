@@ -43,6 +43,14 @@ const baseReport = (): FinOpsBudgetReport => ({
       inFlightDedupHits: 0,
       idempotentReplayHits: 0,
     },
+    requirements_synthesis: {
+      costMinorUnits: 0,
+      tokensIn: 0,
+      tokensOut: 0,
+      callCount: 0,
+      inFlightDedupHits: 0,
+      idempotentReplayHits: 0,
+    },
     judge_primary: {
       costMinorUnits: 0,
       tokensIn: 2000,
