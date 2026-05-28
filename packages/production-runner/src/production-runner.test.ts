@@ -2831,27 +2831,10 @@ void test("runFigmaToQcTestCases can generate Jira Story context from visual evi
       deployment: "gpt-oss-120b-mock",
       modelRevision: "mock-1",
       gatewayRelease: "mock",
-      responder: okResponder(SAMPLE_VISUAL_HARD_GATE_GREEN_DRAFTS),
-    });
-    const bundle = createMockLlmGatewayClientBundle({
-      testGeneration: {
-        role: "test_generation",
-        deployment: "gpt-oss-120b",
-        modelRevision: "gpt-oss-120b@test",
-        gatewayRelease: "mock",
-        declaredCapabilities: TEST_GENERATION_CAPS,
-      },
-      requirementsSynthesis: {
-        role: "requirements_synthesis",
-        deployment: "gpt-oss-120b",
-        modelRevision: "gpt-oss-120b@test",
-        gatewayRelease: "mock",
-        declaredCapabilities: TEST_GENERATION_CAPS,
-        responder: (request, attempt) => {
-          assert.equal(
-            request.responseSchemaName,
-            "test-intelligence-auto-jira-story-v1",
-          );
+      responder: (request, attempt) => {
+        if (
+          request.responseSchemaName === "test-intelligence-auto-jira-story-v1"
+        ) {
           assert.equal(request.imageInputs, undefined);
           return {
             outcome: "success" as const,
@@ -2876,12 +2859,25 @@ void test("runFigmaToQcTestCases can generate Jira Story context from visual evi
             },
             finishReason: "stop" as const,
             usage: { inputTokens: 80, outputTokens: 120 },
-            modelDeployment: "gpt-oss-120b",
-            modelRevision: "gpt-oss-120b@test",
+            modelDeployment: "gpt-oss-120b-mock",
+            modelRevision: "mock-1",
             gatewayRelease: "mock",
             attempt,
           };
-        },
+        }
+        return okResponder(SAMPLE_VISUAL_HARD_GATE_GREEN_DRAFTS)(
+          request,
+          attempt,
+        );
+      },
+    });
+    const bundle = createMockLlmGatewayClientBundle({
+      testGeneration: {
+        role: "test_generation",
+        deployment: "gpt-oss-120b",
+        modelRevision: "gpt-oss-120b@test",
+        gatewayRelease: "mock",
+        declaredCapabilities: TEST_GENERATION_CAPS,
       },
       visualPrimary: {
         role: "visual_primary",
@@ -3004,13 +3000,26 @@ void test("runFigmaToQcTestCases can generate Jira Story context from visual evi
       await readFile(result.artifactPaths.finopsReport, "utf8"),
     ) as {
       bySource: {
-        requirements_synthesis: { callCount: number; deployment?: string };
+        requirements_synthesis: {
+          callCount: number;
+          deployment?: string;
+          modelRevision?: string;
+          tierLabel?: string;
+        };
       };
     };
     assert.equal(finopsReport.bySource.requirements_synthesis.callCount, 1);
     assert.equal(
       finopsReport.bySource.requirements_synthesis.deployment,
-      "gpt-oss-120b",
+      "gpt-oss-120b-mock",
+    );
+    assert.equal(
+      finopsReport.bySource.requirements_synthesis.modelRevision,
+      "mock-1",
+    );
+    assert.equal(
+      finopsReport.bySource.requirements_synthesis.tierLabel,
+      "heavy",
     );
     const participation = JSON.parse(
       await readFile(result.artifactPaths.agentParticipation, "utf8"),

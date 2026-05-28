@@ -936,7 +936,10 @@ const resolveActiveModelRoutingPolicy = (input: {
     input.request.llm.client;
   const requirementsSynthesisClient =
     input.request.llm.bundle?.requirementsSynthesis ??
-    input.request.llm.requirementsSynthesis;
+    input.request.llm.requirementsSynthesis ??
+    (input.request.autoJiraStoryFromVisual === true
+      ? input.request.llm.client
+      : undefined);
   if (requirementsSynthesisClient !== undefined) {
     roles.push({
       role: "requirements_synthesis",
