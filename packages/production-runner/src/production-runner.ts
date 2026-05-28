@@ -1618,6 +1618,33 @@ const replaceArtifactExtension = (
     ? `${filename.slice(0, -3)}${extension}`
     : `${filename}${extension}`;
 
+const SAFE_CUSTOMER_ARTIFACT_FILENAME_PATTERN =
+  /^[a-z0-9](?:[a-z0-9._-]{0,95})\.(?:md|pdf|txt)$/u;
+
+const assertSafeCustomerArtifactFilename = (
+  filename: string,
+  expectedExtension: ".md" | ".pdf" | ".txt",
+): string => {
+  const trimmed = filename.trim();
+  const baseName = basename(trimmed);
+  if (
+    trimmed !== baseName ||
+    !baseName.endsWith(expectedExtension) ||
+    baseName.includes("..") ||
+    !SAFE_CUSTOMER_ARTIFACT_FILENAME_PATTERN.test(baseName)
+  ) {
+    throw new ProductionRunnerError({
+      failureClass: "PERSIST_FAILED",
+      message: `Customer artifact filename rejected: ${sanitizeErrorMessage({
+        error: filename,
+        fallback: "invalid filename",
+      })}`,
+      retryable: false,
+    });
+  }
+  return baseName;
+};
+
 const extractFirstMarkdownHeading = (markdown: string): string | undefined => {
   for (const line of markdown.split(/\r?\n/u)) {
     const match = /^#{1,6}\s+(.+)$/u.exec(line.trim());
@@ -6755,10 +6782,17 @@ export const runFigmaToQcTestCases = async (
     const perCasePdfArtifacts: Array<{ filename: string; bytes: Buffer }> = [];
     const perCaseTextArtifacts: Array<{ filename: string; bytes: Buffer }> = [];
     for (const file of rendered.perCaseFiles) {
-      const filePath = join(markdownDir, file.filename);
+      const markdownFilename = assertSafeCustomerArtifactFilename(
+        file.filename,
+        ".md",
+      );
+      const filePath = join(markdownDir, markdownFilename);
       await writeAtomicText(filePath, file.body);
       perCasePaths.push(filePath);
-      const textFilename = replaceArtifactExtension(file.filename, ".txt");
+      const textFilename = assertSafeCustomerArtifactFilename(
+        replaceArtifactExtension(markdownFilename, ".txt"),
+        ".txt",
+      );
       const textBody = markdownToCustomerPlainText(file.body);
       const textPath = join(customerTxtDir, textFilename);
       const textBytes = Buffer.from(textBody, "utf8");
@@ -6768,7 +6802,10 @@ export const runFigmaToQcTestCases = async (
         filename: `customer-txt/${textFilename}`,
         bytes: textBytes,
       });
-      const pdfFilename = replaceArtifactExtension(file.filename, ".pdf");
+      const pdfFilename = assertSafeCustomerArtifactFilename(
+        replaceArtifactExtension(markdownFilename, ".pdf"),
+        ".pdf",
+      );
       const singleCasePdfBytes = buildCustomerTestCasePdf({
         title:
           extractFirstMarkdownHeading(file.body) ??
@@ -6785,7 +6822,7 @@ export const runFigmaToQcTestCases = async (
         bytes: singleCasePdfBytes,
       });
       perCaseArtifacts.push({
-        filename: `customer-markdown/${file.filename}`,
+        filename: `customer-markdown/${markdownFilename}`,
         bytes: Buffer.from(file.body, "utf8"),
       });
     }

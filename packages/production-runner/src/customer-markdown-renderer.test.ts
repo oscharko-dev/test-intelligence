@@ -504,7 +504,9 @@ void test("renderCustomerMarkdown produces filename-safe slugs", () => {
   });
   const filename = result.perCaseFiles[0]?.filename ?? "";
   assert.doesNotMatch(filename, /[/\\:*?"<>|]/u);
+  assert.doesNotMatch(filename, /\.\./u);
   assert.doesNotMatch(filename, /\s\s+/u);
+  assert.match(filename, /^[a-z0-9][a-z0-9._-]{0,95}\.md$/u);
   assert.match(filename, /^tc01-/u);
 });
 
