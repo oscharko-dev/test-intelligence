@@ -35,6 +35,7 @@ export function RunsScreen(): ReactNode {
         "https://www.figma.com/design/xr6NfWtzAj4mAk54ZsBs53/Test-View-05?node-id=1-63838&t=0diOJFAvEoq3E8yn-0",
       outputDir: ".test-intelligence/local-testcases/2026-05-24-test-view-05",
       customContext: "test-case/xr6NfWtzAj4mAk54ZsBs53/JIRA_STORY.md",
+      autoJiraStory: false,
     }));
   }, [setRunForm]);
 

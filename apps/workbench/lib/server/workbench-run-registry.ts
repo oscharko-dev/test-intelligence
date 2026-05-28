@@ -658,6 +658,9 @@ const executeRealRun = async (
   if (prepared.customContextMarkdown !== undefined) {
     input.customContextMarkdown = prepared.customContextMarkdown;
   }
+  if (prepared.config.autoJiraStory) {
+    input.autoJiraStoryFromVisual = true;
+  }
   const result = await runFigmaToQcTestCases(input);
   await finishWithArtifacts({
     jobId: prepared.jobId,
@@ -743,6 +746,24 @@ const executeMockRun = async (
     path.join(customerMarkdownDir, "testfall-001.md"),
     path.join(customerMarkdownDir, "testfall-002.md"),
   ];
+  const autoJiraStoryPath = path.join(safeArtifactDir, "auto-jira-story.md");
+  if (prepared.config.autoJiraStory) {
+    await writeFile(
+      autoJiraStoryPath,
+      [
+        "# Jira Story",
+        "",
+        "## Summary",
+        "Die Workbench-Fixture beschreibt eine regulierte Eingabemaske.",
+        "",
+        "## Acceptance Criteria",
+        "- AC1: Pflichtdaten werden sichtbar validiert.",
+        "- AC2: Der fachliche Ablauf bleibt nachvollziehbar dokumentiert.",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+  }
   const combinedMarkdown = [
     "# Fachliche Testfaelle",
     "",
@@ -823,6 +844,7 @@ const executeMockRun = async (
     blocked: false,
     artifactPaths: [
       ...artifactPaths,
+      ...(prepared.config.autoJiraStory ? [autoJiraStoryPath] : []),
       combined,
       ...perCase,
       combinedPdf,

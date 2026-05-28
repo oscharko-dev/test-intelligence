@@ -52,6 +52,7 @@ export type CustomerMarkdownFile = CustomerOutputFile;
 export interface RunConfig {
   figmaUrl: string;
   customContext: string;
+  autoJiraStory: boolean;
   outputDir: string;
   outputRunSubdir: OutputSubdir;
   visualSidecar: boolean;

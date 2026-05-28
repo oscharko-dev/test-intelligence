@@ -18,6 +18,7 @@ export interface TextFieldProps {
   id?: string;
   rightSlot?: ReactNode;
   describedBy?: string;
+  disabled?: boolean;
 }
 
 export function TextField({
@@ -35,6 +36,7 @@ export function TextField({
   id,
   rightSlot,
   describedBy,
+  disabled = false,
 }: TextFieldProps): ReactNode {
   const generated = useId();
   const inputId = id ?? generated;
@@ -63,6 +65,7 @@ export function TextField({
             ui.field.input,
             mono && ui.field.mono,
             invalid && ui.field.invalid,
+            disabled && ui.field.disabled,
             rightSlot !== undefined && ui.field.hasRightSlot,
           )}
           value={value}
@@ -70,6 +73,7 @@ export function TextField({
             onChange(e.target.value);
           }}
           placeholder={placeholder}
+          disabled={disabled}
           aria-invalid={invalid ? true : undefined}
           aria-describedby={ariaDescribedBy}
           spellCheck={false}

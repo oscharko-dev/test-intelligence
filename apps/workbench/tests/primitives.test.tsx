@@ -72,9 +72,10 @@ describe("IconButton", () => {
 
   it("reflects pressed state via aria-pressed", () => {
     render(<IconButton icon={Play} label="Toggle" pressed />);
-    expect(
-      screen.getByRole("button", { name: "Toggle" }),
-    ).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Toggle" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
   });
 });
 
@@ -140,17 +141,26 @@ describe("Switch", () => {
   it("toggles on click", async () => {
     const onChange = vi.fn();
     render(
-      <Switch label="Enable visual sidecar" checked={false} onChange={onChange} />,
+      <Switch
+        label="Enable visual sidecar"
+        checked={false}
+        onChange={onChange}
+      />,
     );
     await userEvent.click(screen.getByRole("switch"));
     expect(onChange).toHaveBeenCalledWith(true);
   });
 
   it("reflects aria-checked", () => {
-    render(
-      <Switch label="x" checked onChange={() => undefined} />,
-    );
+    render(<Switch label="x" checked onChange={() => undefined} />);
     expect(screen.getByRole("switch")).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("does not toggle when disabled", async () => {
+    const onChange = vi.fn();
+    render(<Switch label="x" checked={false} onChange={onChange} disabled />);
+    await userEvent.click(screen.getByRole("switch"));
+    expect(onChange).not.toHaveBeenCalled();
   });
 });
 
@@ -174,8 +184,27 @@ describe("TextField", () => {
   });
 
   it("marks required visually", () => {
-    render(<TextField label="Figma URL" required value="" onChange={() => undefined} />);
+    render(
+      <TextField
+        label="Figma URL"
+        required
+        value=""
+        onChange={() => undefined}
+      />,
+    );
     expect(screen.getByText("*")).toBeInTheDocument();
+  });
+
+  it("supports disabled inputs", () => {
+    render(
+      <TextField
+        label="Custom context markdown"
+        value=""
+        onChange={() => undefined}
+        disabled
+      />,
+    );
+    expect(screen.getByLabelText("Custom context markdown")).toBeDisabled();
   });
 });
 

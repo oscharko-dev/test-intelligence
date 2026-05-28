@@ -90,6 +90,19 @@ describe("validateForm", () => {
     });
     expect(issues).toEqual([]);
   });
+
+  it("requires visual sidecar and no manual context for auto Jira Story", () => {
+    const issues = validateForm({
+      ...DEFAULT_FORM,
+      figmaUrl: "https://www.figma.com/design/ABC/Name?node-id=1-2",
+      outputDir: ".out",
+      customContext: "test-case/ABC/JIRA_STORY.md",
+      autoJiraStory: true,
+      visualSidecar: false,
+    });
+    expect(issues.some((i) => i.field === "visualSidecar")).toBe(true);
+    expect(issues.some((i) => i.field === "customContext")).toBe(true);
+  });
 });
 
 describe("buildCli", () => {
@@ -131,6 +144,18 @@ describe("buildCli", () => {
     expect(cli).not.toContain("--custom-context-markdown");
     expect(cli).not.toContain("--job-id");
     expect(cli).not.toContain("NODE_EXTRA_CA_CERTS");
+  });
+
+  it("emits the auto Jira Story flag when enabled", () => {
+    const cli = buildCli({
+      ...DEFAULT_FORM,
+      figmaUrl: "https://www.figma.com/design/ABC/Name?node-id=1-2",
+      outputDir: ".out",
+      autoJiraStory: true,
+      visualSidecar: true,
+    });
+    expect(cli).toContain("--auto-jira-story-from-visual");
+    expect(cli).toContain("--enable-visual-sidecar");
   });
 
   it("does not leave a trailing backslash on the final line", () => {

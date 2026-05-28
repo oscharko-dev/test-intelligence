@@ -150,6 +150,8 @@ const TEST_INTELLIGENCE_RUN_MODES = [
 
 const TEST_INTELLIGENCE_ENABLE_VISUAL_SIDECAR_ENV =
   "TEST_INTELLIGENCE_ENABLE_VISUAL_SIDECAR" as const;
+const TEST_INTELLIGENCE_AUTO_JIRA_STORY_FROM_VISUAL_ENV =
+  "TEST_INTELLIGENCE_AUTO_JIRA_STORY_FROM_VISUAL" as const;
 const TEST_INTELLIGENCE_ENABLE_MUTATION_EVAL_ENV =
   "TEST_INTELLIGENCE_ENABLE_MUTATION_EVAL" as const;
 
@@ -466,6 +468,13 @@ export interface TestIntelligenceRunOptions {
   /** When true, skip the visual sidecar pass even if a bundle is configured. */
   noVisualSidecar: boolean;
   /**
+   * When true, no manual `--custom-context-markdown` file is read. The runner
+   * generates a Jira Story with acceptance criteria from the Figma screenshot
+   * using the configured visual-primary model and feeds that canonicalized
+   * Markdown into the normal custom-context path.
+   */
+  autoJiraStoryFromVisual?: boolean;
+  /**
    * Issue #2041 — opt into the mutation-killing-eval pass. Defaults to off
    * for fast iterative runs and on for benchmark runs (the operator
    * passes `--enable-mutation-eval` or sets the env override). Forwarded
@@ -659,6 +668,12 @@ export const parseTestIntelligenceRunArgs = (
     env[TEST_INTELLIGENCE_ENABLE_VISUAL_SIDECAR_ENV],
   );
   let noVisualSidecar = false;
+  let autoJiraStoryFromVisual = isTruthyFlag(
+    env[TEST_INTELLIGENCE_AUTO_JIRA_STORY_FROM_VISUAL_ENV],
+  );
+  if (autoJiraStoryFromVisual) {
+    enableVisualSidecar = true;
+  }
   let enableMutationEval = isTruthyFlag(
     env[TEST_INTELLIGENCE_ENABLE_MUTATION_EVAL_ENV],
   );
@@ -997,6 +1012,12 @@ export const parseTestIntelligenceRunArgs = (
       continue;
     }
 
+    if (arg === "--auto-jira-story-from-visual") {
+      autoJiraStoryFromVisual = true;
+      enableVisualSidecar = true;
+      continue;
+    }
+
     if (arg === "--enable-mutation-eval") {
       enableMutationEval = true;
       continue;
@@ -1262,6 +1283,21 @@ export const parseTestIntelligenceRunArgs = (
       "--enable-visual-sidecar and --no-visual-sidecar are mutually exclusive",
     );
   }
+  if (autoJiraStoryFromVisual && noVisualSidecar) {
+    throw new TestIntelligenceRunOperatorError(
+      "--auto-jira-story-from-visual requires the visual sidecar and cannot be combined with --no-visual-sidecar",
+    );
+  }
+  if (autoJiraStoryFromVisual && figmaUrl === undefined) {
+    throw new TestIntelligenceRunOperatorError(
+      "--auto-jira-story-from-visual requires --figma-url because screenshot captures are only available for Figma URL sources",
+    );
+  }
+  if (autoJiraStoryFromVisual && customContextMarkdownPath !== undefined) {
+    throw new TestIntelligenceRunOperatorError(
+      "--auto-jira-story-from-visual and --custom-context-markdown are mutually exclusive",
+    );
+  }
   if (
     coverageBaselineMode === "update" &&
     coverageBaselineArchetype === undefined
@@ -1290,6 +1326,7 @@ export const parseTestIntelligenceRunArgs = (
     mode,
     enableVisualSidecar,
     noVisualSidecar,
+    ...(autoJiraStoryFromVisual ? { autoJiraStoryFromVisual: true } : {}),
     enableMutationEval,
     finopsBudgetPath,
     requireMultiAgentTopology,
@@ -4202,6 +4239,7 @@ export const runTestIntelligenceCommand = async (
         `  output subdir : ${outputRunSubdirMode ?? "(none)"}`,
         `  harness mode  : off (dry_run never reaches the harness)`,
         `  custom md ctx : ${customContextMarkdownBody !== undefined ? `loaded (${Buffer.byteLength(customContextMarkdownBody, "utf8")} bytes)` : "(none)"}`,
+        `  auto Jira    : ${options.autoJiraStoryFromVisual === true ? "enabled (visual-primary)" : "disabled"}`,
         `  customer eval : ${customerEvalMarkdownBody !== undefined ? `loaded (${Buffer.byteLength(customerEvalMarkdownBody, "utf8")} bytes)` : "(none)"}`,
         `  customer prof : ${customerProfileInput !== undefined ? `loaded (${customerProfileRawBytes} bytes)` : "(none)"}`,
         `  tenant bundle : ${tenantBundleInput !== undefined ? `loaded (${tenantBundleRawBytes} bytes)` : "(none)"}`,
@@ -4320,6 +4358,9 @@ export const runTestIntelligenceCommand = async (
     ...(customContextMarkdownBody !== undefined
       ? { customContextMarkdown: customContextMarkdownBody }
       : {}),
+    ...(options.autoJiraStoryFromVisual === true
+      ? { autoJiraStoryFromVisual: true }
+      : {}),
     ...(customerEvalMarkdownBody !== undefined
       ? { customerEvalMarkdown: customerEvalMarkdownBody }
       : {}),
@@ -4371,6 +4412,7 @@ export const runTestIntelligenceCommand = async (
       `  output dir    : ${runOutputDir}`,
       `  source kind   : ${resolved.source.kind}`,
       `  visual sidecar: ${options.enableVisualSidecar && !options.noVisualSidecar ? "enabled" : "disabled"}`,
+      `  auto Jira    : ${options.autoJiraStoryFromVisual === true ? "enabled" : "disabled"}`,
       `  hard policy   : ${allowPolicyBlocked ? "non-fatal (--allow-policy-blocked/env override)" : "fails run (exit 3)"}`,
       "  roles:",
       ...topologyPreflightReport.roles.map(formatTopologyRoleLine),
@@ -4606,6 +4648,12 @@ Custom supporting context (Issue #1894):
                              image refusal) before any LLM call. Oversize
                              files exit 1; missing files exit 1; canonical
                              rejection exits 2 with CUSTOM_CONTEXT_MARKDOWN_INVALID.
+  --auto-jira-story-from-visual
+                             Generate the Jira Story and acceptance criteria
+                             from the Figma screenshot via the visual-primary
+                             model. Requires --figma-url and the visual
+                             sidecar; mutually exclusive with
+                             --custom-context-markdown.
   --customer-eval-markdown <path>
                              UTF-8 Markdown file (max 256 KiB) carrying the
                              customer's test-case evaluation rubric. Loaded as

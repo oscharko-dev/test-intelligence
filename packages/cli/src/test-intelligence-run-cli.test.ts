@@ -1948,11 +1948,13 @@ void test("runTestIntelligenceCommand: enable-visual-sidecar builds and forwards
 
   let buildBundleCalls = 0;
   let capturedBundle: unknown;
+  let capturedAutoJiraStory: unknown;
   const runner = async (
     input: Parameters<Required<TestIntelligenceRunRuntime>["runner"]>[0],
   ): Promise<RunFigmaToQcTestCasesResult> => {
     capturedBundle = (input as unknown as { llm: { bundle?: unknown } }).llm
       .bundle;
+    capturedAutoJiraStory = input.autoJiraStoryFromVisual;
     return {
       jobId: "ti-cli-visual",
       generatedAt: "2026-05-02T12:00:00.000Z",
@@ -2024,6 +2026,7 @@ void test("runTestIntelligenceCommand: enable-visual-sidecar builds and forwards
   assert.equal(exitCode, 0, stderr.join(""));
   assert.equal(buildBundleCalls, 1);
   assert.strictEqual(capturedBundle, bundle);
+  assert.equal(capturedAutoJiraStory, undefined);
 });
 
 void test("buildLiveVisualSidecarBundle: CLI deployment overrides beat env defaults (Issue #1996)", () => {
@@ -2616,6 +2619,57 @@ void test("parseTestIntelligenceRunArgs: --custom-context-markdown captures path
   assert.equal(opts.customContextMarkdownPath, "./demo-context.md");
 });
 
+void test("parseTestIntelligenceRunArgs: --auto-jira-story-from-visual enables visual sidecar", () => {
+  const opts = parseTestIntelligenceRunArgs(
+    [
+      "--figma-url",
+      "https://figma.com/design/abc/foo",
+      "--auto-jira-story-from-visual",
+    ],
+    {},
+  );
+  assert.equal(opts.autoJiraStoryFromVisual, true);
+  assert.equal(opts.enableVisualSidecar, true);
+});
+
+void test("parseTestIntelligenceRunArgs: env auto Jira Story override enables visual sidecar", () => {
+  const opts = parseTestIntelligenceRunArgs(
+    ["--figma-url", "https://figma.com/design/abc/foo"],
+    { TEST_INTELLIGENCE_AUTO_JIRA_STORY_FROM_VISUAL: "1" },
+  );
+  assert.equal(opts.autoJiraStoryFromVisual, true);
+  assert.equal(opts.enableVisualSidecar, true);
+});
+
+void test("parseTestIntelligenceRunArgs: auto Jira Story rejects manual context and non-URL sources", () => {
+  assert.throws(
+    () =>
+      parseTestIntelligenceRunArgs(
+        [
+          "--figma-url",
+          "https://figma.com/design/abc/foo",
+          "--auto-jira-story-from-visual",
+          "--custom-context-markdown",
+          "./demo-context.md",
+        ],
+        {},
+      ),
+    /mutually exclusive/u,
+  );
+  assert.throws(
+    () =>
+      parseTestIntelligenceRunArgs(
+        [
+          "--figma-json-file",
+          "./fixture.json",
+          "--auto-jira-story-from-visual",
+        ],
+        {},
+      ),
+    /requires --figma-url/u,
+  );
+});
+
 void test("parseTestIntelligenceRunArgs: --custom-context-markdown rejects empty value", () => {
   assert.throws(
     () =>
@@ -2774,6 +2828,31 @@ void test("runTestIntelligenceCommand: dry_run with --custom-context-markdown re
   assert.equal(exitCode, 0, stderr.join(""));
   assert.match(observedPath ?? "", /context\.md$/u);
   assert.match(stdout.join(""), /custom md ctx\s*: loaded \(\d+ bytes\)/u);
+});
+
+void test("runTestIntelligenceCommand: dry_run reports auto Jira Story mode", async () => {
+  const { sink, stdout, stderr } = collectingSink();
+  const exitCode = await runTestIntelligenceCommand(
+    {
+      ...baseOptions(),
+      enableVisualSidecar: true,
+      autoJiraStoryFromVisual: true,
+    },
+    sink,
+    {
+      env: {
+        ...GATE_ON,
+        TEST_INTELLIGENCE_VISUAL_MODEL_ENDPOINT:
+          "https://aoai.example/openai/vision",
+        TEST_INTELLIGENCE_VISUAL_PRIMARY_DEPLOYMENT: "llama-4-maverick-vision",
+        TEST_INTELLIGENCE_VISUAL_FALLBACK_DEPLOYMENT:
+          "phi-4-multimodal-instruct",
+      },
+      now: () => 1700000000000,
+    },
+  );
+  assert.equal(exitCode, 0, stderr.join(""));
+  assert.match(stdout.join(""), /auto Jira\s*: enabled \(visual-primary\)/u);
 });
 
 void test("runTestIntelligenceCommand: dry_run with --customer-eval-markdown reports loaded byte count", async () => {
