@@ -1,10 +1,11 @@
-import { mkdir, mkdtemp, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   getWorkbenchRun,
   getWorkbenchRunCompletionForTests,
+  readWorkbenchRunFile,
   resetWorkbenchRunStoreForTests,
   resultArtifactPaths,
   startWorkbenchRun,
@@ -513,6 +514,18 @@ describe("workbench run registry", () => {
         ],
         pdf: path.join(artifactDir, "customer-markdown", "testfaelle.pdf"),
       },
+      customerPdfPaths: {
+        combined: path.join(artifactDir, "customer-pdf", "testfaelle.pdf"),
+        perCase: [
+          path.join(artifactDir, "customer-pdf", "tc01-happy-path.pdf"),
+        ],
+      },
+      customerTxtPaths: {
+        combined: path.join(artifactDir, "customer-txt", "testfaelle.txt"),
+        perCase: [
+          path.join(artifactDir, "customer-txt", "tc01-happy-path.txt"),
+        ],
+      },
     } as unknown as Parameters<typeof resultArtifactPaths>[0]);
 
     expect(paths).not.toContain(
@@ -520,6 +533,12 @@ describe("workbench run registry", () => {
     );
     expect(paths).toContain(
       path.join(artifactDir, "customer-markdown", "testfaelle.pdf"),
+    );
+    expect(paths).toContain(
+      path.join(artifactDir, "customer-pdf", "testfaelle.pdf"),
+    );
+    expect(paths).toContain(
+      path.join(artifactDir, "customer-txt", "testfaelle.txt"),
     );
   });
 
@@ -538,10 +557,12 @@ describe("workbench run registry", () => {
     await getWorkbenchRunCompletionForTests(prepared.jobId);
 
     const run = getWorkbenchRun(prepared.jobId);
-    expect(run?.status).toBe("sealed");
+    expect(run?.status, run?.errorMessage).toBe("sealed");
     expect(run?.customerMarkdown?.[0]?.path).toBe(
       "customer-markdown/testfaelle.md",
     );
+    expect(run?.customerPdf?.[0]?.path).toBe("customer-pdf/testfaelle.pdf");
+    expect(run?.customerTxt?.[0]?.path).toBe("customer-txt/testfaelle.txt");
     const combined = run?.customerMarkdown?.[0];
     expect(combined).toBeDefined();
     if (run?.artifactDir === undefined || combined === undefined) {
@@ -549,5 +570,17 @@ describe("workbench run registry", () => {
     }
     const info = await stat(path.join(run.artifactDir, combined.path));
     expect(info.isFile()).toBe(true);
+    const pdfBytes = await readFile(
+      path.join(run.artifactDir, "customer-pdf", "testfaelle.pdf"),
+    );
+    expect(pdfBytes.subarray(0, 5).toString("ascii")).toBe("%PDF-");
+    const txtDownload = await readWorkbenchRunFile(
+      prepared.jobId,
+      "customer-txt/testfaelle.txt",
+    );
+    expect(txtDownload.contentType).toBe("text/plain; charset=utf-8");
+    expect(txtDownload.bytes.toString("utf8")).toContain(
+      "Fachliche Testfaelle",
+    );
   });
 });

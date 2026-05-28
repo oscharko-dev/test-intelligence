@@ -14,6 +14,7 @@ import {
 } from "@oscharko-dev/ti-contracts";
 import {
   extractAcceptanceCriteriaFromMarkdown,
+  markdownToCustomerPlainText,
   renderCustomerMarkdown,
 } from "./customer-markdown-renderer.js";
 
@@ -162,6 +163,36 @@ void test("renderCustomerMarkdown emits a German-format combined document with o
   assert.deepEqual(
     result.perCaseFiles.map((file) => file.filename),
     ["tc01-login-mit-leerem-passwort.md", "tc02-login-mit-gueltigen-daten.md"],
+  );
+});
+
+void test("markdownToCustomerPlainText converts customer Markdown into readable text", () => {
+  const text = markdownToCustomerPlainText(
+    [
+      "# Testfälle",
+      "",
+      "| Feld | Wert |",
+      "| --- | --- |",
+      "| **Priorität** | `p1` |",
+      "",
+      "- [x] [Quelle](https://example.test) prüfen",
+      "- *Erwartung* dokumentieren",
+      "",
+    ].join("\n"),
+  );
+
+  assert.equal(
+    text,
+    [
+      "Testfälle",
+      "",
+      "Feld | Wert",
+      "Priorität | p1",
+      "",
+      "- Quelle (https://example.test) prüfen",
+      "- Erwartung dokumentieren",
+      "",
+    ].join("\n"),
   );
 });
 
@@ -473,7 +504,9 @@ void test("renderCustomerMarkdown produces filename-safe slugs", () => {
   });
   const filename = result.perCaseFiles[0]?.filename ?? "";
   assert.doesNotMatch(filename, /[/\\:*?"<>|]/u);
+  assert.doesNotMatch(filename, /\.\./u);
   assert.doesNotMatch(filename, /\s\s+/u);
+  assert.match(filename, /^[a-z0-9][a-z0-9._-]{0,95}\.md$/u);
   assert.match(filename, /^tc01-/u);
 });
 

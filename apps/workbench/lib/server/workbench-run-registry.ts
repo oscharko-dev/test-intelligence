@@ -14,7 +14,11 @@ import type {
   RunFigmaToQcTestCasesInput,
   RunFigmaToQcTestCasesResult,
 } from "@oscharko-dev/ti-production-runner";
-import { runFigmaToQcTestCases } from "@oscharko-dev/ti-production-runner";
+import {
+  buildCustomerTestCasePdf,
+  markdownToCustomerPlainText,
+  runFigmaToQcTestCases,
+} from "@oscharko-dev/ti-production-runner";
 import isPathInside from "is-path-inside";
 import {
   DEFAULT_ARTIFACT_NAMES,
@@ -24,7 +28,7 @@ import {
 import type {
   Artifact,
   ArtifactStatus,
-  CustomerMarkdownFile,
+  CustomerOutputFile,
   RunState,
   RunStatus,
   StageName,
@@ -129,6 +133,8 @@ const createQueuedRun = (prepared: PreparedWorkbenchRun): RunState => ({
   artifactDir: prepared.artifactDir,
   outputRoot: prepared.outputRoot,
   customerMarkdown: [],
+  customerPdf: [],
+  customerTxt: [],
 });
 
 const updateRecord = (
@@ -366,7 +372,7 @@ const artifactFromPath = async ({
   };
 };
 
-const customerMarkdownFileFromPath = async ({
+const customerOutputFileFromPath = async ({
   jobId,
   artifactDir,
   filePath,
@@ -376,14 +382,14 @@ const customerMarkdownFileFromPath = async ({
   artifactDir: string;
   filePath: string;
   combined: boolean;
-}): Promise<CustomerMarkdownFile> => {
+}): Promise<CustomerOutputFile> => {
   const resolvedArtifactDir = path.resolve(artifactDir);
   const absolute = path.resolve(filePath);
   if (!isPathInside(absolute, resolvedArtifactDir)) {
     throw new WorkbenchRunRegistryError({
       status: 500,
-      code: "WORKBENCH_RUNNER_CUSTOMER_MARKDOWN_OUTSIDE_ROOT",
-      message: "Runner returned customer Markdown outside the run root.",
+      code: "WORKBENCH_RUNNER_CUSTOMER_OUTPUT_OUTSIDE_ROOT",
+      message: "Runner returned customer output outside the run root.",
     });
   }
   const relativePath = safeRelativePath(resolvedArtifactDir, absolute);
@@ -396,6 +402,35 @@ const customerMarkdownFileFromPath = async ({
     combined,
   };
 };
+
+const customerOutputFilesFromPaths = async ({
+  jobId,
+  artifactDir,
+  paths,
+}: {
+  jobId: string;
+  artifactDir: string;
+  paths: {
+    combined: string;
+    perCase: readonly string[];
+  };
+}): Promise<CustomerOutputFile[]> =>
+  Promise.all([
+    customerOutputFileFromPath({
+      jobId,
+      artifactDir,
+      filePath: paths.combined,
+      combined: true,
+    }),
+    ...paths.perCase.map((filePath) =>
+      customerOutputFileFromPath({
+        jobId,
+        artifactDir,
+        filePath,
+        combined: false,
+      }),
+    ),
+  ]);
 
 export const resultArtifactPaths = (
   result: RunFigmaToQcTestCasesResult,
@@ -411,6 +446,12 @@ export const resultArtifactPaths = (
     result.customerMarkdownPaths.combined,
     ...result.customerMarkdownPaths.perCase,
     result.customerMarkdownPaths.pdf,
+    ...(result.customerPdfPaths === undefined
+      ? []
+      : [result.customerPdfPaths.combined, ...result.customerPdfPaths.perCase]),
+    ...(result.customerTxtPaths === undefined
+      ? []
+      : [result.customerTxtPaths.combined, ...result.customerTxtPaths.perCase]),
   ];
 };
 
@@ -420,6 +461,8 @@ const finishWithArtifacts = async ({
   blocked,
   artifactPaths,
   customerMarkdownPaths,
+  customerPdfPaths,
+  customerTxtPaths,
 }: {
   jobId: string;
   artifactDir: string;
@@ -429,14 +472,27 @@ const finishWithArtifacts = async ({
     combined: string;
     perCase: readonly string[];
   };
+  customerPdfPaths: {
+    combined: string;
+    perCase: readonly string[];
+  };
+  customerTxtPaths: {
+    combined: string;
+    perCase: readonly string[];
+  };
 }): Promise<void> => {
   const dedupedPaths = Array.from(
     new Set(artifactPaths.map((p) => path.resolve(p))),
   );
-  const customerMarkdownSet = new Set(
-    [customerMarkdownPaths.combined, ...customerMarkdownPaths.perCase].map(
-      (p) => path.resolve(p),
-    ),
+  const customerFacingSet = new Set(
+    [
+      customerMarkdownPaths.combined,
+      ...customerMarkdownPaths.perCase,
+      customerPdfPaths.combined,
+      ...customerPdfPaths.perCase,
+      customerTxtPaths.combined,
+      ...customerTxtPaths.perCase,
+    ].map((p) => path.resolve(p)),
   );
   const artifacts = await Promise.all(
     dedupedPaths.map((filePath) =>
@@ -448,25 +504,26 @@ const finishWithArtifacts = async ({
           blocked && path.basename(filePath).includes("policy")
             ? "blocked"
             : "ok",
-        customerFacing: customerMarkdownSet.has(path.resolve(filePath)),
+        customerFacing: customerFacingSet.has(path.resolve(filePath)),
       }),
     ),
   );
-  const customerMarkdown = await Promise.all([
-    customerMarkdownFileFromPath({
+  const [customerMarkdown, customerPdf, customerTxt] = await Promise.all([
+    customerOutputFilesFromPaths({
       jobId,
       artifactDir,
-      filePath: customerMarkdownPaths.combined,
-      combined: true,
+      paths: customerMarkdownPaths,
     }),
-    ...customerMarkdownPaths.perCase.map((filePath) =>
-      customerMarkdownFileFromPath({
-        jobId,
-        artifactDir,
-        filePath,
-        combined: false,
-      }),
-    ),
+    customerOutputFilesFromPaths({
+      jobId,
+      artifactDir,
+      paths: customerPdfPaths,
+    }),
+    customerOutputFilesFromPaths({
+      jobId,
+      artifactDir,
+      paths: customerTxtPaths,
+    }),
   ]);
   updateRecord(jobId, (state) => {
     const stages = cloneStages(state.stages);
@@ -493,6 +550,8 @@ const finishWithArtifacts = async ({
       stages: finalStages,
       artifacts,
       customerMarkdown,
+      customerPdf,
+      customerTxt,
     };
   });
 };
@@ -606,6 +665,8 @@ const executeRealRun = async (
     blocked: result.blocked,
     artifactPaths: resultArtifactPaths(result),
     customerMarkdownPaths: result.customerMarkdownPaths,
+    customerPdfPaths: result.customerPdfPaths,
+    customerTxtPaths: result.customerTxtPaths,
   });
 };
 
@@ -627,7 +688,15 @@ const executeMockRun = async (
     timestamp: performance.now(),
   });
   const customerMarkdownDir = path.join(safeArtifactDir, "customer-markdown");
+  const customerPdfDir = path.join(safeArtifactDir, "customer-pdf");
+  const customerTxtDir = path.join(safeArtifactDir, "customer-txt");
   await mkdir(customerMarkdownDir, {
+    recursive: true,
+  });
+  await mkdir(customerPdfDir, {
+    recursive: true,
+  });
+  await mkdir(customerTxtDir, {
     recursive: true,
   });
   event({
@@ -674,48 +743,96 @@ const executeMockRun = async (
     path.join(customerMarkdownDir, "testfall-001.md"),
     path.join(customerMarkdownDir, "testfall-002.md"),
   ];
+  const combinedMarkdown = [
+    "# Fachliche Testfaelle",
+    "",
+    `Run: ${prepared.jobId}`,
+    "",
+    "## Testfall 1: Antrag starten",
+    "",
+    "Der Nutzer startet einen regulierten Antrag aus der Workbench-Fixture.",
+    "",
+    "## Testfall 2: Pflichtdaten validieren",
+    "",
+    "Fehlende Pflichtdaten werden fachlich nachvollziehbar blockiert.",
+    "",
+  ].join("\n");
+  await writeFile(combined, combinedMarkdown, "utf8");
+  const combinedTxt = path.join(customerTxtDir, "testfaelle.txt");
   await writeFile(
-    combined,
-    [
-      "# Fachliche Testfaelle",
-      "",
-      `Run: ${prepared.jobId}`,
-      "",
-      "## Testfall 1: Antrag starten",
-      "",
-      "Der Nutzer startet einen regulierten Antrag aus der Workbench-Fixture.",
-      "",
-      "## Testfall 2: Pflichtdaten validieren",
-      "",
-      "Fehlende Pflichtdaten werden fachlich nachvollziehbar blockiert.",
-      "",
-    ].join("\n"),
+    combinedTxt,
+    markdownToCustomerPlainText(combinedMarkdown),
     "utf8",
   );
+  const combinedPdf = path.join(customerPdfDir, "testfaelle.pdf");
+  await writeFile(
+    combinedPdf,
+    buildCustomerTestCasePdf({
+      title: "Fachliche Testfaelle",
+      generatedAt: prepared.generatedAt,
+      jobId: prepared.jobId,
+      markdown: combinedMarkdown,
+    }),
+  );
+  const perCaseBodies = perCase.map((_, index) =>
+    [
+      `# Testfall ${index + 1}`,
+      "",
+      `Quelle: ${prepared.config.figmaUrl}`,
+      "",
+      "## Erwartung",
+      "",
+      "Der fachliche Ablauf ist auditierbar dokumentiert.",
+      "",
+    ].join("\n"),
+  );
+  const perCasePdf = perCase.map((_, index) =>
+    path.join(
+      customerPdfDir,
+      `testfall-${String(index + 1).padStart(3, "0")}.pdf`,
+    ),
+  );
+  const perCaseTxt = perCase.map((_, index) =>
+    path.join(
+      customerTxtDir,
+      `testfall-${String(index + 1).padStart(3, "0")}.txt`,
+    ),
+  );
   await Promise.all(
-    perCase.map((filePath, index) =>
+    perCase.flatMap((filePath, index) => [
+      writeFile(filePath, perCaseBodies[index]!, "utf8"),
       writeFile(
-        filePath,
-        [
-          `# Testfall ${index + 1}`,
-          "",
-          `Quelle: ${prepared.config.figmaUrl}`,
-          "",
-          "## Erwartung",
-          "",
-          "Der fachliche Ablauf ist auditierbar dokumentiert.",
-          "",
-        ].join("\n"),
+        perCaseTxt[index]!,
+        markdownToCustomerPlainText(perCaseBodies[index]!),
         "utf8",
       ),
-    ),
+      writeFile(
+        perCasePdf[index]!,
+        buildCustomerTestCasePdf({
+          title: `Testfall ${index + 1}`,
+          generatedAt: prepared.generatedAt,
+          jobId: prepared.jobId,
+          markdown: perCaseBodies[index]!,
+        }),
+      ),
+    ]),
   );
   await finishWithArtifacts({
     jobId: prepared.jobId,
     artifactDir: safeArtifactDir,
     blocked: false,
-    artifactPaths: [...artifactPaths, combined, ...perCase],
+    artifactPaths: [
+      ...artifactPaths,
+      combined,
+      ...perCase,
+      combinedPdf,
+      ...perCasePdf,
+      combinedTxt,
+      ...perCaseTxt,
+    ],
     customerMarkdownPaths: { combined, perCase },
+    customerPdfPaths: { combined: combinedPdf, perCase: perCasePdf },
+    customerTxtPaths: { combined: combinedTxt, perCase: perCaseTxt },
   });
 };
 
@@ -776,7 +893,8 @@ export const getWorkbenchRunCompletionForTests = (
 
 const contentTypeFor = (filePath: string): string => {
   const ext = path.extname(filePath).toLowerCase();
-  if (ext === ".md" || ext === ".txt") return "text/markdown; charset=utf-8";
+  if (ext === ".md") return "text/markdown; charset=utf-8";
+  if (ext === ".txt") return "text/plain; charset=utf-8";
   if (ext === ".json") return "application/json; charset=utf-8";
   if (ext === ".pdf") return "application/pdf";
   if (ext === ".zip") return "application/zip";

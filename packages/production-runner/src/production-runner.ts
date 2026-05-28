@@ -38,7 +38,15 @@
  */
 
 import { mkdir, readdir, rename, rm, writeFile } from "node:fs/promises";
-import { basename, dirname, join, relative } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import type { Meter, Tracer } from "@opentelemetry/api";
 
@@ -244,10 +252,12 @@ export type {
 } from "./production-runner-events.js";
 import {
   extractAcceptanceCriteriaFromMarkdown as extractCustomerAcceptanceCriteriaFromMarkdown,
+  markdownToCustomerPlainText,
   renderCustomerMarkdown,
 } from "./customer-markdown-renderer.js";
 import {
   buildCustomerMarkdownMappe,
+  buildCustomerTestCasePdf,
   extractJiraStoryFromCustomContext,
 } from "./customer-markdown-pdf-mappe.js";
 import {
@@ -1588,6 +1598,14 @@ export interface RunFigmaToQcTestCasesResult {
      */
     pdf: string;
   };
+  customerPdfPaths: {
+    combined: string;
+    perCase: ReadonlyArray<string>;
+  };
+  customerTxtPaths: {
+    combined: string;
+    perCase: ReadonlyArray<string>;
+  };
 }
 
 const getBySourceCallCount = (
@@ -1599,6 +1617,91 @@ const toArtifactReference = (
   artifactDir: string,
   artifactPath: string,
 ): string => relative(artifactDir, artifactPath).replaceAll("\\", "/");
+
+const replaceArtifactExtension = (
+  filename: string,
+  extension: ".pdf" | ".txt",
+): string =>
+  filename.toLowerCase().endsWith(".md")
+    ? `${filename.slice(0, -3)}${extension}`
+    : `${filename}${extension}`;
+
+const SAFE_CUSTOMER_ARTIFACT_FILENAME_PATTERN =
+  /^[a-z0-9](?:[a-z0-9._-]{0,95})\.(?:md|pdf|txt)$/u;
+
+const resolveArtifactPathWithinRunDir = (
+  runDir: string,
+  artifactPath: string,
+): string => {
+  if (artifactPath.includes("\0")) {
+    throw new ProductionRunnerError({
+      failureClass: "PERSIST_FAILED",
+      message: "Artifact path rejected: invalid path segment.",
+      retryable: false,
+    });
+  }
+  const normalized = artifactPath.replaceAll("\\", "/");
+  if (isAbsolute(artifactPath) || /^[a-zA-Z]:/.test(artifactPath)) {
+    throw new ProductionRunnerError({
+      failureClass: "PERSIST_FAILED",
+      message: "Artifact path rejected: absolute paths are not allowed.",
+      retryable: false,
+    });
+  }
+  const segments = normalized.split("/").filter((segment) => segment.length > 0);
+  if (segments.some((segment) => segment === "." || segment === "..")) {
+    throw new ProductionRunnerError({
+      failureClass: "PERSIST_FAILED",
+      message: "Artifact path rejected: traversal segments are not allowed.",
+      retryable: false,
+    });
+  }
+  const resolvedRunDir = resolve(runDir);
+  const candidate = resolve(runDir, normalized);
+  const rel = relative(resolvedRunDir, candidate);
+  if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+    throw new ProductionRunnerError({
+      failureClass: "PERSIST_FAILED",
+      message: "Artifact path rejected: resolved outside run directory.",
+      retryable: false,
+    });
+  }
+  return candidate;
+};
+
+const assertSafeCustomerArtifactFilename = (
+  filename: string,
+  expectedExtension: ".md" | ".pdf" | ".txt",
+): string => {
+  const trimmed = filename.trim();
+  const baseName = basename(trimmed);
+  if (
+    trimmed !== baseName ||
+    !baseName.endsWith(expectedExtension) ||
+    baseName.includes("..") ||
+    !SAFE_CUSTOMER_ARTIFACT_FILENAME_PATTERN.test(baseName)
+  ) {
+    throw new ProductionRunnerError({
+      failureClass: "PERSIST_FAILED",
+      message: `Customer artifact filename rejected: ${sanitizeErrorMessage({
+        error: filename,
+        fallback: "invalid filename",
+      })}`,
+      retryable: false,
+    });
+  }
+  return baseName;
+};
+
+const extractFirstMarkdownHeading = (markdown: string): string | undefined => {
+  for (const line of markdown.split(/\r?\n/u)) {
+    const match = /^#{1,6}\s+(.+)$/u.exec(line.trim());
+    if (match === null) continue;
+    const title = match[1]!.replace(/\*\*/gu, "").replace(/`/gu, "").trim();
+    if (title.length > 0) return title;
+  }
+  return undefined;
+};
 
 const roleConfigurationSource = (
   input: RunFigmaToQcTestCasesInput,
@@ -6704,22 +6807,94 @@ export const runFigmaToQcTestCases = async (
       ...(acceptanceCriteria !== undefined ? { acceptanceCriteria } : {}),
       ...(input.showConfidence === true ? { showConfidence: true } : {}),
     });
-    const markdownDir = join(artifactDir, "customer-markdown");
+    const markdownDir = resolveArtifactPathWithinRunDir(
+      artifactDir,
+      "customer-markdown",
+    );
+    const customerPdfDir = resolveArtifactPathWithinRunDir(
+      artifactDir,
+      "customer-pdf",
+    );
+    const customerTxtDir = resolveArtifactPathWithinRunDir(
+      artifactDir,
+      "customer-txt",
+    );
     await mkdir(markdownDir, { recursive: true });
-    const combinedMarkdownPath = join(markdownDir, "testfaelle.md");
+    await mkdir(customerPdfDir, { recursive: true });
+    await mkdir(customerTxtDir, { recursive: true });
+    const combinedMarkdownPath = resolveArtifactPathWithinRunDir(
+      artifactDir,
+      "customer-markdown/testfaelle.md",
+    );
     const combinedMarkdownBytes = Buffer.from(
       rendered.combinedMarkdown,
       "utf8",
     );
     await writeAtomicText(combinedMarkdownPath, rendered.combinedMarkdown);
+    const combinedText = markdownToCustomerPlainText(rendered.combinedMarkdown);
+    const combinedTextPath = resolveArtifactPathWithinRunDir(
+      artifactDir,
+      "customer-txt/testfaelle.txt",
+    );
+    const combinedTextBytes = Buffer.from(combinedText, "utf8");
+    await writeAtomicText(combinedTextPath, combinedText);
     const perCasePaths: string[] = [];
+    const perCasePdfPaths: string[] = [];
+    const perCaseTextPaths: string[] = [];
     const perCaseArtifacts: Array<{ filename: string; bytes: Buffer }> = [];
+    const perCasePdfArtifacts: Array<{ filename: string; bytes: Buffer }> = [];
+    const perCaseTextArtifacts: Array<{ filename: string; bytes: Buffer }> = [];
     for (const file of rendered.perCaseFiles) {
-      const filePath = join(markdownDir, file.filename);
+      const markdownFilename = assertSafeCustomerArtifactFilename(
+        file.filename,
+        ".md",
+      );
+      const filePath = resolveArtifactPathWithinRunDir(
+        artifactDir,
+        `customer-markdown/${markdownFilename}`,
+      );
       await writeAtomicText(filePath, file.body);
       perCasePaths.push(filePath);
+      const textFilename = assertSafeCustomerArtifactFilename(
+        replaceArtifactExtension(markdownFilename, ".txt"),
+        ".txt",
+      );
+      const textBody = markdownToCustomerPlainText(file.body);
+      const textPath = resolveArtifactPathWithinRunDir(
+        artifactDir,
+        `customer-txt/${textFilename}`,
+      );
+      const textBytes = Buffer.from(textBody, "utf8");
+      await writeAtomicText(textPath, textBody);
+      perCaseTextPaths.push(textPath);
+      perCaseTextArtifacts.push({
+        filename: `customer-txt/${textFilename}`,
+        bytes: textBytes,
+      });
+      const pdfFilename = assertSafeCustomerArtifactFilename(
+        replaceArtifactExtension(markdownFilename, ".pdf"),
+        ".pdf",
+      );
+      const singleCasePdfBytes = buildCustomerTestCasePdf({
+        title:
+          extractFirstMarkdownHeading(file.body) ??
+          pdfFilename.slice(0, -".pdf".length),
+        generatedAt: input.generatedAt,
+        jobId: input.jobId,
+        markdown: file.body,
+      });
+      const singleCasePdfPath = resolveArtifactPathWithinRunDir(
+        artifactDir,
+        `customer-pdf/${pdfFilename}`,
+      );
+      await writeAtomicBytes(singleCasePdfPath, singleCasePdfBytes);
+      perCasePdfPaths.push(singleCasePdfPath);
+      perCasePdfArtifacts.push({
+        filename: `customer-pdf/${pdfFilename}`,
+        bytes: singleCasePdfBytes,
+      });
       perCaseArtifacts.push({
-        filename: `customer-markdown/${file.filename}`,
+        filename: `customer-markdown/${markdownFilename}`,
         bytes: Buffer.from(file.body, "utf8"),
       });
     }
@@ -6751,8 +6926,16 @@ export const runFigmaToQcTestCases = async (
       testfaelleMarkdown: rendered.combinedMarkdown,
       screenshots: mappeScreenshots,
     });
-    const pdfPath = join(markdownDir, "testfaelle.pdf");
+    const pdfPath = resolveArtifactPathWithinRunDir(
+      artifactDir,
+      "customer-markdown/testfaelle.pdf",
+    );
+    const customerPdfMappePath = resolveArtifactPathWithinRunDir(
+      artifactDir,
+      "customer-pdf/testfaelle.pdf",
+    );
     await writeAtomicBytes(pdfPath, pdfBytes);
+    await writeAtomicBytes(customerPdfMappePath, pdfBytes);
     const visualSidecarSummary =
       visualSidecarResult?.outcome === "success" &&
       visualSidecarArtifactBytes !== undefined
@@ -7356,6 +7539,26 @@ export const runFigmaToQcTestCases = async (
         bytes: pdfBytes,
         category: "export" as const,
       },
+      {
+        filename: "customer-pdf/testfaelle.pdf",
+        bytes: pdfBytes,
+        category: "export" as const,
+      },
+      ...perCasePdfArtifacts.map((artifact) => ({
+        filename: artifact.filename,
+        bytes: artifact.bytes,
+        category: "export" as const,
+      })),
+      {
+        filename: "customer-txt/testfaelle.txt",
+        bytes: combinedTextBytes,
+        category: "export" as const,
+      },
+      ...perCaseTextArtifacts.map((artifact) => ({
+        filename: artifact.filename,
+        bytes: artifact.bytes,
+        category: "export" as const,
+      })),
       ...(mutationReportBytes === undefined
         ? []
         : [
@@ -7758,6 +7961,14 @@ export const runFigmaToQcTestCases = async (
         perCase: perCasePaths,
         pdf: pdfPath,
       },
+      customerPdfPaths: {
+        combined: customerPdfMappePath,
+        perCase: perCasePdfPaths,
+      },
+      customerTxtPaths: {
+        combined: combinedTextPath,
+        perCase: perCaseTextPaths,
+      },
       ...(harnessSummary !== undefined ? { harness: harnessSummary } : {}),
       ...(repairLoopResult !== undefined
         ? {
@@ -7823,7 +8034,9 @@ const resolveFigmaSource = async (
     return await fetchFigmaFileForTestIntelligence({
       fileKey: parsed.fileKey,
       accessToken: source.accessToken,
-      ...(source.fetchImpl !== undefined ? { fetchImpl: source.fetchImpl } : {}),
+      ...(source.fetchImpl !== undefined
+        ? { fetchImpl: source.fetchImpl }
+        : {}),
       ...(source.caCertPath !== undefined
         ? { caCertPath: source.caCertPath }
         : {}),

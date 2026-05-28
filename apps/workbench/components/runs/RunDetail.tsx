@@ -7,7 +7,7 @@ import { IconButton } from "@/components/primitives/IconButton";
 import { Panel } from "@/components/primitives/Panel";
 import { StatusChip } from "@/components/primitives/StatusChip";
 import { STAGE_ORDER } from "@/lib/run-state";
-import type { RunState, StageName } from "@/lib/types";
+import type { CustomerOutputFile, RunState, StageName } from "@/lib/types";
 import { cx, ui } from "@/lib/ui-classes";
 import { ArtifactRow } from "./ArtifactRow";
 import { StageCard } from "./StageCard";
@@ -20,6 +20,74 @@ export interface RunDetailProps {
 function formatTimestamp(iso: string | null): string {
   if (!iso) return "—";
   return iso.replace("T", " ").slice(0, 19) + "Z";
+}
+
+function CustomerOutputPanel({
+  title,
+  description,
+  files,
+}: {
+  title: string;
+  description: string;
+  files: readonly CustomerOutputFile[];
+}): ReactNode {
+  if (files.length === 0) return null;
+  return (
+    <div className="mt-4">
+      <Panel
+        title={title}
+        description={description}
+        bodyFlush
+        actions={<Badge variant="success">{files.length} files</Badge>}
+      >
+        <table className={ui.table.table}>
+          <thead>
+            <tr>
+              <th className={cx(ui.table.th, ui.table.colStatus)} />
+              <th className={ui.table.th}>file</th>
+              <th className={ui.table.th}>type</th>
+              <th className={cx(ui.table.th, ui.table.colSize)}>size</th>
+            </tr>
+          </thead>
+          <tbody>
+            {files.map((file) => (
+              <tr key={file.path} className={ui.table.row}>
+                <td
+                  className={cx(
+                    ui.table.td,
+                    ui.table.colStatus,
+                    ui.table.rowStatus,
+                  )}
+                >
+                  <span className={ui.table.iconOk}>
+                    <FileText size={14} aria-hidden focusable={false} />
+                  </span>
+                </td>
+                <td className={cx(ui.table.td, ui.table.colName)}>
+                  <a
+                    className="break-all text-accent hover:underline"
+                    href={file.downloadHref}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {file.path}
+                  </a>
+                </td>
+                <td className={ui.table.td}>
+                  <span className={cx(ui.table.label, ui.table.labelOk)}>
+                    {file.combined ? "combined" : "per-case"}
+                  </span>
+                </td>
+                <td className={cx(ui.table.td, ui.table.colSize)}>
+                  {file.size}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Panel>
+    </div>
+  );
 }
 
 export function RunDetail({ run, onNewRun }: RunDetailProps): ReactNode {
@@ -97,75 +165,23 @@ export function RunDetail({ run, onNewRun }: RunDetailProps): ReactNode {
         </div>
       )}
 
-      {run.customerMarkdown !== undefined &&
-        run.customerMarkdown.length > 0 && (
-          <div className="mt-4">
-            <Panel
-              title="Customer Markdown"
-              description="Customer-facing Markdown emitted by the production runner."
-              bodyFlush
-              actions={
-                <Badge variant="success">
-                  {run.customerMarkdown.length} files
-                </Badge>
-              }
-            >
-              <table className={ui.table.table}>
-                <thead>
-                  <tr>
-                    <th className={cx(ui.table.th, ui.table.colStatus)} />
-                    <th className={ui.table.th}>file</th>
-                    <th className={ui.table.th}>type</th>
-                    <th className={cx(ui.table.th, ui.table.colSize)}>
-                      size
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {run.customerMarkdown.map((file) => (
-                    <tr key={file.path} className={ui.table.row}>
-                      <td
-                        className={cx(
-                          ui.table.td,
-                          ui.table.colStatus,
-                          ui.table.rowStatus,
-                        )}
-                      >
-                        <span className={ui.table.iconOk}>
-                          <FileText
-                            size={14}
-                            aria-hidden
-                            focusable={false}
-                          />
-                        </span>
-                      </td>
-                      <td className={cx(ui.table.td, ui.table.colName)}>
-                        <a
-                          className="break-all text-accent hover:underline"
-                          href={file.downloadHref}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          {file.path}
-                        </a>
-                      </td>
-                      <td className={ui.table.td}>
-                        <span
-                          className={cx(ui.table.label, ui.table.labelOk)}
-                        >
-                          {file.combined ? "combined" : "per-case"}
-                        </span>
-                      </td>
-                      <td className={cx(ui.table.td, ui.table.colSize)}>
-                        {file.size}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </Panel>
-          </div>
-        )}
+      <CustomerOutputPanel
+        title="Customer Markdown"
+        description="Customer-facing Markdown emitted by the production runner."
+        files={run.customerMarkdown ?? []}
+      />
+
+      <CustomerOutputPanel
+        title="Customer PDF"
+        description="Customer-facing PDFs emitted by the production runner."
+        files={run.customerPdf ?? []}
+      />
+
+      <CustomerOutputPanel
+        title="Customer TXT"
+        description="Customer-facing plain-text files emitted by the production runner."
+        files={run.customerTxt ?? []}
+      />
 
       <div className="mt-4">
         <Panel

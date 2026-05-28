@@ -682,6 +682,38 @@ void test("runFigmaToQcTestCases happy path persists artifacts and renders custo
       pdfBytes.subarray(pdfBytes.length - 6).toString("ascii"),
       /%%EOF\s*$/u,
     );
+    // Customer PDF directory mirrors the presentation PDF and contains
+    // one deterministic single-case PDF per generated customer case.
+    assert.ok(
+      result.customerPdfPaths.combined.endsWith(
+        path.join("customer-pdf", "testfaelle.pdf"),
+      ),
+    );
+    assert.equal(
+      result.customerPdfPaths.perCase.length,
+      result.generatedTestCases.testCases.length,
+    );
+    const customerPdfBytes = await readFile(result.customerPdfPaths.combined);
+    assert.equal(customerPdfBytes.subarray(0, 5).toString("ascii"), "%PDF-");
+    const firstCasePdfBytes = await readFile(
+      result.customerPdfPaths.perCase[0]!,
+    );
+    assert.equal(firstCasePdfBytes.subarray(0, 5).toString("ascii"), "%PDF-");
+    // Customer TXT directory contains a plain-text mirror without Markdown syntax.
+    assert.ok(
+      result.customerTxtPaths.combined.endsWith(
+        path.join("customer-txt", "testfaelle.txt"),
+      ),
+    );
+    assert.equal(
+      result.customerTxtPaths.perCase.length,
+      result.generatedTestCases.testCases.length,
+    );
+    const txt = await readFile(result.customerTxtPaths.combined, "utf8");
+    assert.match(txt, /Testfälle/u);
+    assert.match(txt, /Investitionssumme/u);
+    assert.doesNotMatch(txt, /^#/mu);
+    assert.doesNotMatch(txt, /\*\*/u);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
