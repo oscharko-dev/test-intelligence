@@ -3,6 +3,7 @@ import type { OutputSubdir, RunConfig, ValidationIssue } from "./types";
 export const DEFAULT_FORM: RunConfig = {
   figmaUrl: "",
   customContext: "",
+  autoJiraStory: false,
   outputDir: "",
   outputRunSubdir: "job-id",
   visualSidecar: true,
@@ -97,6 +98,20 @@ export function validateForm(f: RunConfig): ValidationIssue[] {
       message: "Expected a workspace-relative path",
     });
   }
+  if (f.autoJiraStory && !f.visualSidecar) {
+    issues.push({
+      field: "visualSidecar",
+      label: "Visual sidecar",
+      message: "Auto Jira Story requires the visual sidecar.",
+    });
+  }
+  if (f.autoJiraStory && f.customContext.trim().length > 0) {
+    issues.push({
+      field: "customContext",
+      label: "Custom context markdown",
+      message: "Clear manual custom context when Auto Jira Story is enabled.",
+    });
+  }
   return issues;
 }
 
@@ -107,6 +122,9 @@ export function buildCli(f: RunConfig): string {
   lines.push(`  --figma-url "${f.figmaUrl || "<figma-url>"}" \\`);
   if (f.customContext) {
     lines.push(`  --custom-context-markdown "${f.customContext}" \\`);
+  }
+  if (f.autoJiraStory) {
+    lines.push(`  --auto-jira-story-from-visual \\`);
   }
   lines.push(`  --output "${f.outputDir || "<output-dir>"}" \\`);
   lines.push(`  --output-run-subdir ${f.outputRunSubdir} \\`);

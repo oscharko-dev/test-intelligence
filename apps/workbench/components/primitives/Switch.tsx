@@ -1,7 +1,7 @@
 "use client";
 
 import { useId, type ReactNode } from "react";
-import { ui } from "@/lib/ui-classes";
+import { cx, ui } from "@/lib/ui-classes";
 
 export interface SwitchProps {
   checked: boolean;
@@ -9,6 +9,7 @@ export interface SwitchProps {
   label: ReactNode;
   sublabel?: ReactNode;
   id?: string;
+  disabled?: boolean;
 }
 
 export function Switch({
@@ -17,6 +18,7 @@ export function Switch({
   label,
   sublabel,
   id,
+  disabled = false,
 }: SwitchProps): ReactNode {
   const generated = useId();
   const inputId = id ?? generated;
@@ -33,8 +35,11 @@ export function Switch({
         id={inputId}
         role="switch"
         aria-checked={checked}
-        className={ui.switch.control}
+        aria-disabled={disabled ? true : undefined}
+        disabled={disabled}
+        className={cx(ui.switch.control, disabled && ui.switch.disabled)}
         onClick={() => {
+          if (disabled) return;
           onChange(!checked);
         }}
       />

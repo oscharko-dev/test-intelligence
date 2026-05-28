@@ -2820,6 +2820,190 @@ void test("runFigmaToQcTestCases wires Figma URL screenshots through the visual 
   }
 });
 
+void test("runFigmaToQcTestCases can generate Jira Story context from visual evidence", async () => {
+  const tempRoot = await mkdtemp(
+    path.join(os.tmpdir(), "ti-runner-auto-jira-"),
+  );
+  const originalFetch = globalThis.fetch;
+  try {
+    const client = createMockLlmGatewayClient({
+      role: "test_generation",
+      deployment: "gpt-oss-120b-mock",
+      modelRevision: "mock-1",
+      gatewayRelease: "mock",
+      responder: okResponder(SAMPLE_VISUAL_HARD_GATE_GREEN_DRAFTS),
+    });
+    const bundle = createMockLlmGatewayClientBundle({
+      testGeneration: {
+        role: "test_generation",
+        deployment: "gpt-oss-120b",
+        modelRevision: "gpt-oss-120b@test",
+        gatewayRelease: "mock",
+        declaredCapabilities: TEST_GENERATION_CAPS,
+      },
+      visualPrimary: {
+        role: "visual_primary",
+        deployment: "llama-4-maverick-vision",
+        modelRevision: "llama-4-maverick-vision@test",
+        gatewayRelease: "mock",
+        declaredCapabilities: VISUAL_CAPS,
+        responder: (request, attempt) => {
+          if (
+            request.responseSchemaName ===
+            "test-intelligence-auto-jira-story-v1"
+          ) {
+            assert.equal(request.imageInputs?.length, 1);
+            return {
+              outcome: "success" as const,
+              content: {
+                jiraStoryMarkdown: [
+                  "# Jira Story",
+                  "",
+                  "## Summary",
+                  "Die Maske Bedarfsermittlung erfasst eine Investitionssumme und führt den Anwender weiter.",
+                  "",
+                  "## User Story",
+                  "Als Firmenkundenberater möchte ich eine Investitionssumme erfassen, damit die Finanzierung fachlich geprüft werden kann.",
+                  "",
+                  "## Business Context",
+                  "Die Story basiert auf der sichtbaren Figma-Maske und den durch das Vision-Modell erkannten Feldern.",
+                  "",
+                  "## Functional Scope",
+                  "- Erfassung der Investitionssumme.",
+                  "- Fortsetzung über die Aktion Weiter.",
+                  "",
+                  "## Acceptance Criteria",
+                  "- AC1: Eine gültige Investitionssumme kann eingegeben werden.",
+                  "- AC2: Nach Auswahl von Weiter bleibt der Ablauf fachlich nachvollziehbar.",
+                  "",
+                  "## Assumptions and Open Questions",
+                  "- Konkrete Grenzwerte sind im Screenshot nicht sichtbar.",
+                ].join("\n"),
+              },
+              finishReason: "stop" as const,
+              usage: { inputTokens: 80, outputTokens: 120 },
+              modelDeployment: "llama-4-maverick-vision",
+              modelRevision: "llama-4-maverick-vision@test",
+              gatewayRelease: "mock",
+              attempt,
+            };
+          }
+          if (
+            request.responseSchemaName ===
+            "test-intelligence-faithfulness-judge-v1"
+          ) {
+            return {
+              outcome: "success" as const,
+              content: {
+                verdict: "accept",
+                hallucinations: [],
+                mismatches: [],
+              },
+              finishReason: "stop" as const,
+              usage: { inputTokens: 12, outputTokens: 8 },
+              modelDeployment: "llama-4-maverick-vision",
+              modelRevision: "llama-4-maverick-vision@test",
+              gatewayRelease: "mock",
+              attempt,
+            };
+          }
+          return buildVisualSuccess(request, attempt, "1:1");
+        },
+      },
+      visualFallback: {
+        role: "visual_fallback",
+        deployment: "phi-4-multimodal-poc",
+        modelRevision: "phi-4-multimodal-poc@test",
+        gatewayRelease: "mock",
+        declaredCapabilities: VISUAL_CAPS,
+      },
+    });
+    globalThis.fetch = (async (url: string) => {
+      if (url.includes("/v1/files/ABC/nodes?ids=1%3A1")) {
+        return new Response(
+          JSON.stringify({
+            name: "Test View 03",
+            nodes: {
+              "1:1": {
+                document: SAMPLE_FILE.document.children?.[0]?.children?.[0],
+              },
+            },
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          },
+        );
+      }
+      if (
+        url ===
+        "https://api.figma.com/v1/images/ABC?ids=1%3A1&format=png&scale=2"
+      ) {
+        return new Response(
+          JSON.stringify({
+            images: {
+              "1:1":
+                "https://figma-alpha-api.s3.us-west-2.amazonaws.com/1_1.png",
+            },
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          },
+        );
+      }
+      return new Response(PNG_BYTES, {
+        status: 200,
+        headers: { "content-type": "image/png" },
+      });
+    }) as typeof fetch;
+
+    const result = await runFigmaToQcTestCases({
+      jobId: "job-auto-jira",
+      generatedAt: "2026-05-05T10:00:00Z",
+      source: figmaUrlSource(
+        "https://www.figma.com/design/ABC/Test-View-03?node-id=1-1",
+      ),
+      outputRoot: tempRoot,
+      llm: { client, bundle },
+      autoJiraStoryFromVisual: true,
+      generation: { diversityPasses: 1 },
+    });
+
+    assert.ok(result.artifactPaths.autoGeneratedJiraStory);
+    const story = await readFile(
+      result.artifactPaths.autoGeneratedJiraStory,
+      "utf8",
+    );
+    assert.match(story, /^# Jira Story/mu);
+    assert.match(story, /AC1: Eine gültige Investitionssumme/u);
+    const compiled = await readFile(
+      result.artifactPaths.compiledPrompt,
+      "utf8",
+    );
+    assert.match(compiled, /custom_context_markdown/u);
+    assert.match(compiled, /Investitionssumme/u);
+    const customerMarkdown = await readFile(
+      result.customerMarkdownPaths.combined,
+      "utf8",
+    );
+    assert.match(customerMarkdown, /## Akzeptanzkriterien/u);
+    assert.match(customerMarkdown, /AC01/u);
+    const seal = JSON.parse(
+      await readFile(result.artifactPaths.evidenceSeal, "utf8"),
+    ) as {
+      customContextMarkdownHashes?: Array<{
+        markdownContentHash: string;
+        plainContentHash: string;
+      }>;
+    };
+    assert.equal(seal.customContextMarkdownHashes?.length, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 void test("runFigmaToQcTestCases runs both judges, persists their artifacts, and keeps the job unblocked on the happy path", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "ti-runner-"));
   const originalFetch = globalThis.fetch;
@@ -6042,6 +6226,9 @@ void test("PRODUCTION_RUNNER_FAILURE_CLASSES is the closed set used by the runne
   assert.ok(PRODUCTION_RUNNER_FAILURE_CLASSES.includes("EMPTY_FIGMA_INPUT"));
   assert.ok(PRODUCTION_RUNNER_FAILURE_CLASSES.includes("LLM_REFUSAL"));
   assert.ok(PRODUCTION_RUNNER_FAILURE_CLASSES.includes("LLM_RESPONSE_INVALID"));
+  assert.ok(
+    PRODUCTION_RUNNER_FAILURE_CLASSES.includes("AUTO_JIRA_STORY_INVALID"),
+  );
 });
 
 // ---------------------------------------------------------------------------

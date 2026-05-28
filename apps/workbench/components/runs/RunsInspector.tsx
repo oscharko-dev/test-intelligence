@@ -35,6 +35,7 @@ function RunsFormInspector({
   const flagSummary = [
     `subdir=${form.outputRunSubdir}`,
     `visual=${form.visualSidecar ? "on" : "off"}`,
+    `auto-jira=${form.autoJiraStory ? "on" : "off"}`,
     `allow-blocked=${form.allowPolicyBlocked ? "on" : "off"}`,
   ].join(" · ");
 
@@ -80,8 +81,12 @@ function RunsFormInspector({
               />
               <MetadataRow
                 label="custom context"
-                value={form.customContext || "—"}
-                muted={!form.customContext}
+                value={
+                  form.autoJiraStory
+                    ? "auto-generated from screenshot"
+                    : form.customContext || "—"
+                }
+                muted={!form.customContext && !form.autoJiraStory}
               />
             </div>
             <div className={ui.inspectorGroup.group}>

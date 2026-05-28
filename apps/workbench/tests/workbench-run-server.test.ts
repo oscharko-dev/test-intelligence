@@ -27,6 +27,7 @@ const validFigmaUrl =
 const baseRunBody = {
   figmaUrl: validFigmaUrl,
   customContext: "",
+  autoJiraStory: false,
   outputDir: ".test-intelligence/server-test",
   outputRunSubdir: "job-id",
   visualSidecar: true,
@@ -449,6 +450,31 @@ describe("prepareWorkbenchRun", () => {
     expect(prepared.customContextMarkdown).toBeUndefined();
   });
 
+  test("auto Jira Story mode does not load manual custom context", async () => {
+    const repoRoot = await tempWorkspace();
+    vi.stubEnv("WORKBENCH_REPO_ROOT", repoRoot);
+    await mkdir(path.join(repoRoot, "test-case", "case-a"), {
+      recursive: true,
+    });
+    await writeFile(
+      path.join(repoRoot, "test-case", "case-a", "JIRA_STORY.md"),
+      "# Manual Story\n",
+      "utf8",
+    );
+    const prepared = await prepareWorkbenchRun({
+      body: {
+        ...baseRunBody,
+        customContext: "test-case/case-a/JIRA_STORY.md",
+        autoJiraStory: true,
+      },
+      env: env({ WORKBENCH_RUNNER_MODE: "mock" }),
+      now: new Date("2026-05-25T10:15:30.000Z"),
+    });
+    expect(prepared.config.autoJiraStory).toBe(true);
+    expect(prepared.config.customContext).toBe("");
+    expect(prepared.customContextMarkdown).toBeUndefined();
+  });
+
   test("requires output paths under the workspace or allowlist", async () => {
     const repoRoot = await tempWorkspace();
     const allowedRoot = await tempWorkspace();
@@ -582,5 +608,31 @@ describe("workbench run registry", () => {
     expect(txtDownload.bytes.toString("utf8")).toContain(
       "Fachliche Testfaelle",
     );
+  });
+
+  test("mock runner emits the generated Jira Story artifact in auto mode", async () => {
+    const repoRoot = await tempWorkspace();
+    vi.stubEnv("WORKBENCH_REPO_ROOT", repoRoot);
+    vi.stubEnv("WORKBENCH_RUNNER_MODE", "mock");
+    const prepared = await prepareWorkbenchRun({
+      body: { ...baseRunBody, autoJiraStory: true },
+      env: env({ WORKBENCH_RUNNER_MODE: "mock" }),
+      now: new Date("2026-05-25T10:15:30.000Z"),
+    });
+
+    startWorkbenchRun(prepared);
+    await getWorkbenchRunCompletionForTests(prepared.jobId);
+
+    const run = getWorkbenchRun(prepared.jobId);
+    expect(run?.status, run?.errorMessage).toBe("sealed");
+    expect(
+      run?.artifacts.some((artifact) => artifact.name === "auto-jira-story.md"),
+    ).toBe(true);
+    const story = await readWorkbenchRunFile(
+      prepared.jobId,
+      "auto-jira-story.md",
+    );
+    expect(story.contentType).toBe("text/markdown; charset=utf-8");
+    expect(story.bytes.toString("utf8")).toContain("# Jira Story");
   });
 });

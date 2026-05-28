@@ -119,8 +119,7 @@ export const ui = {
   metadata: {
     row: "metarow grid grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)] items-baseline gap-2.5 border-b border-dashed border-border-subtle py-1 text-xs last:border-b-0",
     label: "metarow__label text-fg-muted",
-    value:
-      "metarow__value break-all text-right font-mono text-fg-default",
+    value: "metarow__value break-all text-right font-mono text-fg-default",
     muted: "muted text-fg-subtle",
   },
 
@@ -156,11 +155,11 @@ export const ui = {
       "input w-full rounded-md border border-border-default bg-bg-input px-2.5 py-[7px] text-[13px] text-fg-default placeholder:text-fg-subtle hover:border-border-strong focus:border-accent",
     mono: "mono font-mono text-xs",
     invalid: "invalid border-danger",
+    disabled: "disabled cursor-not-allowed opacity-60",
     hasRightSlot: "has-right-slot pr-9",
     selectWrap: "select-wrap relative",
     select: "appearance-none pr-7",
-    chev:
-      "chev pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 text-fg-muted",
+    chev: "chev pointer-events-none absolute top-1/2 right-2 -translate-y-1/2 text-fg-muted",
   },
 
   switch: {
@@ -170,6 +169,7 @@ export const ui = {
     sub: "switch-row__sub font-mono text-[11px] text-fg-muted",
     control:
       "switch relative inline-flex h-[18px] w-8 items-center rounded-full border border-border-default bg-bg-input p-0 transition-colors duration-100 after:absolute after:top-px after:left-0.5 after:h-3 after:w-3 after:rounded-full after:bg-fg-muted after:transition after:duration-100 aria-checked:border-[hsl(210_80%_36%)] aria-checked:bg-[hsl(210_80%_22%)] aria-checked:after:translate-x-3.5 aria-checked:after:bg-accent",
+    disabled: "cursor-not-allowed opacity-50",
   },
 
   button: {
@@ -286,8 +286,7 @@ export const ui = {
   validation: {
     list: "vlist m-0 grid list-none gap-1.5 p-0 [counter-reset:v]",
     item: "vitem grid grid-cols-[22px_1fr] gap-2 rounded-md border border-border-subtle bg-bg-input px-2.5 py-2 text-xs before:grid before:h-[22px] before:w-[22px] before:place-items-center before:rounded before:border before:border-border-default before:bg-bg-elev before:font-mono before:text-[11px] before:text-fg-muted before:[counter-increment:v] before:content-[counter(v)]",
-    okItem:
-      "ok grid-cols-1 border-[hsl(142_30%_22%)] before:hidden",
+    okItem: "ok grid-cols-1 border-[hsl(142_30%_22%)] before:hidden",
     success: "vitem__success inline-flex items-center gap-1.5 text-success",
     label: "vitem__label font-mono text-[11px] text-fg-default",
     message: "vitem__message text-fg-muted",

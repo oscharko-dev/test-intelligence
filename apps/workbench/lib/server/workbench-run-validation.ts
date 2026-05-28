@@ -439,10 +439,14 @@ const parseConfig = (value: unknown): RunConfig => {
     });
   }
   const raw = value as Record<string, unknown>;
+  const autoJiraStory = raw.autoJiraStory === true;
   return {
     figmaUrl: typeof raw.figmaUrl === "string" ? raw.figmaUrl.trim() : "",
     customContext:
-      typeof raw.customContext === "string" ? raw.customContext.trim() : "",
+      !autoJiraStory && typeof raw.customContext === "string"
+        ? raw.customContext.trim()
+        : "",
+    autoJiraStory,
     outputDir: typeof raw.outputDir === "string" ? raw.outputDir.trim() : "",
     outputRunSubdir:
       raw.outputRunSubdir === "timestamp" ||
@@ -510,6 +514,13 @@ export const prepareWorkbenchRun = async ({
       label: "Job ID override",
       message:
         "Use 3-96 letters, numbers, dot, underscore or dash; path separators are not allowed.",
+    });
+  }
+  if (config.autoJiraStory && !config.visualSidecar) {
+    issues.push({
+      field: "visualSidecar",
+      label: "Visual sidecar",
+      message: "Auto Jira Story requires the visual sidecar.",
     });
   }
   if (issues.length > 0) {

@@ -69,6 +69,15 @@ export function RunsForm({
     }
   };
 
+  const setAutoJiraStory = (enabled: boolean): void => {
+    setForm((prev) => ({
+      ...prev,
+      autoJiraStory: enabled,
+      visualSidecar: enabled ? true : prev.visualSidecar,
+      customContext: enabled ? "" : prev.customContext,
+    }));
+  };
+
   return (
     <form
       ref={formRef}
@@ -113,7 +122,24 @@ export function RunsForm({
           value={form.customContext}
           onChange={setField("customContext")}
           placeholder="test-case/<fileKey>/JIRA_STORY.md"
-          hint="Workspace-relative path. Optional — appended to the generator context."
+          disabled={form.autoJiraStory}
+          invalid={Boolean(issueByField("customContext"))}
+          hint={
+            issueByField("customContext")?.message ??
+            (form.autoJiraStory
+              ? "Disabled because Llama 4 Maverick Vision will generate the Jira Story from the screenshot."
+              : "Workspace-relative path. Optional — appended to the generator context.")
+          }
+          {...(issueByField("customContext")
+            ? { hintVariant: "err" as const }
+            : {})}
+        />
+        <Switch
+          id="autoJiraStory"
+          label="Generate Jira Story from screenshot"
+          sublabel="--auto-jira-story-from-visual"
+          checked={form.autoJiraStory}
+          onChange={setAutoJiraStory}
         />
       </Panel>
 
@@ -159,9 +185,14 @@ export function RunsForm({
         <Switch
           id="visualSidecar"
           label="Enable visual sidecar"
-          sublabel="--enable-visual-sidecar"
+          sublabel={
+            form.autoJiraStory
+              ? "Required for automatic Jira Story generation"
+              : "--enable-visual-sidecar"
+          }
           checked={form.visualSidecar}
           onChange={setField("visualSidecar")}
+          disabled={form.autoJiraStory}
         />
         <Switch
           id="allowPolicyBlocked"

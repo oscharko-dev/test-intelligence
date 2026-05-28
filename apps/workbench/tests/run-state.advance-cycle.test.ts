@@ -5,6 +5,7 @@ import type { AdvanceTarget, RunConfig, RunState } from "@/lib/types";
 const SAMPLE_CONFIG: RunConfig = {
   figmaUrl: "https://www.figma.com/design/ABC/E?node-id=1-2",
   customContext: "",
+  autoJiraStory: false,
   outputDir: ".out",
   outputRunSubdir: "job-id",
   visualSidecar: true,
