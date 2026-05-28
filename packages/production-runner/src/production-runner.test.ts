@@ -2856,29 +2856,23 @@ void test("runFigmaToQcTestCases can generate Jira Story context from visual evi
             return {
               outcome: "success" as const,
               content: {
-                jiraStoryMarkdown: [
-                  "# Jira Story",
-                  "",
-                  "## Summary",
+                summary:
                   "Die Maske Bedarfsermittlung erfasst eine Investitionssumme und führt den Anwender weiter.",
-                  "",
-                  "## User Story",
+                userStory:
                   "Als Firmenkundenberater möchte ich eine Investitionssumme erfassen, damit die Finanzierung fachlich geprüft werden kann.",
-                  "",
-                  "## Business Context",
+                businessContext:
                   "Die Story basiert auf der sichtbaren Figma-Maske und den durch das Vision-Modell erkannten Feldern.",
-                  "",
-                  "## Functional Scope",
-                  "- Erfassung der Investitionssumme.",
-                  "- Fortsetzung über die Aktion Weiter.",
-                  "",
-                  "## Acceptance Criteria",
-                  "- AC1: Eine gültige Investitionssumme kann eingegeben werden.",
-                  "- AC2: Nach Auswahl von Weiter bleibt der Ablauf fachlich nachvollziehbar.",
-                  "",
-                  "## Assumptions and Open Questions",
-                  "- Konkrete Grenzwerte sind im Screenshot nicht sichtbar.",
-                ].join("\n"),
+                functionalScope: [
+                  "Erfassung der Investitionssumme.",
+                  "Fortsetzung über die Aktion Weiter.",
+                ],
+                acceptanceCriteria: [
+                  "Eine gültige Investitionssumme kann eingegeben werden.",
+                  "Nach Auswahl von Weiter bleibt der Ablauf fachlich nachvollziehbar.",
+                ],
+                assumptionsAndOpenQuestions: [
+                  "Konkrete Grenzwerte sind im Screenshot nicht sichtbar.",
+                ],
               },
               finishReason: "stop" as const,
               usage: { inputTokens: 80, outputTokens: 120 },
@@ -3043,24 +3037,17 @@ void test("runFigmaToQcTestCases repairs an auto-generated Jira Story before fai
               return {
                 outcome: "success" as const,
                 content: {
-                  jiraStoryMarkdown: [
-                    "# Jira Story",
-                    "",
-                    "## Summary",
+                  summary:
                     "Die Maske erfasst Investitionsdaten für einen Finanzierungsbedarf.",
-                    "",
-                    "## User Story",
+                  userStory:
                     "Als Firmenkundenberater möchte ich Investitionsdaten erfassen.",
-                    "",
-                    "## Business Context",
+                  businessContext:
                     "Die Story basiert auf der sichtbaren Figma-Maske.",
-                    "",
-                    "## Functional Scope",
-                    "- Erfassung von Kaufpreis und Nebenkosten.",
-                    "",
-                    "## Assumptions and Open Questions",
-                    "- Konkrete Grenzwerte sind nicht sichtbar.",
-                  ].join("\n"),
+                  functionalScope: ["Erfassung von Kaufpreis und Nebenkosten."],
+                  acceptanceCriteria: [],
+                  assumptionsAndOpenQuestions: [
+                    "Konkrete Grenzwerte sind nicht sichtbar.",
+                  ],
                 },
                 finishReason: "stop" as const,
                 usage: { inputTokens: 80, outputTokens: 80 },
@@ -3072,34 +3059,28 @@ void test("runFigmaToQcTestCases repairs an auto-generated Jira Story before fai
             }
             assert.match(
               request.userPrompt,
-              /missing_acceptance_criteria_section/u,
+              /missing_acceptance_criteria_item/u,
             );
             return {
               outcome: "success" as const,
               content: {
-                jiraStoryMarkdown: [
-                  "# Jira Story",
-                  "",
-                  "## Summary",
+                summary:
                   "Die Maske erfasst Investitionsdaten für einen Finanzierungsbedarf.",
-                  "",
-                  "## User Story",
+                userStory:
                   "Als Firmenkundenberater möchte ich Investitionsdaten erfassen, damit der Finanzierungsbedarf nachvollziehbar vorbereitet werden kann.",
-                  "",
-                  "## Business Context",
+                businessContext:
                   "Die Story basiert auf der sichtbaren Figma-Maske.",
-                  "",
-                  "## Functional Scope",
-                  "- Erfassung von Kaufpreis und Nebenkosten.",
-                  "- Anzeige des ermittelten Finanzierungsbedarfs.",
-                  "",
-                  "## Fachliche Akzeptanzkriterien",
-                  "- AC1: Pflichtfelder und ausgewählte Optionen bleiben im Formular nachvollziehbar sichtbar.",
-                  "- AC2: Der ermittelte Finanzierungsbedarf wird aus den sichtbaren Eingaben angezeigt.",
-                  "",
-                  "## Assumptions and Open Questions",
-                  "- Konkrete Grenzwerte sind nicht sichtbar.",
-                ].join("\n"),
+                functionalScope: [
+                  "Erfassung von Kaufpreis und Nebenkosten.",
+                  "Anzeige des ermittelten Finanzierungsbedarfs.",
+                ],
+                acceptanceCriteria: [
+                  "Pflichtfelder und ausgewählte Optionen bleiben im Formular nachvollziehbar sichtbar.",
+                  "Der ermittelte Finanzierungsbedarf wird aus den sichtbaren Eingaben angezeigt.",
+                ],
+                assumptionsAndOpenQuestions: [
+                  "Konkrete Grenzwerte sind nicht sichtbar.",
+                ],
               },
               finishReason: "stop" as const,
               usage: { inputTokens: 120, outputTokens: 140 },
@@ -3197,7 +3178,7 @@ void test("runFigmaToQcTestCases repairs an auto-generated Jira Story before fai
       result.artifactPaths.autoGeneratedJiraStory,
       "utf8",
     );
-    assert.match(story, /## Fachliche Akzeptanzkriterien/u);
+    assert.match(story, /## Acceptance Criteria/u);
     assert.match(story, /AC1: Pflichtfelder/u);
   } finally {
     globalThis.fetch = originalFetch;

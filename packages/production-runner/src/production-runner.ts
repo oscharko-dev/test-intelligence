@@ -14293,6 +14293,11 @@ interface AutoJiraStoryGatewayAttempt {
   result: Extract<LlmGenerationResult, { outcome: "success" }>;
 }
 
+interface AutoJiraStoryResponseCandidate {
+  jiraStoryMarkdown: string;
+  structuralIssues: readonly AutoJiraStoryValidationIssue[];
+}
+
 interface AutoJiraStoryGenerationResult {
   bodyMarkdown: string;
   modelDeployment: string;
@@ -14314,12 +14319,47 @@ const AUTO_JIRA_STORY_SYSTEM_PROMPT = [
 const buildAutoJiraStoryResponseSchema = (): Record<string, unknown> => ({
   type: "object",
   additionalProperties: false,
-  required: ["jiraStoryMarkdown"],
+  required: [
+    "summary",
+    "userStory",
+    "businessContext",
+    "functionalScope",
+    "acceptanceCriteria",
+    "assumptionsAndOpenQuestions",
+  ],
   properties: {
-    jiraStoryMarkdown: {
+    summary: {
       type: "string",
-      minLength: 200,
-      maxLength: MAX_AUTO_JIRA_STORY_MARKDOWN_BYTES,
+      minLength: 20,
+      maxLength: 1_200,
+    },
+    userStory: {
+      type: "string",
+      minLength: 20,
+      maxLength: 1_200,
+    },
+    businessContext: {
+      type: "string",
+      minLength: 20,
+      maxLength: 1_500,
+    },
+    functionalScope: {
+      type: "array",
+      minItems: 1,
+      maxItems: 12,
+      items: { type: "string", minLength: 8, maxLength: 500 },
+    },
+    acceptanceCriteria: {
+      type: "array",
+      minItems: 1,
+      maxItems: 16,
+      items: { type: "string", minLength: 10, maxLength: 700 },
+    },
+    assumptionsAndOpenQuestions: {
+      type: "array",
+      minItems: 0,
+      maxItems: 12,
+      items: { type: "string", minLength: 8, maxLength: 500 },
     },
   },
 });
@@ -14362,17 +14402,17 @@ const buildAutoJiraStoryUserPrompt = (input: {
   visual: readonly VisualScreenDescription[];
 }): string =>
   [
-    "Generate one Jira Story Markdown document from the attached screenshot(s) and the normalized evidence below.",
+    "Generate one Jira Story from the attached screenshot(s) and the normalized evidence below.",
     "",
-    "Required Markdown structure:",
-    "# Jira Story",
-    "## Summary",
-    "## User Story",
-    "## Business Context",
-    "## Functional Scope",
-    "## Acceptance Criteria",
-    "- AC1: ...",
-    "## Assumptions and Open Questions",
+    "Return structured JSON fields only. Do not render Markdown; the runner will render the final Markdown deterministically.",
+    "",
+    "Required JSON fields:",
+    "- summary: concise description of the visible business process.",
+    "- userStory: one classic user-story sentence.",
+    "- businessContext: regulated-delivery context grounded only in visible evidence.",
+    "- functionalScope: array of concrete visible behaviors or inputs.",
+    "- acceptanceCriteria: array with at least one testable, observable criterion.",
+    "- assumptionsAndOpenQuestions: array for uncertainty, hidden rules, or missing thresholds.",
     "",
     "Rules:",
     "- Write in German when the visible UI language is German; otherwise use professional English.",
@@ -14402,7 +14442,7 @@ const buildAutoJiraStoryRepairUserPrompt = (input: {
   visual: readonly VisualScreenDescription[];
 }): string =>
   [
-    "Repair the rejected Jira Story Markdown so it satisfies the production contract.",
+    "Repair the rejected Jira Story so it satisfies the production contract.",
     "",
     "Validation issues to fix:",
     canonicalJson(
@@ -14412,15 +14452,15 @@ const buildAutoJiraStoryRepairUserPrompt = (input: {
       })),
     ),
     "",
-    "Required Markdown structure:",
-    "# Jira Story",
-    "## Summary",
-    "## User Story",
-    "## Business Context",
-    "## Functional Scope",
-    "## Acceptance Criteria",
-    "- AC1: ...",
-    "## Assumptions and Open Questions",
+    "Return structured JSON fields only. Do not render Markdown; the runner will render the final Markdown deterministically.",
+    "",
+    "Required JSON fields:",
+    "- summary",
+    "- userStory",
+    "- businessContext",
+    "- functionalScope",
+    "- acceptanceCriteria with at least one testable criterion",
+    "- assumptionsAndOpenQuestions",
     "",
     "Rules:",
     "- Preserve only requirements grounded in the screenshot and normalized evidence.",
@@ -14454,6 +14494,83 @@ const normalizeAutoJiraStoryMarkdown = (raw: string): string => {
     ? `${normalized}\n`
     : `# Jira Story\n\n${normalized}\n`;
 };
+
+const normalizeAutoJiraStoryScalar = (value: unknown): string | undefined => {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.replace(/\r\n?/gu, "\n").trim();
+  return normalized.length === 0 ? undefined : normalized;
+};
+
+const normalizeAutoJiraStoryList = (
+  value: unknown,
+  maxItems: number,
+): string[] => {
+  if (!Array.isArray(value)) {
+    const scalar = normalizeAutoJiraStoryScalar(value);
+    return scalar === undefined ? [] : [scalar];
+  }
+  return value
+    .map((item) => normalizeAutoJiraStoryScalar(item))
+    .filter((item): item is string => item !== undefined)
+    .slice(0, maxItems);
+};
+
+const stripAutoJiraStoryCriterionPrefix = (criterion: string): string =>
+  criterion
+    .replace(/^\s*(?:[-*]|\d+[.)])\s+/u, "")
+    .replace(/^\s*(?:AC|AK|Kriterium)\s*\d+[:.)-]?\s*/iu, "")
+    .trim();
+
+const renderAutoJiraStoryMarkdown = (input: {
+  summary: string | undefined;
+  userStory: string | undefined;
+  businessContext: string | undefined;
+  functionalScope: readonly string[];
+  acceptanceCriteria: readonly string[];
+  assumptionsAndOpenQuestions: readonly string[];
+}): string =>
+  [
+    "# Jira Story",
+    "",
+    "## Summary",
+    "",
+    input.summary ??
+      "Aus dem Screenshot ist keine belastbare Zusammenfassung ableitbar.",
+    "",
+    "## User Story",
+    "",
+    input.userStory ??
+      "Als fachlicher Anwender möchte ich die sichtbaren Eingaben bearbeiten, damit der gezeigte Prozess nachvollziehbar abgeschlossen werden kann.",
+    "",
+    "## Business Context",
+    "",
+    input.businessContext ??
+      "Die Story basiert ausschließlich auf der sichtbaren UI-Evidenz und den normalisierten Figma-/Vision-Beobachtungen.",
+    "",
+    "## Functional Scope",
+    "",
+    ...(input.functionalScope.length > 0
+      ? input.functionalScope.map((item) => `- ${item}`)
+      : [
+          "- Sichtbare Eingaben, Auswahloptionen und Aktionen werden fachlich berücksichtigt.",
+        ]),
+    "",
+    "## Acceptance Criteria",
+    "",
+    ...input.acceptanceCriteria.map((criterion, index) => {
+      const body = stripAutoJiraStoryCriterionPrefix(criterion);
+      return `- AC${index + 1}: ${body.length > 0 ? body : criterion}`;
+    }),
+    "",
+    "## Assumptions and Open Questions",
+    "",
+    ...(input.assumptionsAndOpenQuestions.length > 0
+      ? input.assumptionsAndOpenQuestions.map((item) => `- ${item}`)
+      : [
+          "- Nicht sichtbare Geschäftsregeln, Grenzwerte und Backend-Validierungen bleiben offen.",
+        ]),
+    "",
+  ].join("\n");
 
 const isAutoJiraStoryAcceptanceCriteriaHeading = (line: string): boolean => {
   const match = /^(?<marker>#{2,6})\s+(?<heading>.+?)\s*#*\s*$/u.exec(line);
@@ -14545,9 +14662,9 @@ const validateAutoJiraStoryMarkdown = (markdown: string): void => {
   }
 };
 
-const parseAutoJiraStoryResponseMarkdown = (
+const parseAutoJiraStoryResponseCandidate = (
   content: unknown,
-): { jiraStoryMarkdown: string } => {
+): AutoJiraStoryResponseCandidate => {
   if (typeof content !== "object" || content === null) {
     throw new ProductionRunnerError({
       failureClass: "AUTO_JIRA_STORY_INVALID",
@@ -14555,18 +14672,49 @@ const parseAutoJiraStoryResponseMarkdown = (
       retryable: false,
     });
   }
-  const markdown = (content as { jiraStoryMarkdown?: unknown })
-    .jiraStoryMarkdown;
-  if (typeof markdown !== "string") {
-    throw new ProductionRunnerError({
-      failureClass: "AUTO_JIRA_STORY_INVALID",
+  const payload = content as Record<string, unknown>;
+  if (typeof payload.jiraStoryMarkdown === "string") {
+    return {
+      jiraStoryMarkdown: normalizeAutoJiraStoryMarkdown(
+        payload.jiraStoryMarkdown,
+      ),
+      structuralIssues: [],
+    };
+  }
+  const summary = normalizeAutoJiraStoryScalar(payload.summary);
+  const userStory = normalizeAutoJiraStoryScalar(payload.userStory);
+  const businessContext = normalizeAutoJiraStoryScalar(payload.businessContext);
+  const functionalScope = normalizeAutoJiraStoryList(
+    payload.functionalScope,
+    12,
+  );
+  const acceptanceCriteria = normalizeAutoJiraStoryList(
+    payload.acceptanceCriteria,
+    16,
+  );
+  const assumptionsAndOpenQuestions = normalizeAutoJiraStoryList(
+    payload.assumptionsAndOpenQuestions,
+    12,
+  );
+  const structuralIssues: AutoJiraStoryValidationIssue[] = [];
+  if (acceptanceCriteria.length === 0) {
+    structuralIssues.push({
+      code: "missing_acceptance_criteria_item",
       message:
-        "auto Jira story response must contain a string jiraStoryMarkdown field.",
-      retryable: false,
+        "structured auto Jira story response must include at least one acceptanceCriteria item.",
     });
   }
-  const normalized = normalizeAutoJiraStoryMarkdown(markdown);
-  return { jiraStoryMarkdown: normalized };
+  return {
+    jiraStoryMarkdown: renderAutoJiraStoryMarkdown({
+      summary,
+      userStory,
+      businessContext,
+      functionalScope,
+      acceptanceCriteria,
+      assumptionsAndOpenQuestions,
+    }),
+    structuralIssues,
+  };
 };
 
 const runAutoJiraStoryGatewayRequest = async (input: {
@@ -14657,9 +14805,14 @@ const generateAutoJiraStoryFromVisual = async (input: {
       : {}),
   });
   gatewayAttempts.push(draftAttempt);
-  const draft = parseAutoJiraStoryResponseMarkdown(draftAttempt.result.content);
+  const draft = parseAutoJiraStoryResponseCandidate(
+    draftAttempt.result.content,
+  );
   let bodyMarkdown = draft.jiraStoryMarkdown;
-  let validationIssues = collectAutoJiraStoryValidationIssues(bodyMarkdown);
+  let validationIssues = [
+    ...draft.structuralIssues,
+    ...collectAutoJiraStoryValidationIssues(bodyMarkdown),
+  ];
   let finalAttempt = draftAttempt;
   let repairAttempts = 0;
   while (
@@ -14684,11 +14837,14 @@ const generateAutoJiraStoryFromVisual = async (input: {
         : {}),
     });
     gatewayAttempts.push(repairAttempt);
-    const repaired = parseAutoJiraStoryResponseMarkdown(
+    const repaired = parseAutoJiraStoryResponseCandidate(
       repairAttempt.result.content,
     );
     bodyMarkdown = repaired.jiraStoryMarkdown;
-    validationIssues = collectAutoJiraStoryValidationIssues(bodyMarkdown);
+    validationIssues = [
+      ...repaired.structuralIssues,
+      ...collectAutoJiraStoryValidationIssues(bodyMarkdown),
+    ];
     finalAttempt = repairAttempt;
   }
   if (validationIssues.length > 0) {
