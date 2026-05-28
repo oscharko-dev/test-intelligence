@@ -1,6 +1,6 @@
 {
   "name": "@oscharko-dev/test-intelligence",
-  "version": "0.1.0-beta.5",
+  "version": "0.1.0-beta.6",
   "description": "Test Intelligence is a standalone enterprise package for regulated quality and testing intelligence workloads.",
   "type": "module",
   "engines": {
@@ -124,9 +124,10 @@
     "overrides": {
       "esbuild": "^0.25.0",
       "fflate": "0.7.4",
+      "mute-stream": "3.0.0",
       "postcss": "^8.5.10",
       "qs": "^6.15.2",
-      "vite": "^6.4.2"
+      "vite": "8.0.14"
     },
     "ignoredOptionalDependencies": [
       "sharp"
@@ -135,10 +136,10 @@
   "dependencies": {
     "@opentelemetry/api": "^1.9.1",
     "lucide-react": "^1.16.0",
-    "next": "^15.1.4",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
-    "zod": "^4.4.2"
+    "next": "^16.2.6",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "zod": "^4.4.3"
   },
   "peerDependencies": {
     "@opentelemetry/api": "^1.9.0"
@@ -153,32 +154,32 @@
     "@cyclonedx/cyclonedx-npm": "^4.2.1",
     "@eslint/js": "^10.0.1",
     "@opentelemetry/api": "^1.9.1",
+    "@oscharko-dev/ti-agentic-harness": "workspace:*",
+    "@oscharko-dev/ti-cli": "workspace:*",
+    "@oscharko-dev/ti-contracts": "workspace:*",
+    "@oscharko-dev/ti-core-engine": "workspace:*",
+    "@oscharko-dev/ti-eval": "workspace:*",
+    "@oscharko-dev/ti-evidence": "workspace:*",
+    "@oscharko-dev/ti-integrations": "workspace:*",
+    "@oscharko-dev/ti-model-gateway": "workspace:*",
+    "@oscharko-dev/ti-multi-source": "workspace:*",
+    "@oscharko-dev/ti-production-runner": "workspace:*",
+    "@oscharko-dev/ti-quality": "workspace:*",
+    "@oscharko-dev/ti-review": "workspace:*",
     "@oscharko-dev/ti-security": "workspace:*",
     "@oscharko-dev/ti-tenant": "workspace:*",
-    "@oscharko-dev/ti-core-engine": "workspace:*",
-    "@oscharko-dev/ti-model-gateway": "workspace:*",
-    "@oscharko-dev/ti-evidence": "workspace:*",
-    "@oscharko-dev/ti-quality": "workspace:*",
-    "@oscharko-dev/ti-multi-source": "workspace:*",
-    "@oscharko-dev/ti-review": "workspace:*",
-    "@oscharko-dev/ti-integrations": "workspace:*",
-    "@oscharko-dev/ti-eval": "workspace:*",
-    "@oscharko-dev/ti-agentic-harness": "workspace:*",
-    "@oscharko-dev/ti-contracts": "workspace:*",
-    "@oscharko-dev/ti-production-runner": "workspace:*",
-    "@oscharko-dev/ti-cli": "workspace:*",
     "@stryker-mutator/core": "9.6.1",
     "@types/node": "^25.9.1",
     "ajv": "8.20.0",
     "ajv-formats": "3.0.1",
     "dependency-cruiser": "^17.4.2",
     "eslint": "^10.4.0",
-    "fast-check": "^4.7.0",
+    "fast-check": "^4.8.0",
     "globals": "^17.6.0",
     "prettier": "^3.8.3",
-    "publint": "^0.3.18",
+    "publint": "^0.3.21",
     "tsup": "^8.5.1",
-    "tsx": "^4.21.0",
+    "tsx": "^4.22.3",
     "typedoc": "0.28.19",
     "typedoc-plugin-markdown": "4.11.0",
     "typescript": "^6.0.3",
