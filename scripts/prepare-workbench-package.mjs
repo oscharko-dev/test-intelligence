@@ -31,7 +31,13 @@ const shouldCopyNextFile = (source) => {
   const relative = path.relative(sourceNextDir, source);
   if (relative === "") return true;
   const [topLevel] = relative.split(path.sep);
-  return !new Set(["cache", "diagnostics", "trace", "types"]).has(topLevel);
+  return !new Set([
+    "cache",
+    "diagnostics",
+    "trace",
+    "trace-build",
+    "types",
+  ]).has(topLevel);
 };
 
 await requirePath(

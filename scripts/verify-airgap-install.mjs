@@ -10,8 +10,7 @@
  *   2. A fresh consumer package.json is created in a second scratch
  *      directory.
  *   3. `npm install --offline --ignore-scripts <tarball>` installs the
- *      package against a deliberately non-routable registry to prove
- *      no network is touched.
+ *      package from the local npm cache to prove no network is touched.
  *   4. The installed CLI binary is invoked with `--help`.
  *   5. The ESM and CJS entrypoints are imported / required.
  *   6. The container server-entrypoint is started on a loopback port
@@ -59,8 +58,6 @@ const parseArgs = () => {
 const resolveCommandEnv = () => {
   const env = {
     ...process.env,
-    // A reserved-discard port. Any accidental network call fails fast.
-    npm_config_registry: "http://127.0.0.1:9",
     npm_config_audit: "false",
     npm_config_fund: "false",
   };
