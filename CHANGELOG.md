@@ -2,6 +2,20 @@
 
 All notable public changes are tracked here.
 
+## 0.1.0-beta.6 - 2026-05-28
+
+- Upgraded the Workbench runtime stack to Next.js 16, React 19.2, and the
+  matching Next.js 16 ESLint flat-config integration.
+- Refreshed package, test, build, and release-readiness dependencies including
+  Zod, fast-check, Vite, tsx, and publint while preserving the advertised
+  Node.js 22.13+ runtime baseline.
+- Aligned CLI and server package identity constants with the beta.6 package
+  version so runtime metadata matches the npm release.
+- Hardened air-gap install, mutation-test, and reproducible-build verification
+  paths for the upgraded dependency graph.
+- Stabilized the Docker PR gate by avoiding BuildKit cache export writes in
+  required PR checks while keeping cache reads for build speed.
+
 ## 0.1.0-beta.5 - 2026-05-27
 
 - Fixed npm-installed CLI startup on Node 22.14 by removing a premature
