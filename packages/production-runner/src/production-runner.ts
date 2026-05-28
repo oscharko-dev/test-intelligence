@@ -3344,19 +3344,22 @@ export const runFigmaToQcTestCases = async (
           ? { abortSignal: input.llm.abortSignal }
           : {}),
       });
-      await recordFinopsGatewayAttempt({
-        role: "visual_primary",
-        source: "visual_primary",
-        attributionMode: "audit",
-        deployment: generatedStory.modelDeployment,
-        endpointReference: visualPrimaryClient.operatorEndpointReference,
-        durationMs: Math.max(0, Date.now() - storyStartedAt),
-        result: generatedStory.gatewayResult,
-        imageBytes: visualSidecarResult.captureIdentities.reduce(
-          (sum, identity) => sum + identity.byteLength,
-          0,
-        ),
-      });
+      for (const gatewayAttempt of generatedStory.gatewayAttempts) {
+        await recordFinopsGatewayAttempt({
+          role: "visual_primary",
+          source: "visual_primary",
+          attributionMode: "audit",
+          deployment: gatewayAttempt.result.modelDeployment,
+          endpointReference: visualPrimaryClient.operatorEndpointReference,
+          durationMs: gatewayAttempt.durationMs,
+          result: gatewayAttempt.result,
+          attemptId: `auto-jira-story-${gatewayAttempt.purpose}`,
+          imageBytes: visualSidecarResult.captureIdentities.reduce(
+            (sum, identity) => sum + identity.byteLength,
+            0,
+          ),
+        });
+      }
       emit({
         phase: "llm_gateway_response",
         timestamp: monotonicMs(),
@@ -3367,6 +3370,8 @@ export const runFigmaToQcTestCases = async (
           deployment: generatedStory.modelDeployment,
           inputTokens: generatedStory.gatewayResult.usage.inputTokens,
           outputTokens: generatedStory.gatewayResult.usage.outputTokens,
+          durationMs: Math.max(0, Date.now() - storyStartedAt),
+          repairAttempts: generatedStory.repairAttempts,
         },
       });
       const generatedContext = resolveCustomContextMarkdown(
@@ -14265,10 +14270,28 @@ const makeEmitter = (
 const AUTO_JIRA_STORY_RESPONSE_SCHEMA_NAME =
   "test-intelligence-auto-jira-story-v1" as const;
 const MAX_AUTO_JIRA_STORY_MARKDOWN_BYTES = 64 * 1024;
+const AUTO_JIRA_STORY_MAX_REPAIR_ATTEMPTS = 1;
+
+type AutoJiraStoryValidationIssueCode =
+  | "empty_or_oversize"
+  | "missing_jira_story_heading"
+  | "missing_acceptance_criteria_section"
+  | "missing_acceptance_criteria_item";
+
+interface AutoJiraStoryValidationIssue {
+  code: AutoJiraStoryValidationIssueCode;
+  message: string;
+}
 
 type AutoJiraStoryCapture = Awaited<
   ReturnType<typeof fetchFigmaScreenCapturesForTestIntelligence>
 >[number];
+
+interface AutoJiraStoryGatewayAttempt {
+  purpose: "draft" | "repair";
+  durationMs: number;
+  result: Extract<LlmGenerationResult, { outcome: "success" }>;
+}
 
 interface AutoJiraStoryGenerationResult {
   bodyMarkdown: string;
@@ -14276,6 +14299,8 @@ interface AutoJiraStoryGenerationResult {
   modelRevision: string;
   gatewayRelease: string;
   gatewayResult: Extract<LlmGenerationResult, { outcome: "success" }>;
+  gatewayAttempts: readonly AutoJiraStoryGatewayAttempt[];
+  repairAttempts: number;
 }
 
 const AUTO_JIRA_STORY_SYSTEM_PROMPT = [
@@ -14370,6 +14395,57 @@ const buildAutoJiraStoryUserPrompt = (input: {
     }),
   ].join("\n");
 
+const buildAutoJiraStoryRepairUserPrompt = (input: {
+  draftMarkdown: string;
+  issues: readonly AutoJiraStoryValidationIssue[];
+  intent: BusinessTestIntentIr;
+  visual: readonly VisualScreenDescription[];
+}): string =>
+  [
+    "Repair the rejected Jira Story Markdown so it satisfies the production contract.",
+    "",
+    "Validation issues to fix:",
+    canonicalJson(
+      input.issues.map((issue) => ({
+        code: issue.code,
+        message: issue.message,
+      })),
+    ),
+    "",
+    "Required Markdown structure:",
+    "# Jira Story",
+    "## Summary",
+    "## User Story",
+    "## Business Context",
+    "## Functional Scope",
+    "## Acceptance Criteria",
+    "- AC1: ...",
+    "## Assumptions and Open Questions",
+    "",
+    "Rules:",
+    "- Preserve only requirements grounded in the screenshot and normalized evidence.",
+    "- Add or rewrite acceptance criteria so they are testable, observable, and business-facing.",
+    "- Do not introduce personal data, secrets, backend integrations, thresholds, or regulatory obligations that are not visible or implied by the evidence.",
+    "- Return only JSON that matches the supplied schema.",
+    "",
+    "Rejected draft Markdown:",
+    input.draftMarkdown,
+    "",
+    "Normalized Figma intent summary JSON:",
+    canonicalJson(compactIntentForAutoJiraStory(input.intent)),
+    "",
+    "Visual sidecar observation JSON:",
+    canonicalJson({
+      screens: input.visual.map((screen) => ({
+        screenId: screen.screenId,
+        screenName: screen.screenName,
+        regions: screen.regions,
+        confidenceSummary: screen.confidenceSummary,
+        piiFlags: screen.piiFlags ?? [],
+      })),
+    }),
+  ].join("\n");
+
 const normalizeAutoJiraStoryMarkdown = (raw: string): string => {
   const normalized = raw.replace(/\r\n?/gu, "\n").trim();
   if (normalized.length === 0) return normalized;
@@ -14379,44 +14455,97 @@ const normalizeAutoJiraStoryMarkdown = (raw: string): string => {
     : `# Jira Story\n\n${normalized}\n`;
 };
 
-const validateAutoJiraStoryMarkdown = (markdown: string): void => {
+const isAutoJiraStoryAcceptanceCriteriaHeading = (line: string): boolean => {
+  const match = /^(?<marker>#{2,6})\s+(?<heading>.+?)\s*#*\s*$/u.exec(line);
+  if (match?.groups?.heading === undefined) return false;
+  const heading = match.groups.heading
+    .normalize("NFKC")
+    .replace(/[_-]+/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+  return (
+    /\bacceptance\s+criteria\b/iu.test(heading) ||
+    /\bakzeptanz[\p{L}\s/&+,-]{0,48}kriterien\b/iu.test(heading) ||
+    /\babnahme[\p{L}\s/&+,-]{0,48}kriterien\b/iu.test(heading)
+  );
+};
+
+const extractAutoJiraStoryAcceptanceCriteriaSection = (
+  markdown: string,
+): string | undefined => {
+  const lines = markdown.split("\n");
+  const headingIndex = lines.findIndex((line) =>
+    isAutoJiraStoryAcceptanceCriteriaHeading(line),
+  );
+  if (headingIndex === -1) return undefined;
+  const nextHeadingIndex = lines.findIndex(
+    (line, index) => index > headingIndex && /^#{1,6}\s+\S/u.test(line),
+  );
+  return lines
+    .slice(
+      headingIndex + 1,
+      nextHeadingIndex === -1 ? lines.length : nextHeadingIndex,
+    )
+    .join("\n");
+};
+
+const collectAutoJiraStoryValidationIssues = (
+  markdown: string,
+): AutoJiraStoryValidationIssue[] => {
+  const issues: AutoJiraStoryValidationIssue[] = [];
   const byteLength = Buffer.byteLength(markdown, "utf8");
   if (byteLength === 0 || byteLength > MAX_AUTO_JIRA_STORY_MARKDOWN_BYTES) {
-    throw new ProductionRunnerError({
-      failureClass: "AUTO_JIRA_STORY_INVALID",
+    issues.push({
+      code: "empty_or_oversize",
       message: `auto-generated Jira story must be 1-${MAX_AUTO_JIRA_STORY_MARKDOWN_BYTES} UTF-8 bytes; got ${byteLength}.`,
-      retryable: false,
     });
   }
   if (!/^#{1,6}\s+JIRA[_ ]STORY\b/imu.test(markdown)) {
-    throw new ProductionRunnerError({
-      failureClass: "AUTO_JIRA_STORY_INVALID",
+    issues.push({
+      code: "missing_jira_story_heading",
       message:
         "auto-generated Jira story must contain a '# Jira Story' heading.",
-      retryable: false,
     });
   }
-  if (
-    !/^#{2,6}\s+(Acceptance Criteria|Akzeptanzkriterien)\b/imu.test(markdown)
+  const acceptanceCriteriaSection =
+    extractAutoJiraStoryAcceptanceCriteriaSection(markdown);
+  if (acceptanceCriteriaSection === undefined) {
+    issues.push({
+      code: "missing_acceptance_criteria_section",
+      message:
+        "auto-generated Jira story must include an Acceptance Criteria, Akzeptanzkriterien, or Abnahmekriterien section.",
+    });
+  } else if (
+    !/^\s*(?:(?:[-*]|\d+[.)])\s+)?(?:AC\s*\d+|AK\s*\d+|Kriterium\s*\d+)[:.)-]?\s+\S+/imu.test(
+      acceptanceCriteriaSection,
+    ) &&
+    !/^\s*(?:[-*]|\d+[.)])\s+\S+/imu.test(acceptanceCriteriaSection)
   ) {
-    throw new ProductionRunnerError({
-      failureClass: "AUTO_JIRA_STORY_INVALID",
+    issues.push({
+      code: "missing_acceptance_criteria_item",
       message:
-        "auto-generated Jira story must include an Acceptance Criteria section.",
-      retryable: false,
+        "auto-generated Jira story must include at least one concrete acceptance criterion in the criteria section.",
     });
   }
-  if (!/^\s*(?:[-*]|\d+\.)\s+(?:AC\s*\d+[:.)-]?\s*)?\S+/imu.test(markdown)) {
+  return issues;
+};
+
+const formatAutoJiraStoryValidationIssues = (
+  issues: readonly AutoJiraStoryValidationIssue[],
+): string => issues.map((issue) => issue.message).join(" ");
+
+const validateAutoJiraStoryMarkdown = (markdown: string): void => {
+  const issues = collectAutoJiraStoryValidationIssues(markdown);
+  if (issues.length > 0) {
     throw new ProductionRunnerError({
       failureClass: "AUTO_JIRA_STORY_INVALID",
-      message:
-        "auto-generated Jira story must include at least one concrete acceptance criterion.",
+      message: formatAutoJiraStoryValidationIssues(issues),
       retryable: false,
     });
   }
 };
 
-const parseAutoJiraStoryResponse = (
+const parseAutoJiraStoryResponseMarkdown = (
   content: unknown,
 ): { jiraStoryMarkdown: string } => {
   if (typeof content !== "object" || content === null) {
@@ -14437,37 +14566,29 @@ const parseAutoJiraStoryResponse = (
     });
   }
   const normalized = normalizeAutoJiraStoryMarkdown(markdown);
-  validateAutoJiraStoryMarkdown(normalized);
   return { jiraStoryMarkdown: normalized };
 };
 
-const generateAutoJiraStoryFromVisual = async (input: {
+const runAutoJiraStoryGatewayRequest = async (input: {
   client: LlmGatewayClient;
   jobId: string;
-  generatedAt: string;
   captures: readonly AutoJiraStoryCapture[];
-  intent: BusinessTestIntentIr;
-  visual: readonly VisualScreenDescription[];
   requestLimits: ReturnType<typeof resolveFinOpsRequestLimits>;
+  userPrompt: string;
+  purpose: AutoJiraStoryGatewayAttempt["purpose"];
   abortSignal?: AbortSignal;
-}): Promise<AutoJiraStoryGenerationResult> => {
-  if (input.captures.length === 0) {
-    throw new ProductionRunnerError({
-      failureClass: "AUTO_JIRA_STORY_INVALID",
-      message: "auto Jira story generation requires at least one screenshot.",
-      retryable: false,
-    });
-  }
+}): Promise<AutoJiraStoryGatewayAttempt> => {
+  const startedAt = Date.now();
   const result = await generateWithLocalWallClockGuard({
     client: input.client,
-    operationLabel: "auto Jira story visual gateway request",
+    operationLabel:
+      input.purpose === "draft"
+        ? "auto Jira story visual gateway request"
+        : "auto Jira story repair gateway request",
     request: {
       jobId: input.jobId,
       systemPrompt: AUTO_JIRA_STORY_SYSTEM_PROMPT,
-      userPrompt: buildAutoJiraStoryUserPrompt({
-        intent: input.intent,
-        visual: input.visual,
-      }),
+      userPrompt: input.userPrompt,
       responseSchema: buildAutoJiraStoryResponseSchema(),
       responseSchemaName: AUTO_JIRA_STORY_RESPONSE_SCHEMA_NAME,
       imageInputs: input.captures.map((capture) => ({
@@ -14488,20 +14609,104 @@ const generateAutoJiraStoryFromVisual = async (input: {
       ? { defaultWallClockMs: input.requestLimits.maxWallClockMs }
       : {}),
   });
+  const durationMs = Math.max(0, Date.now() - startedAt);
   if (result.outcome !== "success") {
     throw new ProductionRunnerError({
       failureClass: "LLM_GATEWAY_FAILED",
-      message: `Auto Jira story generation failed: ${result.errorClass}`,
+      message: `Auto Jira story ${input.purpose} generation failed: ${result.errorClass}`,
       retryable: result.retryable,
     });
   }
-  const parsed = parseAutoJiraStoryResponse(result.content);
   return {
-    bodyMarkdown: parsed.jiraStoryMarkdown,
-    modelDeployment: result.modelDeployment,
-    modelRevision: result.modelRevision,
-    gatewayRelease: result.gatewayRelease,
-    gatewayResult: result,
+    purpose: input.purpose,
+    durationMs,
+    result,
+  };
+};
+
+const generateAutoJiraStoryFromVisual = async (input: {
+  client: LlmGatewayClient;
+  jobId: string;
+  generatedAt: string;
+  captures: readonly AutoJiraStoryCapture[];
+  intent: BusinessTestIntentIr;
+  visual: readonly VisualScreenDescription[];
+  requestLimits: ReturnType<typeof resolveFinOpsRequestLimits>;
+  abortSignal?: AbortSignal;
+}): Promise<AutoJiraStoryGenerationResult> => {
+  if (input.captures.length === 0) {
+    throw new ProductionRunnerError({
+      failureClass: "AUTO_JIRA_STORY_INVALID",
+      message: "auto Jira story generation requires at least one screenshot.",
+      retryable: false,
+    });
+  }
+  const gatewayAttempts: AutoJiraStoryGatewayAttempt[] = [];
+  const draftAttempt = await runAutoJiraStoryGatewayRequest({
+    client: input.client,
+    jobId: input.jobId,
+    captures: input.captures,
+    requestLimits: input.requestLimits,
+    purpose: "draft",
+    userPrompt: buildAutoJiraStoryUserPrompt({
+      intent: input.intent,
+      visual: input.visual,
+    }),
+    ...(input.abortSignal !== undefined
+      ? { abortSignal: input.abortSignal }
+      : {}),
+  });
+  gatewayAttempts.push(draftAttempt);
+  const draft = parseAutoJiraStoryResponseMarkdown(draftAttempt.result.content);
+  let bodyMarkdown = draft.jiraStoryMarkdown;
+  let validationIssues = collectAutoJiraStoryValidationIssues(bodyMarkdown);
+  let finalAttempt = draftAttempt;
+  let repairAttempts = 0;
+  while (
+    validationIssues.length > 0 &&
+    repairAttempts < AUTO_JIRA_STORY_MAX_REPAIR_ATTEMPTS
+  ) {
+    repairAttempts += 1;
+    const repairAttempt = await runAutoJiraStoryGatewayRequest({
+      client: input.client,
+      jobId: input.jobId,
+      captures: input.captures,
+      requestLimits: input.requestLimits,
+      purpose: "repair",
+      userPrompt: buildAutoJiraStoryRepairUserPrompt({
+        draftMarkdown: bodyMarkdown,
+        issues: validationIssues,
+        intent: input.intent,
+        visual: input.visual,
+      }),
+      ...(input.abortSignal !== undefined
+        ? { abortSignal: input.abortSignal }
+        : {}),
+    });
+    gatewayAttempts.push(repairAttempt);
+    const repaired = parseAutoJiraStoryResponseMarkdown(
+      repairAttempt.result.content,
+    );
+    bodyMarkdown = repaired.jiraStoryMarkdown;
+    validationIssues = collectAutoJiraStoryValidationIssues(bodyMarkdown);
+    finalAttempt = repairAttempt;
+  }
+  if (validationIssues.length > 0) {
+    throw new ProductionRunnerError({
+      failureClass: "AUTO_JIRA_STORY_INVALID",
+      message: `auto-generated Jira story remains invalid after ${repairAttempts} repair attempt(s): ${formatAutoJiraStoryValidationIssues(validationIssues)}`,
+      retryable: false,
+    });
+  }
+  validateAutoJiraStoryMarkdown(bodyMarkdown);
+  return {
+    bodyMarkdown,
+    modelDeployment: finalAttempt.result.modelDeployment,
+    modelRevision: finalAttempt.result.modelRevision,
+    gatewayRelease: finalAttempt.result.gatewayRelease,
+    gatewayResult: finalAttempt.result,
+    gatewayAttempts,
+    repairAttempts,
   };
 };
 
