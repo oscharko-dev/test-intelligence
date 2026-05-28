@@ -39,13 +39,15 @@ export interface Artifact {
   customerFacing?: boolean;
 }
 
-export interface CustomerMarkdownFile {
+export interface CustomerOutputFile {
   name: string;
   path: string;
   size: string;
   downloadHref: string;
   combined: boolean;
 }
+
+export type CustomerMarkdownFile = CustomerOutputFile;
 
 export interface RunConfig {
   figmaUrl: string;
@@ -71,6 +73,8 @@ export interface RunState {
   artifactDir?: string;
   outputRoot?: string;
   customerMarkdown?: CustomerMarkdownFile[];
+  customerPdf?: CustomerOutputFile[];
+  customerTxt?: CustomerOutputFile[];
   errorMessage?: string;
 }
 

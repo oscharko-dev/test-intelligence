@@ -67,6 +67,133 @@ export interface RenderedCustomerMarkdown {
   perCaseFiles: ReadonlyArray<{ filename: string; body: string }>;
 }
 
+export interface RenderedCustomerText {
+  combinedText: string;
+  perCaseFiles: ReadonlyArray<{ filename: string; body: string }>;
+}
+
+export const renderCustomerTextFromMarkdown = (
+  rendered: RenderedCustomerMarkdown,
+): RenderedCustomerText => ({
+  combinedText: markdownToCustomerPlainText(rendered.combinedMarkdown),
+  perCaseFiles: rendered.perCaseFiles.map((file) => ({
+    filename: replaceMarkdownExtension(file.filename, ".txt"),
+    body: markdownToCustomerPlainText(file.body),
+  })),
+});
+
+export const markdownToCustomerPlainText = (markdown: string): string => {
+  const normalized = markdown.replace(/\r\n?/gu, "\n");
+  const lines = normalized.split("\n");
+  const out: string[] = [];
+  let inCodeFence = false;
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd();
+    if (line.trimStart().startsWith("```")) {
+      inCodeFence = !inCodeFence;
+      continue;
+    }
+    if (!inCodeFence && isMarkdownTableSeparator(line)) {
+      continue;
+    }
+    out.push(inCodeFence ? line : markdownLineToPlainText(line));
+  }
+  return ensureTrailingNewline(collapseExcessBlankLines(out).join("\n"));
+};
+
+const replaceMarkdownExtension = (
+  filename: string,
+  extension: string,
+): string =>
+  filename.toLowerCase().endsWith(".md")
+    ? `${filename.slice(0, -3)}${extension}`
+    : `${filename}${extension}`;
+
+const collapseExcessBlankLines = (lines: readonly string[]): string[] => {
+  const collapsed: string[] = [];
+  let blankRun = 0;
+  for (const line of lines) {
+    if (line.trim().length === 0) {
+      blankRun += 1;
+      if (blankRun <= 1) collapsed.push("");
+      continue;
+    }
+    blankRun = 0;
+    collapsed.push(line);
+  }
+  while (collapsed.length > 0 && collapsed[0]!.length === 0) collapsed.shift();
+  while (
+    collapsed.length > 0 &&
+    collapsed[collapsed.length - 1]!.length === 0
+  ) {
+    collapsed.pop();
+  }
+  return collapsed;
+};
+
+const ensureTrailingNewline = (value: string): string =>
+  value.length === 0 ? "\n" : value.endsWith("\n") ? value : `${value}\n`;
+
+const markdownLineToPlainText = (line: string): string => {
+  const heading = /^(#{1,6})\s+(.+)$/u.exec(line);
+  if (heading !== null) {
+    return inlineMarkdownToPlainText(heading[2]!.trim());
+  }
+  if (isMarkdownTableRow(line)) {
+    return stripOuterTablePipes(line)
+      .split("|")
+      .map((cell) => inlineMarkdownToPlainText(cell.trim()))
+      .join(" | ");
+  }
+  const task = /^(\s*)[-*]\s+\[[ xX]\]\s+(.+)$/u.exec(line);
+  if (task !== null) {
+    return `${task[1]}- ${inlineMarkdownToPlainText(task[2]!.trim())}`;
+  }
+  const bullet = /^(\s*)[-*]\s+(.+)$/u.exec(line);
+  if (bullet !== null) {
+    return `${bullet[1]}- ${inlineMarkdownToPlainText(bullet[2]!.trim())}`;
+  }
+  return inlineMarkdownToPlainText(line);
+};
+
+const inlineMarkdownToPlainText = (value: string): string =>
+  value
+    .replace(/!\[([^\]]*)\]\(([^)]+)\)/gu, "$1")
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/gu, "$1 ($2)")
+    .replace(/\*\*([^*]+)\*\*/gu, "$1")
+    .replace(/__([^_]+)__/gu, "$1")
+    .replace(/(^|[^\w])\*([^*\n]+)\*($|[^\w])/gu, "$1$2$3")
+    .replace(/(^|[^\w])_([^_\n]+)_($|[^\w])/gu, "$1$2$3")
+    .replace(/`([^`]+)`/gu, "$1")
+    .replace(/\\([\\`*_{}\[\]()#+.!|-])/gu, "$1")
+    .trimEnd();
+
+const isMarkdownTableRow = (line: string): boolean => {
+  const trimmed = line.trimStart();
+  return trimmed.startsWith("|") && trimmed.indexOf("|", 1) >= 0;
+};
+
+const isMarkdownTableSeparator = (line: string): boolean => {
+  if (!isMarkdownTableRow(line)) return false;
+  const cells = stripOuterTablePipes(line).split("|");
+  if (cells.length < 2) return false;
+  return cells.every((cell) => {
+    const trimmed = cell.trim();
+    return trimmed.length > 0 && /^:?-{3,}:?$/u.test(trimmed);
+  });
+};
+
+const stripOuterTablePipes = (raw: string): string => {
+  let start = 0;
+  let end = raw.length;
+  while (start < end && isWhitespace(raw[start] ?? "")) start += 1;
+  if (raw[start] === "|") start += 1;
+  while (end > start && isWhitespace(raw[end - 1] ?? "")) end -= 1;
+  if (raw[end - 1] === "|") end -= 1;
+  while (end > start && isWhitespace(raw[end - 1] ?? "")) end -= 1;
+  return raw.slice(start, end);
+};
+
 // eslint-disable-next-line no-control-regex
 const FORBIDDEN_FILENAME_CHARS = /[\\/:*?"<>|\x00-\x1f]/gu;
 const COLLAPSE_WHITESPACE = /\s+/gu;

@@ -66,6 +66,17 @@ export interface BuildMappeInput {
   readonly screenshots: ReadonlyArray<MappeScreenshot>;
 }
 
+export interface BuildCustomerTestCasePdfInput {
+  /** Title shown above the rendered single-case customer document. */
+  readonly title: string;
+  /** ISO-8601 timestamp displayed in the metadata block. */
+  readonly generatedAt: string;
+  /** Optional job id shown alongside the timestamp. */
+  readonly jobId?: string;
+  /** Raw per-case customer Markdown body. */
+  readonly markdown: string;
+}
+
 /**
  * Build the customer-facing presentation Mappe as a deterministic
  * PDF buffer.
@@ -77,6 +88,22 @@ export const buildCustomerMarkdownMappe = (input: BuildMappeInput): Buffer => {
   layoutScreenshots(doc, input.screenshots);
   layoutJiraStory(doc, input.jiraStoryMarkdown);
   layoutTestfaelle(doc, input.testfaelleMarkdown);
+  return doc.serialize();
+};
+
+/**
+ * Build a deterministic, single-test-case customer PDF.
+ *
+ * The production runner writes one of these files for every per-case
+ * Markdown artifact under `customer-pdf/`. The body is rendered from
+ * the exact same customer Markdown bytes, so the PDF cannot drift from
+ * the approved Markdown content.
+ */
+export const buildCustomerTestCasePdf = (
+  input: BuildCustomerTestCasePdfInput,
+): Buffer => {
+  const doc = new PdfDocument();
+  layoutSingleTestCase(doc, input);
   return doc.serialize();
 };
 
@@ -1269,6 +1296,57 @@ const layoutTestfaelle = (
     MARGIN_X,
     y,
     "3 · Generierte Testfälle (Fortsetzung)",
+  );
+};
+
+/* -------------------------------------------------------------------------- */
+/*  Single-case PDF                                                           */
+/* -------------------------------------------------------------------------- */
+
+const layoutSingleTestCase = (
+  doc: PdfDocument,
+  input: BuildCustomerTestCasePdfInput,
+): void => {
+  doc.beginPage(true);
+  drawSectionHeading(doc, "Customer PDF", PAGE_HEIGHT - MARGIN_TOP);
+  let y = PAGE_HEIGHT - MARGIN_TOP - 42;
+  for (const line of wrapToWidth(input.title, FONT_H2_SIZE, BODY_WIDTH)) {
+    doc.emit(
+      text(line, MARGIN_X, y, {
+        size: FONT_H2_SIZE,
+        font: "F2",
+        color: COLOR_TEXT_DARK,
+      }),
+    );
+    y -= FONT_H2_SIZE + 5;
+  }
+  y -= 6;
+  doc.emit(
+    text(`Generiert: ${formatDateDe(input.generatedAt)}`, MARGIN_X, y, {
+      size: 9.5,
+      color: COLOR_TEXT_MUTED,
+    }),
+  );
+  y -= 14;
+  if (input.jobId !== undefined) {
+    doc.emit(
+      text(`Job-ID: ${input.jobId}`, MARGIN_X, y, {
+        size: 9.5,
+        color: COLOR_TEXT_MUTED,
+      }),
+    );
+    y -= 14;
+  }
+  doc.emit(
+    drawLine(MARGIN_X, y - 2, PAGE_WIDTH - MARGIN_X, y - 2, COLOR_RULE, 0.4),
+  );
+  y -= 22;
+  renderMarkdown(
+    doc,
+    input.markdown,
+    MARGIN_X,
+    y,
+    `${input.title} (Fortsetzung)`,
   );
 };
 

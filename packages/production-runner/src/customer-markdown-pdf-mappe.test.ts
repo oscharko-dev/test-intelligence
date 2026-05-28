@@ -11,6 +11,7 @@ import test from "node:test";
 
 import {
   buildCustomerMarkdownMappe,
+  buildCustomerTestCasePdf,
   decodePngToRgb,
   extractJiraStoryFromCustomContext,
   type BuildMappeInput,
@@ -78,6 +79,28 @@ void test("buildCustomerMarkdownMappe returns a PDF with the magic header and EO
   assert.ok(Buffer.isBuffer(pdf));
   assert.equal(pdf.subarray(0, 5).toString("ascii"), "%PDF-");
   assert.match(pdf.subarray(pdf.length - 8).toString("ascii"), /%%EOF\s*$/u);
+});
+
+void test("buildCustomerTestCasePdf returns a deterministic single-case PDF", () => {
+  const input = {
+    title: "TC01 - Antrag starten",
+    generatedAt: "2026-05-11T20:21:23.403Z",
+    jobId: "job-T7l7m8T8501-2026-05-11",
+    markdown: "# TC01 - Antrag starten\n\n## Erwartung\nDer Antrag startet.\n",
+  };
+  const first = buildCustomerTestCasePdf(input);
+  const second = buildCustomerTestCasePdf(input);
+  const bin = first.toString("binary");
+
+  assert.ok(Buffer.isBuffer(first));
+  assert.equal(first.subarray(0, 5).toString("ascii"), "%PDF-");
+  assert.match(
+    first.subarray(first.length - 8).toString("ascii"),
+    /%%EOF\s*$/u,
+  );
+  assert.equal(first.equals(second), true);
+  assert.ok(bin.includes("Customer PDF"));
+  assert.ok(bin.includes("TC01 - Antrag starten"));
 });
 
 void test("buildCustomerMarkdownMappe is byte-stable for identical inputs", () => {

@@ -244,10 +244,12 @@ export type {
 } from "./production-runner-events.js";
 import {
   extractAcceptanceCriteriaFromMarkdown as extractCustomerAcceptanceCriteriaFromMarkdown,
+  markdownToCustomerPlainText,
   renderCustomerMarkdown,
 } from "./customer-markdown-renderer.js";
 import {
   buildCustomerMarkdownMappe,
+  buildCustomerTestCasePdf,
   extractJiraStoryFromCustomContext,
 } from "./customer-markdown-pdf-mappe.js";
 import {
@@ -1588,6 +1590,14 @@ export interface RunFigmaToQcTestCasesResult {
      */
     pdf: string;
   };
+  customerPdfPaths: {
+    combined: string;
+    perCase: ReadonlyArray<string>;
+  };
+  customerTxtPaths: {
+    combined: string;
+    perCase: ReadonlyArray<string>;
+  };
 }
 
 const getBySourceCallCount = (
@@ -1599,6 +1609,24 @@ const toArtifactReference = (
   artifactDir: string,
   artifactPath: string,
 ): string => relative(artifactDir, artifactPath).replaceAll("\\", "/");
+
+const replaceArtifactExtension = (
+  filename: string,
+  extension: ".pdf" | ".txt",
+): string =>
+  filename.toLowerCase().endsWith(".md")
+    ? `${filename.slice(0, -3)}${extension}`
+    : `${filename}${extension}`;
+
+const extractFirstMarkdownHeading = (markdown: string): string | undefined => {
+  for (const line of markdown.split(/\r?\n/u)) {
+    const match = /^#{1,6}\s+(.+)$/u.exec(line.trim());
+    if (match === null) continue;
+    const title = match[1]!.replace(/\*\*/gu, "").replace(/`/gu, "").trim();
+    if (title.length > 0) return title;
+  }
+  return undefined;
+};
 
 const roleConfigurationSource = (
   input: RunFigmaToQcTestCasesInput,
@@ -6705,19 +6733,57 @@ export const runFigmaToQcTestCases = async (
       ...(input.showConfidence === true ? { showConfidence: true } : {}),
     });
     const markdownDir = join(artifactDir, "customer-markdown");
+    const customerPdfDir = join(artifactDir, "customer-pdf");
+    const customerTxtDir = join(artifactDir, "customer-txt");
     await mkdir(markdownDir, { recursive: true });
+    await mkdir(customerPdfDir, { recursive: true });
+    await mkdir(customerTxtDir, { recursive: true });
     const combinedMarkdownPath = join(markdownDir, "testfaelle.md");
     const combinedMarkdownBytes = Buffer.from(
       rendered.combinedMarkdown,
       "utf8",
     );
     await writeAtomicText(combinedMarkdownPath, rendered.combinedMarkdown);
+    const combinedText = markdownToCustomerPlainText(rendered.combinedMarkdown);
+    const combinedTextPath = join(customerTxtDir, "testfaelle.txt");
+    const combinedTextBytes = Buffer.from(combinedText, "utf8");
+    await writeAtomicText(combinedTextPath, combinedText);
     const perCasePaths: string[] = [];
+    const perCasePdfPaths: string[] = [];
+    const perCaseTextPaths: string[] = [];
     const perCaseArtifacts: Array<{ filename: string; bytes: Buffer }> = [];
+    const perCasePdfArtifacts: Array<{ filename: string; bytes: Buffer }> = [];
+    const perCaseTextArtifacts: Array<{ filename: string; bytes: Buffer }> = [];
     for (const file of rendered.perCaseFiles) {
       const filePath = join(markdownDir, file.filename);
       await writeAtomicText(filePath, file.body);
       perCasePaths.push(filePath);
+      const textFilename = replaceArtifactExtension(file.filename, ".txt");
+      const textBody = markdownToCustomerPlainText(file.body);
+      const textPath = join(customerTxtDir, textFilename);
+      const textBytes = Buffer.from(textBody, "utf8");
+      await writeAtomicText(textPath, textBody);
+      perCaseTextPaths.push(textPath);
+      perCaseTextArtifacts.push({
+        filename: `customer-txt/${textFilename}`,
+        bytes: textBytes,
+      });
+      const pdfFilename = replaceArtifactExtension(file.filename, ".pdf");
+      const singleCasePdfBytes = buildCustomerTestCasePdf({
+        title:
+          extractFirstMarkdownHeading(file.body) ??
+          pdfFilename.slice(0, -".pdf".length),
+        generatedAt: input.generatedAt,
+        jobId: input.jobId,
+        markdown: file.body,
+      });
+      const singleCasePdfPath = join(customerPdfDir, pdfFilename);
+      await writeAtomicBytes(singleCasePdfPath, singleCasePdfBytes);
+      perCasePdfPaths.push(singleCasePdfPath);
+      perCasePdfArtifacts.push({
+        filename: `customer-pdf/${pdfFilename}`,
+        bytes: singleCasePdfBytes,
+      });
       perCaseArtifacts.push({
         filename: `customer-markdown/${file.filename}`,
         bytes: Buffer.from(file.body, "utf8"),
@@ -6752,7 +6818,9 @@ export const runFigmaToQcTestCases = async (
       screenshots: mappeScreenshots,
     });
     const pdfPath = join(markdownDir, "testfaelle.pdf");
+    const customerPdfMappePath = join(customerPdfDir, "testfaelle.pdf");
     await writeAtomicBytes(pdfPath, pdfBytes);
+    await writeAtomicBytes(customerPdfMappePath, pdfBytes);
     const visualSidecarSummary =
       visualSidecarResult?.outcome === "success" &&
       visualSidecarArtifactBytes !== undefined
@@ -7356,6 +7424,26 @@ export const runFigmaToQcTestCases = async (
         bytes: pdfBytes,
         category: "export" as const,
       },
+      {
+        filename: "customer-pdf/testfaelle.pdf",
+        bytes: pdfBytes,
+        category: "export" as const,
+      },
+      ...perCasePdfArtifacts.map((artifact) => ({
+        filename: artifact.filename,
+        bytes: artifact.bytes,
+        category: "export" as const,
+      })),
+      {
+        filename: "customer-txt/testfaelle.txt",
+        bytes: combinedTextBytes,
+        category: "export" as const,
+      },
+      ...perCaseTextArtifacts.map((artifact) => ({
+        filename: artifact.filename,
+        bytes: artifact.bytes,
+        category: "export" as const,
+      })),
       ...(mutationReportBytes === undefined
         ? []
         : [
@@ -7758,6 +7846,14 @@ export const runFigmaToQcTestCases = async (
         perCase: perCasePaths,
         pdf: pdfPath,
       },
+      customerPdfPaths: {
+        combined: customerPdfMappePath,
+        perCase: perCasePdfPaths,
+      },
+      customerTxtPaths: {
+        combined: combinedTextPath,
+        perCase: perCaseTextPaths,
+      },
       ...(harnessSummary !== undefined ? { harness: harnessSummary } : {}),
       ...(repairLoopResult !== undefined
         ? {
@@ -7823,7 +7919,9 @@ const resolveFigmaSource = async (
     return await fetchFigmaFileForTestIntelligence({
       fileKey: parsed.fileKey,
       accessToken: source.accessToken,
-      ...(source.fetchImpl !== undefined ? { fetchImpl: source.fetchImpl } : {}),
+      ...(source.fetchImpl !== undefined
+        ? { fetchImpl: source.fetchImpl }
+        : {}),
       ...(source.caCertPath !== undefined
         ? { caCertPath: source.caCertPath }
         : {}),

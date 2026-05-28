@@ -57,6 +57,38 @@ const GATE_ON: NodeJS.ProcessEnv = {
   TEST_INTELLIGENCE_ENABLED: "1",
 };
 
+const customerCompanionPaths = (
+  combinedMarkdownPath: string,
+  perCaseMarkdownPaths: readonly string[] = [],
+): Pick<
+  RunFigmaToQcTestCasesResult,
+  "customerPdfPaths" | "customerTxtPaths"
+> => {
+  const marker = "/customer-markdown/";
+  const markerIndex = combinedMarkdownPath.indexOf(marker);
+  const root =
+    markerIndex >= 0
+      ? combinedMarkdownPath.slice(0, markerIndex)
+      : path.dirname(path.dirname(combinedMarkdownPath));
+  const basenames = perCaseMarkdownPaths.map((filePath) =>
+    path.basename(filePath).replace(/\.md$/iu, ""),
+  );
+  return {
+    customerPdfPaths: {
+      combined: `${root}/customer-pdf/testfaelle.pdf`,
+      perCase: basenames.map(
+        (basename) => `${root}/customer-pdf/${basename}.pdf`,
+      ),
+    },
+    customerTxtPaths: {
+      combined: `${root}/customer-txt/testfaelle.txt`,
+      perCase: basenames.map(
+        (basename) => `${root}/customer-txt/${basename}.txt`,
+      ),
+    },
+  };
+};
+
 const baseOptions = (): TestIntelligenceRunOptions => ({
   figmaUrl: "https://figma.com/design/abc/Foo?node-id=1-2",
   figmaJsonFile: undefined,
@@ -197,10 +229,11 @@ const buildIssue1993RunResult = (
       ...artifactPaths,
     } as RunFigmaToQcTestCasesResult["artifactPaths"],
     customerMarkdownPaths: {
-      combined: "/tmp/customer-markdown/testfaelle.md",
+      combined: `${artifactDir}/customer-markdown/testfaelle.md`,
       perCase: [],
-      pdf: "/tmp/customer-markdown/testfaelle.pdf",
+      pdf: `${artifactDir}/customer-markdown/testfaelle.pdf`,
     },
+    ...customerCompanionPaths(`${artifactDir}/customer-markdown/testfaelle.md`),
     ...extras,
   }) as RunFigmaToQcTestCasesResult;
 
@@ -245,8 +278,9 @@ const emptyRunnerResult = (input: {
     customerMarkdownPaths: {
       combined: `${artifactDir}/customer-markdown/testfaelle.md`,
       perCase: [],
-      pdf: "/tmp/customer-markdown/testfaelle.pdf",
+      pdf: `${artifactDir}/customer-markdown/testfaelle.pdf`,
     },
+    ...customerCompanionPaths(`${artifactDir}/customer-markdown/testfaelle.md`),
   };
 };
 // ---------------------------------------------------------------------------
@@ -1284,6 +1318,7 @@ void test("runTestIntelligenceCommand: offline_eval routes to deterministic_llm"
           perCase: [],
           pdf: "/tmp/customer-markdown/testfaelle.pdf",
         },
+        ...customerCompanionPaths("/tmp/customer-markdown/testfaelle.md"),
       }),
       buildLlmClient: () =>
         ({}) as unknown as ReturnType<
@@ -1428,6 +1463,9 @@ void test("runTestIntelligenceCommand: deterministic_llm with injected runner re
         perCase: ["/tmp/customer-markdown/case-1.md"],
         pdf: "/tmp/customer-markdown/testfaelle.pdf",
       },
+      ...customerCompanionPaths("/tmp/customer-markdown/testfaelle.md", [
+        "/tmp/customer-markdown/case-1.md",
+      ]),
     };
   };
 
@@ -1543,6 +1581,7 @@ void test("runTestIntelligenceCommand: deterministic_llm blocked + allowPolicyBl
       perCase: [],
       pdf: "/tmp/customer-markdown/testfaelle.pdf",
     },
+    ...customerCompanionPaths("/tmp/customer-markdown/testfaelle.md"),
   });
 
   const exitCode = await runTestIntelligenceCommand(options, sink, {
@@ -1629,6 +1668,7 @@ void test("runTestIntelligenceCommand: deterministic_llm blocked + --allow-polic
       perCase: [],
       pdf: "/tmp/customer-markdown/testfaelle.pdf",
     },
+    ...customerCompanionPaths("/tmp/customer-markdown/testfaelle.md"),
   });
 
   const exitCode = await runTestIntelligenceCommand(options, sink, {
@@ -1756,6 +1796,7 @@ void test("runTestIntelligenceCommand: deterministic_llm + harness-mode shadow_e
         perCase: [],
         pdf: "/tmp/customer-markdown/testfaelle.pdf",
       },
+      ...customerCompanionPaths("/tmp/customer-markdown/testfaelle.md"),
       harness: {
         mode: "shadow_eval",
         outcome: "accepted",
@@ -1857,6 +1898,7 @@ void test("runTestIntelligenceCommand: deterministic_llm + harness-mode off omit
         perCase: [],
         pdf: "/tmp/customer-markdown/testfaelle.pdf",
       },
+      ...customerCompanionPaths("/tmp/customer-markdown/testfaelle.md"),
     } as unknown as RunFigmaToQcTestCasesResult;
   };
 
@@ -1947,6 +1989,7 @@ void test("runTestIntelligenceCommand: enable-visual-sidecar builds and forwards
         perCase: [],
         pdf: "/tmp/customer-markdown/testfaelle.pdf",
       },
+      ...customerCompanionPaths("/tmp/customer-markdown/testfaelle.md"),
     } as unknown as RunFigmaToQcTestCasesResult;
   };
 
@@ -2402,6 +2445,7 @@ void test("runTestIntelligenceCommand: strict preflight writes sanitized topolog
             perCase: [],
             pdf: "/tmp/customer-markdown/testfaelle.pdf",
           },
+          ...customerCompanionPaths("/tmp/customer-markdown/testfaelle.md"),
         } as unknown as RunFigmaToQcTestCasesResult;
       },
       buildLlmClient: () => ({}) as never,
@@ -2537,6 +2581,7 @@ void test("runTestIntelligenceCommand: legacy topology remains allowed when stri
             perCase: [],
             pdf: "/tmp/customer-markdown/testfaelle.pdf",
           },
+          ...customerCompanionPaths("/tmp/customer-markdown/testfaelle.md"),
         } as unknown as RunFigmaToQcTestCasesResult;
       },
       buildLlmClient: () => ({}) as never,
@@ -2874,6 +2919,7 @@ void test("runTestIntelligenceCommand: deterministic_llm forwards customContextM
         perCase: [],
         pdf: "/tmp/customer-markdown/testfaelle.pdf",
       },
+      ...customerCompanionPaths("/tmp/customer-markdown/testfaelle.md"),
     };
   };
   const exitCode = await runTestIntelligenceCommand(options, sink, {
@@ -3017,6 +3063,7 @@ void test("runTestIntelligenceCommand: deterministic_llm forwards diversityPasse
         perCase: [],
         pdf: "/tmp/customer-markdown/testfaelle.pdf",
       },
+      ...customerCompanionPaths("/tmp/customer-markdown/testfaelle.md"),
     };
   };
   const exitCode = await runTestIntelligenceCommand(options, sink, {
@@ -3345,6 +3392,7 @@ void test("runTestIntelligenceCommand: deterministic_llm forwards customerProfil
         perCase: [],
         pdf: "/tmp/customer-markdown/testfaelle.pdf",
       },
+      ...customerCompanionPaths("/tmp/customer-markdown/testfaelle.md"),
     };
   };
   const exitCode = await runTestIntelligenceCommand(options, sink, {

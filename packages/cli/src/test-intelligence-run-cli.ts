@@ -4446,6 +4446,8 @@ export const runTestIntelligenceCommand = async (
 
   const customerMarkdownFileCount =
     1 + result.customerMarkdownPaths.perCase.length;
+  const customerPdfFileCount = 1 + result.customerPdfPaths.perCase.length;
+  const customerTxtFileCount = 1 + result.customerTxtPaths.perCase.length;
 
   const finopsTotalsLine = await safeReadFinopsTotals(
     result.artifactPaths.finopsReport,
@@ -4463,6 +4465,8 @@ export const runTestIntelligenceCommand = async (
     `  artifact dir        : ${result.artifactDir}`,
     `  test cases generated: ${result.generatedTestCases.testCases.length}`,
     `  customer md files   : ${customerMarkdownFileCount}`,
+    `  customer pdf files  : ${customerPdfFileCount}`,
+    `  customer txt files  : ${customerTxtFileCount}`,
     `  combined markdown   : ${result.customerMarkdownPaths.combined}`,
   ];
   const policyStage = resolveCliPolicyStage(result);
