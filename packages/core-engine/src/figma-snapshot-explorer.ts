@@ -84,6 +84,16 @@ export type FigmaSnapshotNodeIndexQueryKind =
   | "field_action"
   | "domain_term";
 
+const QueryKindValues: ReadonlySet<string> = new Set([
+  "all",
+  "label",
+  "node_id",
+  "page_frame",
+  "component",
+  "field_action",
+  "domain_term",
+]);
+
 export interface QueryFigmaSnapshotNodeIndexInput {
   readonly nodeIndex: FigmaSnapshotNodeIndex;
   readonly query: string;
@@ -286,6 +296,12 @@ export const buildFigmaSnapshotLocalNodeIndex = (
 export const queryFigmaSnapshotNodeIndex = (
   input: QueryFigmaSnapshotNodeIndexInput,
 ): readonly FigmaSnapshotNodeIndexSearchHit[] => {
+  if (typeof input.query !== "string") {
+    throw new FigmaSnapshotExplorerError({
+      errorCode: "invalid_query",
+      message: "Figma snapshot query must be a non-empty string",
+    });
+  }
   const query = normalizeSearchText(input.query);
   if (query.length === 0) {
     throw new FigmaSnapshotExplorerError({
@@ -302,7 +318,17 @@ export const queryFigmaSnapshotNodeIndex = (
   }
 
   const nodeIndex = validateNodeIndexForExplorer(input.nodeIndex);
-  const kind = input.kind ?? "all";
+  const rawKind =
+    (input as { readonly kind?: unknown }).kind === undefined
+      ? "all"
+      : (input as { readonly kind?: unknown }).kind;
+  if (typeof rawKind !== "string" || !QueryKindValues.has(rawKind)) {
+    throw new FigmaSnapshotExplorerError({
+      errorCode: "invalid_query",
+      message: "Figma snapshot query kind is unsupported",
+    });
+  }
+  const kind = rawKind as FigmaSnapshotNodeIndexQueryKind;
   const kinds =
     kind === "all"
       ? ([
@@ -420,8 +446,6 @@ export const planFigmaSnapshotPreviewCache = (
   const assets = planned.map(({ asset }) => asset);
   const tiles = planned.map(({ asset, node, payload }) => {
     const bbox = node.bbox as NonNullable<FigmaSnapshotNodeRecord["bbox"]>;
-    const width = Math.max(1, Math.min(tileWidth, bbox.width));
-    const height = Math.max(1, Math.min(tileHeight, bbox.height));
     return {
       tileId: payload.tileId,
       assetId: asset.assetId,
@@ -429,8 +453,8 @@ export const planFigmaSnapshotPreviewCache = (
       ...(node.frameId !== undefined ? { frameId: node.frameId } : {}),
       x: bbox.x,
       y: bbox.y,
-      width,
-      height,
+      width: asset.width,
+      height: asset.height,
     };
   });
   const boundedPreview =
@@ -852,16 +876,29 @@ const buildPreviewPlanPayloadFromManifest = (input: {
 function markValidatedNodeIndex(
   nodeIndex: FigmaSnapshotNodeIndex,
 ): FigmaSnapshotNodeIndex {
-  ValidatedNodeIndexes.add(nodeIndex);
-  return nodeIndex;
+  const frozen = deepFreeze(nodeIndex);
+  ValidatedNodeIndexes.add(frozen);
+  return frozen;
 }
 
 function markValidatedManifest(
   manifest: FigmaSnapshotManifest,
 ): FigmaSnapshotManifest {
-  ValidatedManifests.add(manifest);
-  return manifest;
+  const frozen = deepFreeze(manifest);
+  ValidatedManifests.add(frozen);
+  return frozen;
 }
+
+const deepFreeze = <T>(value: T, seen = new WeakSet<object>()): T => {
+  if (typeof value !== "object" || value === null) return value;
+  if (seen.has(value)) return value;
+  seen.add(value);
+  const record = value as Record<PropertyKey, unknown>;
+  for (const key of Reflect.ownKeys(record)) {
+    deepFreeze(record[key], seen);
+  }
+  return Object.freeze(value);
+};
 
 const pushBoundedHit = (
   hits: FigmaSnapshotNodeIndexSearchHit[],

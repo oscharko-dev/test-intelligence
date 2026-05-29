@@ -19,6 +19,7 @@ import {
   FigmaSnapshotExplorerError,
   planFigmaSnapshotPreviewCache,
   queryFigmaSnapshotNodeIndex,
+  writeFigmaSnapshotPreviewCacheAssets,
   writeFigmaSnapshotPreviewCacheManifest,
 } from "./figma-snapshot-explorer.js";
 import {
@@ -181,6 +182,23 @@ void test("figma snapshot explorer: builds a deterministic searchable local node
   );
 });
 
+void test("figma snapshot explorer: freezes validated artifacts before caching", () => {
+  const index = buildIndex();
+  const firstNode = index.nodes[0];
+  assert.ok(firstNode);
+
+  assert.equal(Object.isFrozen(index), true);
+  assert.equal(Object.isFrozen(index.nodes), true);
+  assert.equal(Object.isFrozen(firstNode), true);
+  assert.equal(Object.isFrozen(firstNode.labels), true);
+  assert.throws(
+    () => {
+      (firstNode.labels as string[]).push("https://customer.example/mutated");
+    },
+    TypeError,
+  );
+});
+
 void test("figma snapshot explorer: queries local snapshots without live Figma REST", () => {
   const index = buildIndex();
 
@@ -239,6 +257,19 @@ void test("figma snapshot explorer: queries local snapshots without live Figma R
       query: "Schaden",
     })[0]?.nodeId,
     "claim:description",
+  );
+  assert.throws(
+    () =>
+      queryFigmaSnapshotNodeIndex({
+        nodeIndex: index,
+        kind: "unsupported" as never,
+        query: "IBAN",
+      }),
+    (err: unknown): boolean => {
+      assert.ok(err instanceof FigmaSnapshotExplorerError);
+      assert.equal(err.errorCode, "invalid_query");
+      return true;
+    },
   );
 });
 
@@ -402,6 +433,40 @@ void test("figma snapshot explorer: attaches and writes preview manifests consis
     assert.equal(sha256Hex(JSON.parse(persistedAsset) as unknown), firstAsset.sha256);
     validateFigmaSnapshotPreviewManifest(persistedPreview);
     validateFigmaSnapshotManifest(persistedManifest);
+  } finally {
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
+void test("figma snapshot explorer: writes fractional-bound preview assets with consistent tile dimensions", async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), "ti-figma-fractional-preview-"));
+  try {
+    const index = buildIndex([
+      createRecord({
+        nodeId: "fractional:node",
+        nodeName: "Fractional Preview Node",
+        bbox: { x: 1.25, y: 2.5, width: 123.2, height: 45.8 },
+      }),
+    ]);
+    const preview = planFigmaSnapshotPreviewCache({
+      nodeIndex: index,
+      maxTiles: 1,
+      tileWidth: 500,
+      tileHeight: 500,
+    });
+    const asset = preview.assets[0];
+    const tile = preview.tiles[0];
+    assert.ok(asset);
+    assert.ok(tile);
+    assert.equal(asset.width, 124);
+    assert.equal(asset.height, 46);
+    assert.equal(tile.width, asset.width);
+    assert.equal(tile.height, asset.height);
+
+    await writeFigmaSnapshotPreviewCacheAssets(workspaceRoot, preview);
+    const persistedAsset = await readFile(join(workspaceRoot, asset.relativePath), "utf8");
+    assert.equal(Buffer.byteLength(persistedAsset, "utf8"), asset.byteLength);
+    assert.equal(sha256Hex(JSON.parse(persistedAsset) as unknown), asset.sha256);
   } finally {
     await rm(workspaceRoot, { recursive: true, force: true });
   }
