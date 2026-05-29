@@ -7890,6 +7890,12 @@ export interface FigmaSnapshotImportRateLimitMetadata {
   readonly retryAfterSeconds?: number;
   readonly remaining?: number;
   readonly resetAt?: string;
+  /** Sanitized Figma plan tier returned with a 429 response, when present. */
+  readonly figmaPlanTier?: string;
+  /** Sanitized Figma rate-limit bucket/type returned with a 429 response. */
+  readonly figmaRateLimitType?: string;
+  /** SHA-256 digest of Figma's upgrade link header; raw URLs are never stored. */
+  readonly figmaUpgradeLinkDigest?: string;
 }
 
 /** Progress row for one imported chunk or shard. */

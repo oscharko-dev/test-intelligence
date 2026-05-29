@@ -22,6 +22,7 @@ import * as z from "zod";
 const SHA256_HEX_RE = /^[a-f0-9]{64}$/u;
 const SNAPSHOT_SEGMENT_RE = /^[A-Za-z0-9._-]+$/u;
 const URL_LIKE_RE = /\b[A-Za-z][A-Za-z0-9+.-]*:\/\/\S+/u;
+const FIGMA_TOKEN_LIKE_RE = /\bfigd_[A-Za-z0-9_-]{8,}\b/iu;
 const ISO_8601_RE =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/u;
 
@@ -173,6 +174,9 @@ const importRateLimitSchema = z.strictObject({
   retryAfterSeconds: z.number().int().nonnegative().optional(),
   remaining: z.number().int().nonnegative().optional(),
   resetAt: isoTimestampSchema.optional(),
+  figmaPlanTier: z.string().min(1).max(120).optional(),
+  figmaRateLimitType: z.string().min(1).max(120).optional(),
+  figmaUpgradeLinkDigest: sha256HexSchema.optional(),
 });
 
 const importChunkSchema = z.strictObject({
@@ -365,7 +369,7 @@ const assertSnapshotSegment = (
 const assertNoSensitiveStrings = (value: unknown, path = "$"): void => {
   if (typeof value === "string") {
     const redacted = redactHighRiskSecrets(value, "[REDACTED]");
-    if (redacted !== value) {
+    if (redacted !== value || FIGMA_TOKEN_LIKE_RE.test(value)) {
       throw new Error(`${path} contains token-bearing content`);
     }
     if (URL_LIKE_RE.test(value)) {
