@@ -1,3 +1,5 @@
+import { createHmac, randomBytes } from "node:crypto";
+
 import type {
   FigmaSnapshotImportBudgetMetadata,
   FigmaSnapshotImportBudgetResourceType,
@@ -35,6 +37,16 @@ const URI_LIKE_RE =
   /(?:\b[A-Za-z][A-Za-z0-9+.-]*:\/\/|\b(?:mailto|tel|sms|urn|data|javascript):)\S+/iu;
 const TOKEN_LIKE_RE = /\bfigd_[A-Za-z0-9_-]{8,}\b/iu;
 const CONTROL_RE = /[\u0000-\u001f\u007f]/u;
+const PROCESS_BUDGET_KEY_SALT = randomBytes(32);
+
+interface SharedBudgetWindow {
+  startedAtMs: number;
+  totalCount: number;
+  resourceCounts: Map<FigmaSnapshotImportBudgetResourceType, number>;
+  lastScheduledRequestAtMs?: number;
+}
+
+const sharedBudgetWindows = new Map<string, SharedBudgetWindow>();
 
 export interface FigmaImportCredentialInput {
   readonly authMode?: FigmaSnapshotImportCredentialAuthMode | string;
@@ -147,28 +159,42 @@ export const createFigmaImportGovernance = (input: {
   sleepMs?: (ms: number) => Promise<void>;
 }): FigmaImportGovernance => {
   const policy = resolveBudgetPolicy(input.policy);
-  const windowStartedAt = input.windowStartedAt ?? new Date();
-  const resourceCounts = new Map<
-    FigmaSnapshotImportBudgetResourceType,
-    number
-  >();
-  let totalCount = 0;
-  let lastRequestAtMs: number | undefined;
+  const budgetKey = buildBudgetKey(input.credential);
+  const currentBudgetNowMs = (): number =>
+    input.windowStartedAt?.getTime() ?? Date.now();
+  const budgetWindow = (): SharedBudgetWindow => {
+    const nowMs = currentBudgetNowMs();
+    const current = sharedBudgetWindows.get(budgetKey);
+    if (
+      current !== undefined &&
+      nowMs < current.startedAtMs + policy.windowSeconds * 1000
+    ) {
+      return current;
+    }
+    const next: SharedBudgetWindow = {
+      startedAtMs: input.windowStartedAt?.getTime() ?? nowMs,
+      totalCount: 0,
+      resourceCounts: new Map<FigmaSnapshotImportBudgetResourceType, number>(),
+    };
+    sharedBudgetWindows.set(budgetKey, next);
+    return next;
+  };
 
   const snapshotBudget = (
     resourceType?: FigmaSnapshotImportBudgetResourceType,
   ): FigmaSnapshotImportBudgetMetadata => {
+    const window = budgetWindow();
     const usedRequests =
       resourceType === undefined
-        ? totalCount
-        : (resourceCounts.get(resourceType) ?? 0);
+        ? window.totalCount
+        : (window.resourceCounts.get(resourceType) ?? 0);
     const maxRequestsPerWindow =
       resourceType === undefined
         ? policy.maxRequestsPerWindow
         : policy.resourceMaxRequestsPerWindow[resourceType];
     return buildBudgetMetadata({
       policy,
-      windowStartedAt,
+      windowStartedAt: new Date(window.startedAtMs),
       usedRequests,
       maxRequestsPerWindow,
       ...(resourceType !== undefined ? { resourceType } : {}),
@@ -180,6 +206,7 @@ export const createFigmaImportGovernance = (input: {
     beforeRequest: async (
       resourceType: FigmaSnapshotImportBudgetResourceType,
     ): Promise<FigmaSnapshotImportBudgetMetadata> => {
+      const window = budgetWindow();
       const totalBudget = snapshotBudget();
       if (totalBudget.remainingRequests <= 0) {
         throw new FigmaImportGovernanceError({
@@ -197,21 +224,28 @@ export const createFigmaImportGovernance = (input: {
           budget: resourceBudget,
         });
       }
+      const nowMs = Date.now();
+      const remainingDelayMs =
+        policy.minimumDelayMs > 0 &&
+        window.lastScheduledRequestAtMs !== undefined
+          ? Math.max(
+              0,
+              window.lastScheduledRequestAtMs + policy.minimumDelayMs - nowMs,
+            )
+          : 0;
+      window.totalCount += 1;
+      window.resourceCounts.set(
+        resourceType,
+        (window.resourceCounts.get(resourceType) ?? 0) + 1,
+      );
+      window.lastScheduledRequestAtMs = nowMs + remainingDelayMs;
       if (
         input.sleepMs !== undefined &&
         policy.minimumDelayMs > 0 &&
-        lastRequestAtMs !== undefined
+        remainingDelayMs > 0
       ) {
-        const elapsedMs = Date.now() - lastRequestAtMs;
-        const remainingDelayMs = policy.minimumDelayMs - elapsedMs;
-        if (remainingDelayMs > 0) await input.sleepMs(remainingDelayMs);
+        await input.sleepMs(remainingDelayMs);
       }
-      totalCount += 1;
-      resourceCounts.set(
-        resourceType,
-        (resourceCounts.get(resourceType) ?? 0) + 1,
-      );
-      lastRequestAtMs = Date.now();
       return snapshotBudget(resourceType);
     },
     snapshotBudget,
@@ -317,6 +351,15 @@ const resolveBudgetPolicy = (
     minimumDelayMs: resolveNonNegativeInteger(input?.minimumDelayMs, 0),
   };
 };
+
+const buildBudgetKey = (
+  credential: ResolvedFigmaImportCredential,
+): string =>
+  createHmac("sha256", PROCESS_BUDGET_KEY_SALT)
+    .update(credential.authMode)
+    .update("\0")
+    .update(credential.accessToken)
+    .digest("hex");
 
 const buildBudgetMetadata = (input: {
   policy: ResolvedBudgetPolicy;

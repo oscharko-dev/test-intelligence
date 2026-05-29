@@ -328,7 +328,7 @@ export const importStagedFigmaSnapshot = async (
       ...(input.sleepMs !== undefined ? { sleepMs: input.sleepMs } : {}),
     });
   } catch (err) {
-    throw wrapInitialImportError(err);
+    throw wrapInitialImportError(err, rateLimit);
   }
   const figmaRevisionDigest = computeFigmaRevisionDigest(bootstrap);
   const rootPlans = buildLogicalRootPlans({
@@ -1536,12 +1536,34 @@ const chunkArray = <T>(items: readonly T[], size: number): readonly T[][] => {
   return chunks;
 };
 
-const wrapInitialImportError = (err: unknown): FigmaStagedImportError => {
-  if (err instanceof FigmaStagedImportError) return err;
+const wrapInitialImportError = (
+  err: unknown,
+  rateLimit?: MutableRateLimitMetadata,
+): FigmaStagedImportError => {
+  const rateLimitDiagnostics =
+    rateLimit === undefined ? undefined : buildRateLimitDiagnostics(rateLimit);
+  if (err instanceof FigmaStagedImportError) {
+    if (
+      err.rateLimitDiagnostics !== undefined ||
+      rateLimitDiagnostics === undefined
+    ) {
+      return err;
+    }
+    return new FigmaStagedImportError({
+      errorCode: err.errorCode,
+      failureClass: err.failureClass,
+      message: err.message,
+      retryable: err.retryable,
+      ...(err.checkpoint !== undefined ? { checkpoint: err.checkpoint } : {}),
+      rateLimitDiagnostics,
+      cause: err,
+    });
+  }
   const failureClass = classifyImportFailure(err);
   return buildImportError({
     err,
     failureClass,
+    ...(rateLimitDiagnostics !== undefined ? { rateLimitDiagnostics } : {}),
   });
 };
 

@@ -288,7 +288,7 @@ export const SETTINGS_GROUPS: readonly SettingsGroupSpec[] = [
         required: true,
         placeholder: "figd_…",
         helper:
-          "Local-development or explicitly configured self-hosted use only. Snapshot artifacts store only credential digests.",
+          "Local-development or explicitly configured self-hosted use only. Snapshot artifacts store only the credential mode.",
       },
       {
         env: "TEST_INTELLIGENCE_FIGMA_CREDENTIAL_MODE",

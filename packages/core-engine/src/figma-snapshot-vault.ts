@@ -359,12 +359,26 @@ export const validateFigmaSnapshotPreviewManifest = (
 
 export const validateFigmaSnapshotImportStatus = (
   input: unknown,
-): FigmaSnapshotImportStatus =>
-  validateArtifact(
-    "figma snapshot import status",
-    input,
-    importStatusSchema,
-  ) as FigmaSnapshotImportStatus;
+): FigmaSnapshotImportStatus => {
+  try {
+    return validateArtifact(
+      "figma snapshot import status",
+      input,
+      importStatusSchema,
+    ) as FigmaSnapshotImportStatus;
+  } catch (error) {
+    const normalized = stripLegacyImportStatusRateLimitFields(input);
+    if (normalized === input) throw error;
+    const parsed = importStatusSchema.parse(normalized) as FigmaSnapshotImportStatus;
+    assertNoSensitiveStrings(parsed);
+    assertNoSensitiveStrings(input);
+    const expectedLegacyDigest = computeFigmaSnapshotArtifactDigest(
+      input as ArtifactWithDigest,
+    );
+    if (parsed.contentDigest !== expectedLegacyDigest) throw error;
+    return parsed;
+  }
+};
 
 const validateArtifact = (
   label: string,
@@ -389,6 +403,31 @@ const stripContentDigest = <T extends ArtifactWithDigest>(
 ): Omit<T, "contentDigest"> => {
   const { contentDigest: _contentDigest, ...rest } = artifact;
   return rest;
+};
+
+const stripLegacyImportStatusRateLimitFields = (input: unknown): unknown => {
+  if (input === null || typeof input !== "object") return input;
+  const record = input as Record<string, unknown>;
+  const rateLimit = record.rateLimit;
+  if (rateLimit === null || typeof rateLimit !== "object") return input;
+  const rateLimitRecord = rateLimit as Record<string, unknown>;
+  const {
+    figmaPlanTier: _figmaPlanTier,
+    figmaRateLimitType: _figmaRateLimitType,
+    figmaUpgradeLinkDigest: _figmaUpgradeLinkDigest,
+    ...safeRateLimit
+  } = rateLimitRecord;
+  if (
+    _figmaPlanTier === undefined &&
+    _figmaRateLimitType === undefined &&
+    _figmaUpgradeLinkDigest === undefined
+  ) {
+    return input;
+  }
+  return {
+    ...record,
+    rateLimit: safeRateLimit,
+  };
 };
 
 const assertSnapshotSegment = (

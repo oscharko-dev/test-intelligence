@@ -113,6 +113,8 @@ interface MockFigmaFetchOptions {
   readonly failNodeIds?: ReadonlySet<string>;
   readonly oversizedNodeBatches?: boolean;
   readonly oversizedImageBatches?: boolean;
+  readonly rateLimitBootstrap?: boolean;
+  readonly rateLimitBootstrapAlways?: boolean;
   readonly rateLimitFirstNodeBatch?: boolean;
 }
 
@@ -138,6 +140,22 @@ const createMockFigmaFetch = (
       requestedUrls.push(rawUrl);
       const url = new URL(rawUrl);
       if (url.pathname === `/v1/files/${FILE_KEY}`) {
+        if (
+          options.rateLimitBootstrapAlways === true ||
+          (options.rateLimitBootstrap === true && !rateLimited)
+        ) {
+          rateLimited = true;
+          return errJson(
+            429,
+            { err: "rate limited" },
+            {
+              "Retry-After": "3",
+              "X-Figma-Plan-Tier": "starter",
+              "X-Figma-Rate-Limit-Type": "low_limit",
+              "X-Figma-Upgrade-Link": `https://www.figma.com/pricing?token=${FIGMA_TOKEN_PREFIX}bootstrap_header_secret_value_1234567890`,
+            },
+          );
+        }
         return okJson(createBootstrapFile(options.nodeIds));
       }
       if (url.pathname === `/v1/files/${FILE_KEY}/nodes`) {
@@ -196,12 +214,15 @@ const importWithMock = async (
   workspaceRoot: string,
   mock: MockFigmaFetch,
   overrides: Partial<Parameters<typeof importStagedFigmaSnapshot>[0]> = {},
-) =>
-  importStagedFigmaSnapshot({
+) => {
+  const workspaceTokenSuffix = workspaceRoot
+    .replace(/[^A-Za-z0-9_-]/gu, "_")
+    .slice(-32);
+  return importStagedFigmaSnapshot({
     workspaceRoot,
     tenantScope: TENANT_SCOPE,
     figmaUrl: FIGMA_URL,
-    accessToken: ACCESS_TOKEN,
+    accessToken: `${ACCESS_TOKEN}_${workspaceTokenSuffix}`,
     fetchImpl: mock.fetchImpl,
     nodeBatchSize: 2,
     imageBatchSize: 2,
@@ -211,6 +232,7 @@ const importWithMock = async (
     },
     ...overrides,
   });
+};
 
 const countRequests = (
   mock: MockFigmaFetch,
@@ -366,6 +388,43 @@ void test("staged import honors Retry-After and records sanitized rate-limit met
       (url) => url.pathname === `/v1/files/${FILE_KEY}/nodes`,
     ),
     2,
+  );
+});
+
+void test("staged import attaches sanitized diagnostics to bootstrap rate-limit failures", async () => {
+  const workspaceRoot = await createWorkspaceRoot();
+  const mock = createMockFigmaFetch({
+    nodeIds: ["1:1"],
+    rateLimitBootstrapAlways: true,
+  });
+
+  await assert.rejects(
+    () =>
+      importWithMock(workspaceRoot, mock, {
+        figmaUrl: `https://www.figma.com/design/${FILE_KEY}/Customer-Board`,
+      }),
+    (err: unknown): boolean => {
+      assert.ok(err instanceof FigmaStagedImportError);
+      assert.equal(err.errorCode, "rate_limited");
+      assert.equal(err.failureClass, "throttled");
+      assert.equal(err.rateLimitDiagnostics?.retryAfterSeconds, 3);
+      assert.equal(err.rateLimitDiagnostics?.figmaPlanTier, "starter");
+      assert.equal(
+        err.rateLimitDiagnostics?.figmaRateLimitType,
+        "low_limit",
+      );
+      assert.equal(
+        err.rateLimitDiagnostics?.remediation?.scenario,
+        "low_limit",
+      );
+      assert.match(
+        err.rateLimitDiagnostics?.figmaUpgradeLinkDigest ?? "",
+        /^[a-f0-9]{64}$/u,
+      );
+      assert.doesNotMatch(JSON.stringify(err), /bootstrap_header_secret/u);
+      assert.doesNotMatch(JSON.stringify(err), /https:\/\/www\.figma\.com/u);
+      return true;
+    },
   );
 });
 

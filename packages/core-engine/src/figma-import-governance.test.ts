@@ -100,6 +100,27 @@ void test("figma import governor enforces resource budgets before REST fan-out",
   assert.equal("tokenResourceKeyHash" in nodeBudget, false);
   assert.equal("tokenResourceKeyHash" in imageBudget, false);
 
+  const sameTokenGovernor = createFigmaImportGovernance({
+    credential,
+    source: SOURCE,
+    policy: {
+      maxRequestsPerWindow: 10,
+      resourceMaxRequestsPerWindow: {
+        node_batch: 1,
+      },
+    },
+    windowStartedAt: new Date("2026-05-29T10:00:00.000Z"),
+  });
+  await assert.rejects(
+    () => sameTokenGovernor.beforeRequest("node_batch"),
+    (err: unknown): boolean => {
+      assert.ok(err instanceof FigmaImportGovernanceError);
+      assert.equal(err.errorCode, "budget_exhausted");
+      assert.equal(err.budget?.resourceType, "node_batch");
+      return true;
+    },
+  );
+
   const otherCredential = resolveFigmaImportCredential({
     accessToken: `${ACCESS_TOKEN}_other`,
   });
