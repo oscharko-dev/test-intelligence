@@ -22,6 +22,8 @@ import {
   validateFigmaSnapshotNodeIndex,
 } from "@oscharko-dev/ti-core-engine";
 
+import { normalizeUntrustedContent } from "./untrusted-content-normalizer.js";
+
 const SNAPSHOT_VAULT_ROOT_SEGMENT = ".test-intelligence" as const;
 const SNAPSHOT_VAULT_DIRNAME = "figma-snapshots" as const;
 const MANIFEST_FILENAME = "manifest.json" as const;
@@ -87,6 +89,7 @@ export interface ResolvedFigmaSnapshotRunSource {
   readonly intentInput: IntentDerivationFigmaInput;
   readonly auditRef: GeneratedTestCaseSnapshotSourceRef;
   readonly traceAnchors: readonly FigmaSnapshotTraceAnchor[];
+  readonly untrustedFigmaDocument: unknown;
 }
 
 interface NormalizedSelection {
@@ -156,7 +159,14 @@ export const resolveFigmaSnapshotRunSource = async (
       message: "Figma snapshot selection matched no local nodes.",
     });
   }
-  const resolvedNodeIds = selectedRecords.map((record) => record.nodeId).sort();
+  const generationRecords = sanitizeSelectedSnapshotRecords(selectedRecords);
+  if (generationRecords.length === 0) {
+    throw new FigmaSnapshotRunSourceError({
+      errorCode: "empty_scope",
+      message: "Figma snapshot selection matched no generation-safe local nodes.",
+    });
+  }
+  const resolvedNodeIds = generationRecords.map((record) => record.nodeId).sort();
   const scopeDigest = sha256Hex({
     snapshotId: manifest.snapshotId,
     snapshotDigest: manifest.contentDigest,
@@ -166,18 +176,25 @@ export const resolveFigmaSnapshotRunSource = async (
   });
   const intentInput = buildIntentInputFromSnapshotRecords({
     snapshotId: manifest.snapshotId,
-    records: selectedRecords,
+    records: generationRecords,
   });
-  const traceAnchors = buildTraceAnchors(selectedRecords);
+  const traceAnchors = buildTraceAnchors(generationRecords);
+  const auditRef: GeneratedTestCaseSnapshotSourceRef = {
+    snapshotId: manifest.snapshotId,
+    snapshotDigest: manifest.contentDigest,
+    nodeIndexDigest: nodeIndex.contentDigest,
+    scopeDigest,
+    selectedNodeIds: resolvedNodeIds,
+    selectedPageIds: [...selection.selectedPageIds],
+    selectedFrameIds: [...selection.selectedFrameIds],
+  };
   return {
     fileKey: `snapshot-${manifest.snapshotId}`,
     name: `Figma snapshot ${manifest.snapshotId}`,
     payloadBytes: Buffer.byteLength(
       canonicalJson({
-        manifestDigest: manifest.contentDigest,
-        nodeIndexDigest: nodeIndex.contentDigest,
-        scopeDigest,
-        selectedNodeCount: selectedRecords.length,
+        snapshotSource: auditRef,
+        intentInput,
       }),
       "utf8",
     ),
@@ -185,16 +202,12 @@ export const resolveFigmaSnapshotRunSource = async (
     nodeIndex,
     importStatus,
     intentInput,
-    auditRef: {
-      snapshotId: manifest.snapshotId,
-      snapshotDigest: manifest.contentDigest,
-      nodeIndexDigest: nodeIndex.contentDigest,
-      scopeDigest,
-      selectedNodeIds: resolvedNodeIds,
-      selectedPageIds: [...selection.selectedPageIds],
-      selectedFrameIds: [...selection.selectedFrameIds],
-    },
+    auditRef,
     traceAnchors,
+    untrustedFigmaDocument: buildUntrustedFigmaDocumentFromSnapshotRecords({
+      snapshotId: manifest.snapshotId,
+      records: selectedRecords,
+    }),
   };
 };
 
@@ -540,6 +553,197 @@ const selectNodeRecords = (
     })
     .sort(compareNodeRecords);
 };
+
+const sanitizeSelectedSnapshotRecords = (
+  records: readonly FigmaSnapshotNodeRecord[],
+): readonly FigmaSnapshotNodeRecord[] => {
+  const visibleRecords = records.filter(
+    (record) => record.visible !== false && !hasSentinelSnapshotName(record),
+  );
+  const textFields = snapshotRecordTextFields(visibleRecords);
+  const normalized = normalizeUntrustedContent({ textFields }).textFields ?? [];
+  const normalizedById = new Map(
+    normalized.map((field) => [field.id, field.text] as const),
+  );
+  return visibleRecords.map((record, recordIndex) => ({
+    ...record,
+    pageName: readNormalizedTextField({
+      normalizedById,
+      id: snapshotTextFieldId(recordIndex, "pageName"),
+      fallback: record.pageName,
+    }),
+    ...(record.frameName !== undefined
+      ? {
+          frameName: readNormalizedTextField({
+            normalizedById,
+            id: snapshotTextFieldId(recordIndex, "frameName"),
+            fallback: record.frameName,
+          }),
+        }
+      : {}),
+    nodeName: readNormalizedTextField({
+      normalizedById,
+      id: snapshotTextFieldId(recordIndex, "nodeName"),
+      fallback: record.nodeName,
+    }),
+    ...(record.textSnippet !== undefined
+      ? {
+          textSnippet: readNormalizedTextField({
+            normalizedById,
+            id: snapshotTextFieldId(recordIndex, "textSnippet"),
+            fallback: record.textSnippet,
+          }),
+        }
+      : {}),
+    labels: record.labels.map((label, labelIndex) =>
+      readNormalizedTextField({
+        normalizedById,
+        id: snapshotTextFieldId(recordIndex, "label", labelIndex),
+        fallback: label,
+      }),
+    ),
+    componentHints: record.componentHints.map((componentHint, hintIndex) =>
+      readNormalizedTextField({
+        normalizedById,
+        id: snapshotTextFieldId(recordIndex, "componentHint", hintIndex),
+        fallback: componentHint,
+      }),
+    ),
+  }));
+};
+
+const snapshotRecordTextFields = (
+  records: readonly FigmaSnapshotNodeRecord[],
+): ReadonlyArray<{ id: string; text: string }> =>
+  records.flatMap((record, recordIndex) => [
+    {
+      id: snapshotTextFieldId(recordIndex, "pageName"),
+      text: record.pageName,
+    },
+    ...(record.frameName !== undefined
+      ? [
+          {
+            id: snapshotTextFieldId(recordIndex, "frameName"),
+            text: record.frameName,
+          },
+        ]
+      : []),
+    {
+      id: snapshotTextFieldId(recordIndex, "nodeName"),
+      text: record.nodeName,
+    },
+    ...(record.textSnippet !== undefined
+      ? [
+          {
+            id: snapshotTextFieldId(recordIndex, "textSnippet"),
+            text: record.textSnippet,
+          },
+        ]
+      : []),
+    ...record.labels.map((label, labelIndex) => ({
+      id: snapshotTextFieldId(recordIndex, "label", labelIndex),
+      text: label,
+    })),
+    ...record.componentHints.map((componentHint, hintIndex) => ({
+      id: snapshotTextFieldId(recordIndex, "componentHint", hintIndex),
+      text: componentHint,
+    })),
+  ]);
+
+const snapshotTextFieldId = (
+  recordIndex: number,
+  field: string,
+  valueIndex?: number,
+): string =>
+  valueIndex === undefined
+    ? `snapshot-record-${recordIndex}:${field}`
+    : `snapshot-record-${recordIndex}:${field}:${valueIndex}`;
+
+const readNormalizedTextField = (input: {
+  readonly normalizedById: ReadonlyMap<string, string>;
+  readonly id: string;
+  readonly fallback: string;
+}): string => input.normalizedById.get(input.id) ?? input.fallback;
+
+const hasSentinelSnapshotName = (record: FigmaSnapshotNodeRecord): boolean =>
+  startsWithSentinelName(record.pageName) ||
+  startsWithSentinelName(record.frameName) ||
+  startsWithSentinelName(record.nodeName);
+
+const startsWithSentinelName = (value: string | undefined): boolean =>
+  value?.startsWith("__") === true;
+
+const buildUntrustedFigmaDocumentFromSnapshotRecords = (input: {
+  readonly snapshotId: string;
+  readonly records: readonly FigmaSnapshotNodeRecord[];
+}): unknown => ({
+  id: `snapshot:${input.snapshotId}`,
+  name: `Snapshot ${input.snapshotId}`,
+  type: "DOCUMENT",
+  children: input.records.map((record) => ({
+    id: record.nodeId,
+    name: record.nodeName,
+    type: record.nodeType,
+    visible: record.visible,
+    ...(record.bbox !== undefined ? { absoluteBoundingBox: record.bbox } : {}),
+    children: snapshotRecordTextChildren(record),
+  })),
+});
+
+const snapshotRecordTextChildren = (
+  record: FigmaSnapshotNodeRecord,
+): readonly Record<string, unknown>[] => [
+  {
+    id: `${record.nodeId}:page-name`,
+    name: record.pageName,
+    type: "TEXT",
+    characters: record.pageName,
+    visible: true,
+  },
+  ...(record.frameName !== undefined
+    ? [
+        {
+          id: `${record.nodeId}:frame-name`,
+          name: record.frameName,
+          type: "TEXT",
+          characters: record.frameName,
+          visible: true,
+        },
+      ]
+    : []),
+  {
+    id: `${record.nodeId}:node-name`,
+    name: record.nodeName,
+    type: "TEXT",
+    characters: record.nodeName,
+    visible: true,
+  },
+  ...(record.textSnippet !== undefined
+    ? [
+        {
+          id: `${record.nodeId}:text`,
+          name: "text",
+          type: "TEXT",
+          characters: record.textSnippet,
+          visible: true,
+        },
+      ]
+    : []),
+  ...record.labels.map((label, labelIndex) => ({
+    id: `${record.nodeId}:label:${labelIndex}`,
+    name: "label",
+    type: "TEXT",
+    characters: label,
+    visible: true,
+  })),
+  ...record.componentHints.map((componentHint, hintIndex) => ({
+    id: `${record.nodeId}:component-hint:${hintIndex}`,
+    name: "componentHint",
+    type: "TEXT",
+    characters: componentHint,
+    visible: true,
+  })),
+];
 
 const buildIntentInputFromSnapshotRecords = (input: {
   readonly snapshotId: string;

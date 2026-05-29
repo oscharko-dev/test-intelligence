@@ -944,6 +944,101 @@ void test("runFigmaToQcTestCases resolves local snapshot source without live Fig
   }
 });
 
+void test("runFigmaToQcTestCases preserves explicit snapshot trace node refs when anchor details belong to another node", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "ti-runner-"));
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "ti-snapshot-ws-"));
+  try {
+    await writeProductionRunnerSnapshotVault(workspaceRoot);
+    const client = createMockLlmGatewayClient({
+      role: "test_generation",
+      deployment: "gpt-oss-120b-mock",
+      modelRevision: "mock-1",
+      gatewayRelease: "mock",
+      responder: okResponder([
+        {
+          ...SAMPLE_DRAFT,
+          figmaTraceRefs: [{ screenId: "frame-1", nodeId: "node-submit" }],
+          qualitySignals: {
+            coveredFieldIds: [],
+            coveredActionIds: ["frame-1::action::node-submit"],
+            coveredValidationIds: [],
+            coveredNavigationIds: [],
+            confidence: 0.9,
+          },
+        },
+      ]),
+    });
+
+    const result = await runFigmaToQcTestCases({
+      jobId: "job-snapshot-trace-anchor-mismatch",
+      generatedAt: "2026-05-29T10:00:00Z",
+      source: {
+        kind: "figma_snapshot",
+        workspaceRoot,
+        snapshotId: SNAPSHOT_ID,
+        tenantScope: SNAPSHOT_TENANT_SCOPE,
+        selectedFrameIds: ["frame-1"],
+      },
+      replayCacheTenantScope: SNAPSHOT_TENANT_SCOPE,
+      outputRoot: tempRoot,
+      llm: { client },
+      generation: { diversityPasses: 1 },
+    });
+
+    const generated = result.generatedTestCases.testCases.find(
+      (testCase) => testCase.title === SAMPLE_DRAFT.title,
+    );
+    assert.ok(generated);
+    assert.equal(generated.figmaTraceRefs[0]?.nodeId, "node-submit");
+    assert.equal(generated.figmaTraceRefs[0]?.nodeName, undefined);
+    assert.equal(generated.figmaTraceRefs[0]?.nodePath, undefined);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
+void test("runFigmaToQcTestCases enforces snapshot payload cap against derived intent input", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "ti-runner-"));
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "ti-snapshot-ws-"));
+  try {
+    await writeProductionRunnerSnapshotVault(workspaceRoot);
+    const client = createMockLlmGatewayClient({
+      role: "test_generation",
+      deployment: "gpt-oss-120b-mock",
+      modelRevision: "mock-1",
+      gatewayRelease: "mock",
+      responder: okResponder([SAMPLE_DRAFT]),
+    });
+
+    await assert.rejects(
+      () =>
+        runFigmaToQcTestCases({
+          jobId: "job-snapshot-payload-cap",
+          generatedAt: "2026-05-29T10:00:00Z",
+          source: {
+            kind: "figma_snapshot",
+            workspaceRoot,
+            snapshotId: SNAPSHOT_ID,
+            tenantScope: SNAPSHOT_TENANT_SCOPE,
+            selectedFrameIds: ["frame-1"],
+          },
+          replayCacheTenantScope: SNAPSHOT_TENANT_SCOPE,
+          outputRoot: tempRoot,
+          llm: { client },
+          generation: { diversityPasses: 1 },
+          maxFigmaPayloadBytes: 10,
+        }),
+      (err: unknown) =>
+        err instanceof ProductionRunnerError &&
+        err.failureClass === "FIGMA_PAYLOAD_TOO_LARGE",
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
 void test("runFigmaToQcTestCases loads reviewer-approved agent lessons from memdir into the compiled prompt", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "ti-runner-"));
   const jobId = "job-lesson-runtime";

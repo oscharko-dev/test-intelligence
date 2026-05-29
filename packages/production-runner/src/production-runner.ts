@@ -3093,7 +3093,11 @@ export const runFigmaToQcTestCases = async (
     const snapshotTraceAnchors = resolvedSourceEvidence.snapshotTraceAnchors;
     await cleanArtifactDirForFreshRun(artifactDir);
     const normalizedUntrusted = normalizeUntrustedContent({
-      figma: { document: figmaFile.document },
+      figma: {
+        document:
+          resolvedSourceEvidence.snapshotUntrustedFigmaDocument ??
+          figmaFile.document,
+      },
     });
     const untrustedContentNormalizationReportPath = (
       await writeUntrustedContentNormalizationReport(
@@ -8349,6 +8353,7 @@ interface ResolvedProductionRunnerSourceEvidence {
   readonly intentInput?: IntentDerivationFigmaInput;
   readonly snapshotSource?: GeneratedTestCaseSnapshotSourceRef;
   readonly snapshotTraceAnchors?: readonly FigmaSnapshotTraceAnchor[];
+  readonly snapshotUntrustedFigmaDocument?: unknown;
 }
 
 const resolveProductionRunnerSourceEvidence = async (input: {
@@ -8407,6 +8412,7 @@ const resolveProductionRunnerSourceEvidence = async (input: {
         intentInput: resolved.intentInput,
         snapshotSource: resolved.auditRef,
         snapshotTraceAnchors: resolved.traceAnchors,
+        snapshotUntrustedFigmaDocument: resolved.untrustedFigmaDocument,
       };
     } catch (err) {
       if (err instanceof ProductionRunnerError) {
@@ -13676,6 +13682,9 @@ const applySnapshotTraceAnchors = (
   return traceRefs.map((traceRef) => {
     const anchor = byScreen.get(traceRef.screenId);
     if (anchor === undefined) return { ...traceRef };
+    const canUseAnchorDetails =
+      traceRef.nodeId === undefined || traceRef.nodeId === anchor.nodeId;
+    if (!canUseAnchorDetails) return { ...traceRef };
     return {
       screenId: traceRef.screenId,
       nodeId: traceRef.nodeId ?? anchor.nodeId,

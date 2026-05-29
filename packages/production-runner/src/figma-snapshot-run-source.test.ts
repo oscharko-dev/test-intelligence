@@ -242,6 +242,48 @@ void test("resolveFigmaSnapshotRunSource: scope digest changes when selected loc
   }
 });
 
+void test("resolveFigmaSnapshotRunSource: excludes hidden and sentinel nodes while normalizing snapshot text", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "ti-snapshot-run-"));
+  try {
+    await writeSnapshotVault({
+      root,
+      nodes: [
+        nodeRecord({
+          nodeId: "node-safe",
+          nodeName: "Claim\u200B Number",
+          textSnippet: "Claim\u200B Number",
+          labels: ["Claim\u200B Number"],
+        }),
+        nodeRecord({
+          nodeId: "node-hidden",
+          nodeName: "Hidden Claim Number",
+          visible: false,
+        }),
+        nodeRecord({
+          nodeId: "node-sentinel",
+          nodeName: "__system",
+        }),
+      ],
+    });
+
+    const resolved = await resolveFigmaSnapshotRunSource({
+      workspaceRoot: root,
+      tenantScope: TENANT_SCOPE,
+      snapshotId: SNAPSHOT_ID,
+      selection: { frameIds: ["frame-1"] },
+    });
+
+    const intentJson = JSON.stringify(resolved.intentInput);
+    assert.deepEqual(resolved.auditRef.selectedNodeIds, ["node-safe"]);
+    assert.equal(intentJson.includes("node-hidden"), false);
+    assert.equal(intentJson.includes("node-sentinel"), false);
+    assert.equal(intentJson.includes("\u200B"), false);
+    assert.equal(intentJson.includes("Claim Number"), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 void test("resolveFigmaSnapshotRunSource: unsafe, missing, invalid, and cross-tenant snapshots fail closed", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "ti-snapshot-run-"));
   try {
