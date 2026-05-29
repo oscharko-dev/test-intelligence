@@ -13,6 +13,7 @@ export * from "./equivalence-class-fingerprint.js";
 export * from "./field-lifecycle-transition-tier.js";
 export * from "./figma-payload-normalizer.js";
 export * from "./figma-rest-adapter.js";
+export * from "./figma-snapshot-explorer.js";
 export * from "./figma-snapshot-vault.js";
 export * from "./figma-staged-import.js";
 export * from "./generated-test-case-schema.js";
