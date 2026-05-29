@@ -110,6 +110,8 @@ export interface FigmaRestFileSnapshot {
   name: string;
   /** ISO-8601 timestamp of the file's last modification, when present. */
   lastModified?: string;
+  /** Upstream Figma file version, when present. */
+  version?: string;
   /** Source key used to fetch the file. */
   fileKey: string;
   /** When fetched node-scoped, the requested node id; otherwise undefined. */
@@ -889,6 +891,8 @@ const interpretFigmaResponse = (input: {
   const name = typeof record.name === "string" ? record.name : input.fileKey;
   const lastModified =
     typeof record.lastModified === "string" ? record.lastModified : undefined;
+  const version =
+    typeof record.version === "string" ? record.version : undefined;
 
   if (input.nodeId !== undefined) {
     const nodes = record.nodes;
@@ -918,6 +922,7 @@ const interpretFigmaResponse = (input: {
     return {
       name,
       ...(lastModified !== undefined ? { lastModified } : {}),
+      ...(version !== undefined ? { version } : {}),
       fileKey: input.fileKey,
       nodeId: input.nodeId,
       document: document as FigmaRestNode,
@@ -935,6 +940,7 @@ const interpretFigmaResponse = (input: {
   return {
     name,
     ...(lastModified !== undefined ? { lastModified } : {}),
+    ...(version !== undefined ? { version } : {}),
     fileKey: input.fileKey,
     document: document as FigmaRestNode,
   };
