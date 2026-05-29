@@ -4,6 +4,8 @@ import test from "node:test";
 import {
   FigmaRestFetchError,
   fetchFigmaFileForTestIntelligence,
+  fetchFigmaImageMetadataForTestIntelligence,
+  fetchFigmaNodesForTestIntelligence,
   fetchFigmaScreenCapturesForTestIntelligence,
   parseFigmaUrl,
 } from "./figma-rest-adapter.js";
@@ -41,6 +43,7 @@ const PNG_BYTES = Buffer.from(
   "89504e470d0a1a0a0000000d4948445200000001000000010802000000907753de0000000c49444154789c63606060000000040001f61738550000000049454e44ae426082",
   "hex",
 );
+const FIGMA_TOKEN_PREFIX = "figd" + "_";
 
 void test("parseFigmaUrl extracts fileKey + nodeId from a design URL", () => {
   const parsed = parseFigmaUrl(
@@ -84,6 +87,22 @@ void test("parseFigmaUrl rejects a URL without a fileKey", () => {
   assert.throws(
     () => parseFigmaUrl("https://www.figma.com/design/"),
     /file key/,
+  );
+});
+
+void test("parseFigmaUrl rejects unsafe node-id diagnostics", () => {
+  assert.throws(
+    () =>
+      parseFigmaUrl(
+        "https://www.figma.com/design/ABC123xyz/File?node-id=mailto:claims@customer.example",
+      ),
+    (err: unknown): boolean => {
+      assert.ok(err instanceof FigmaRestFetchError);
+      assert.equal(err.errorClass, "request_invalid");
+      assert.doesNotMatch(err.message, /mailto:/u);
+      assert.doesNotMatch(err.message, /customer\.example/u);
+      return true;
+    },
   );
 });
 
@@ -199,6 +218,48 @@ void test("fetchFigmaFileForTestIntelligence refuses over-budget Retry-After val
   assert.equal(calls, 1);
 });
 
+void test("fetchFigmaFileForTestIntelligence sanitizes hostile rate-limit metadata", async () => {
+  const fetchImpl = (async () =>
+    errJson(
+      429,
+      { err: "rate limited" },
+      {
+        "Retry-After": "61",
+        "X-Figma-Plan-Tier":
+          `enterprise https://customer.example/private?token=${FIGMA_TOKEN_PREFIX}plan_secret_value_1234567890`,
+        "X-Figma-Rate-Limit-Type":
+          `file_content ${FIGMA_TOKEN_PREFIX}limit_secret_value_1234567890`,
+        "X-Figma-Upgrade-Link":
+          `https://customer.example/upgrade?token=${FIGMA_TOKEN_PREFIX}upgrade_secret_value_1234567890`,
+      },
+    )) as unknown as typeof fetch;
+
+  await assert.rejects(
+    () =>
+      fetchFigmaFileForTestIntelligence({
+        fileKey: "ABC",
+        accessToken: "figd_test",
+        fetchImpl,
+      }),
+    (err: unknown): boolean => {
+      assert.ok(err instanceof FigmaRestFetchError);
+      assert.equal(err.errorClass, "rate_limited");
+      assert.equal(err.retryAfterSeconds, 61);
+      assert.match(err.figmaUpgradeLinkDigest ?? "", /^[a-f0-9]{64}$/u);
+      assert.doesNotMatch(err.message, /https:\/\/customer\.example/u);
+      assert.doesNotMatch(err.message, /figd_/u);
+      assert.doesNotMatch(err.figmaPlanTier ?? "", /https:\/\/customer\.example/u);
+      assert.doesNotMatch(err.figmaPlanTier ?? "", /figd_/u);
+      assert.doesNotMatch(err.figmaRateLimitType ?? "", /figd_/u);
+      assert.notEqual(
+        err.figmaUpgradeLinkDigest,
+        `https://customer.example/upgrade?token=${FIGMA_TOKEN_PREFIX}upgrade_secret_value_1234567890`,
+      );
+      return true;
+    },
+  );
+});
+
 void test("fetchFigmaFileForTestIntelligence surfaces TLS trust failures with operator action", async () => {
   let calls = 0;
   const cause = Object.assign(
@@ -228,7 +289,7 @@ void test("fetchFigmaFileForTestIntelligence surfaces TLS trust failures with op
 });
 
 void test("fetchFigmaFileForTestIntelligence does NOT echo the access token in error messages", async () => {
-  const tok = "figd_supersecret_test_token_value_1234567890_padded_padded"; // pragma: allowlist secret
+  const tok = `${FIGMA_TOKEN_PREFIX}supersecret_test_token_value_1234567890_padded_padded`;
   const fetchImpl = (async () => {
     return errJson(403, { err: tok });
   }) as unknown as typeof fetch;
@@ -279,6 +340,248 @@ void test("fetchFigmaFileForTestIntelligence appends ids when nodeId is supplied
   assert.ok(seenUrl?.includes("ids=0%3A1"));
   // For node-scoped fetches, the adapter wraps the returned subtree as the document root.
   assert.equal(result.document.id, "0:1");
+});
+
+void test("fetchFigmaFileForTestIntelligence rejects unsafe nodeId before network calls", async () => {
+  const unsafeNodeId =
+    `https://customer.example/private?token=${FIGMA_TOKEN_PREFIX}supersecret_single_node_token_1234567890`;
+  let calls = 0;
+  const fetchImpl = (async () => {
+    calls += 1;
+    return okJson({});
+  }) as unknown as typeof fetch;
+
+  await assert.rejects(
+    () =>
+      fetchFigmaFileForTestIntelligence({
+        fileKey: "ABC",
+        accessToken: "figd_test",
+        nodeId: unsafeNodeId,
+        fetchImpl,
+      }),
+    (err: unknown): boolean => {
+      assert.ok(err instanceof FigmaRestFetchError);
+      assert.equal(err.errorClass, "request_invalid");
+      assert.doesNotMatch(err.message, /https:\/\/customer\.example/u);
+      assert.doesNotMatch(err.message, /figd_supersecret/u);
+      return true;
+    },
+  );
+  assert.equal(calls, 0);
+});
+
+void test("fetchFigmaFileForTestIntelligence rejects URI-like nodeId before network calls", async () => {
+  let calls = 0;
+  const fetchImpl = (async () => {
+    calls += 1;
+    return okJson({});
+  }) as unknown as typeof fetch;
+
+  await assert.rejects(
+    () =>
+      fetchFigmaFileForTestIntelligence({
+        fileKey: "ABC",
+        accessToken: "figd_test",
+        nodeId: "mailto:claims",
+        fetchImpl,
+      }),
+    (err: unknown): boolean => {
+      assert.ok(err instanceof FigmaRestFetchError);
+      assert.equal(err.errorClass, "request_invalid");
+      assert.doesNotMatch(err.message, /mailto:/u);
+      return true;
+    },
+  );
+  assert.equal(calls, 0);
+});
+
+void test("fetchFigmaNodesForTestIntelligence rejects unsafe node ids before network calls", async () => {
+  const unsafeNodeId =
+    `https://customer.example/private?token=${FIGMA_TOKEN_PREFIX}supersecret_node_token_1234567890`;
+  let calls = 0;
+  const fetchImpl = (async () => {
+    calls += 1;
+    return okJson({});
+  }) as unknown as typeof fetch;
+  await assert.rejects(
+    () =>
+      fetchFigmaNodesForTestIntelligence({
+        fileKey: "ABC",
+        accessToken: "figd_test",
+        nodeIds: [unsafeNodeId],
+        fetchImpl,
+      }),
+    (err: unknown): boolean => {
+      assert.ok(err instanceof FigmaRestFetchError);
+      assert.equal(err.errorClass, "request_invalid");
+      assert.doesNotMatch(err.message, /https:\/\/customer\.example/u);
+      assert.doesNotMatch(err.message, /figd_supersecret/u);
+      return true;
+    },
+  );
+  assert.equal(calls, 0);
+});
+
+void test("fetchFigmaImageMetadataForTestIntelligence rejects unsafe node ids before network calls", async () => {
+  const unsafeNodeId = "mailto:claims@customer.example";
+  let calls = 0;
+  const fetchImpl = (async () => {
+    calls += 1;
+    return okJson({});
+  }) as unknown as typeof fetch;
+  await assert.rejects(
+    () =>
+      fetchFigmaImageMetadataForTestIntelligence({
+        fileKey: "ABC",
+        accessToken: "figd_test",
+        nodeIds: [unsafeNodeId],
+        fetchImpl,
+      }),
+    (err: unknown): boolean => {
+      assert.ok(err instanceof FigmaRestFetchError);
+      assert.equal(err.errorClass, "request_invalid");
+      assert.doesNotMatch(err.message, /mailto:/u);
+      assert.doesNotMatch(err.message, /customer\.example/u);
+      return true;
+    },
+  );
+  assert.equal(calls, 0);
+});
+
+void test("fetchFigmaNodesForTestIntelligence returns multi-id node documents", async () => {
+  let seenUrl: string | undefined;
+  const fetchImpl = (async (url: string) => {
+    seenUrl = url;
+    return okJson({
+      name: "x",
+      lastModified: "2026-05-01T00:00:00Z",
+      version: "1",
+      nodes: {
+        "0:1": {
+          document: { id: "0:1", name: "One", type: "FRAME", children: [] },
+        },
+        "0:2": {
+          document: { id: "0:2", name: "Two", type: "FRAME", children: [] },
+        },
+      },
+    });
+  }) as unknown as typeof fetch;
+
+  const result = await fetchFigmaNodesForTestIntelligence({
+    fileKey: "ABC",
+    accessToken: "figd_test",
+    nodeIds: ["0:1", "0:2"],
+    fetchImpl,
+  });
+
+  assert.ok(seenUrl?.includes("/v1/files/ABC/nodes"));
+  assert.ok(seenUrl?.includes("ids=0%3A1%2C0%3A2"));
+  assert.equal(result.nodes.get("0:1")?.name, "One");
+  assert.equal(result.nodes.get("0:2")?.name, "Two");
+});
+
+void test("fetchFigmaNodesForTestIntelligence redacts secret-shaped node ids in diagnostics", async () => {
+  const secretLikeNodeId =
+    `${FIGMA_TOKEN_PREFIX}supersecret_node_token_value_1234567890`;
+  const fetchImpl = (async () => okJson({ nodes: {} })) as unknown as typeof fetch;
+
+  await assert.rejects(
+    () =>
+      fetchFigmaNodesForTestIntelligence({
+        fileKey: "ABC",
+        accessToken: "figd_test",
+        nodeIds: [secretLikeNodeId],
+        fetchImpl,
+      }),
+    (err: unknown): boolean => {
+      assert.ok(err instanceof FigmaRestFetchError);
+      assert.equal(err.errorClass, "not_found");
+      assert.doesNotMatch(err.message, /figd_supersecret/u);
+      return true;
+    },
+  );
+});
+
+void test("fetchFigmaImageMetadataForTestIntelligence persists only URL digests", async () => {
+  const fetchImpl = (async () =>
+    okJson({
+      images: {
+        "0:1": "https://figma-alpha-api.s3.us-west-2.amazonaws.com/0_1.png",
+        "0:2": null,
+      },
+    })) as unknown as typeof fetch;
+
+  const result = await fetchFigmaImageMetadataForTestIntelligence({
+    fileKey: "ABC",
+    accessToken: "figd_test",
+    nodeIds: ["0:1", "0:2"],
+    fetchImpl,
+  });
+
+  assert.equal(result.images[0]?.renderable, true);
+  assert.match(result.images[0]?.imageUrlDigest ?? "", /^[a-f0-9]{64}$/u);
+  assert.equal(result.images[1]?.renderable, false);
+  assert.equal(result.images[1]?.reason, "null");
+  assert.doesNotMatch(JSON.stringify(result), /https:\/\//u);
+});
+
+void test("fetchFigmaImageMetadataForTestIntelligence redacts secret-shaped node ids in diagnostics", async () => {
+  const secretLikeNodeId =
+    `${FIGMA_TOKEN_PREFIX}supersecret_image_token_value_1234567890`;
+  const fetchImpl = (async () =>
+    okJson({
+      images: {
+        [secretLikeNodeId]: 123,
+      },
+    })) as unknown as typeof fetch;
+
+  await assert.rejects(
+    () =>
+      fetchFigmaImageMetadataForTestIntelligence({
+        fileKey: "ABC",
+        accessToken: "figd_test",
+        nodeIds: [secretLikeNodeId],
+        fetchImpl,
+      }),
+    (err: unknown): boolean => {
+      assert.ok(err instanceof FigmaRestFetchError);
+      assert.equal(err.errorClass, "parse_error");
+      assert.doesNotMatch(err.message, /figd_supersecret/u);
+      return true;
+    },
+  );
+});
+
+void test("fetchFigmaNodesForTestIntelligence stops reading oversized streaming bodies", async () => {
+  let pulls = 0;
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      pulls += 1;
+      controller.enqueue(new Uint8Array(512));
+      if (pulls >= 10) controller.close();
+    },
+  });
+  const fetchImpl = (async () =>
+    new Response(body, {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })) as unknown as typeof fetch;
+
+  await assert.rejects(
+    () =>
+      fetchFigmaNodesForTestIntelligence({
+        fileKey: "ABC",
+        accessToken: "figd_test",
+        nodeIds: ["0:1", "0:2"],
+        fetchImpl,
+        maxResponseBytes: 1024,
+      }),
+    (err: unknown): boolean =>
+      err instanceof FigmaRestFetchError &&
+      err.errorClass === "transport" &&
+      /exceeds 1024 bytes/u.test(err.message),
+  );
+  assert.ok(pulls < 10, `expected early stream cancellation, got ${pulls} pulls`);
 });
 
 void test("fetchFigmaScreenCapturesForTestIntelligence resolves image lookup URLs and returns PNG captures", async () => {

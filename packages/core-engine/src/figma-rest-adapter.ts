@@ -24,8 +24,11 @@
  * a future consolidation is tracked separately.
  */
 
-import { sanitizeErrorMessage } from "@oscharko-dev/ti-security";
-import { redactHighRiskSecrets } from "@oscharko-dev/ti-security";
+import {
+  redactHighRiskSecrets,
+  sanitizeErrorMessage,
+  sha256Hex,
+} from "@oscharko-dev/ti-security";
 import { readFile } from "node:fs/promises";
 import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import * as tls from "node:tls";
@@ -35,6 +38,12 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_FIGMA_RETRY_AFTER_SECONDS = 1;
 const MAX_FIGMA_RETRY_AFTER_SECONDS = 60;
 const FIGMA_URL_DESIGN_PATH_RE = /^\/(?:design|file|proto)\/([^/]+)/u;
+const FIGMA_NODE_ID_RE = /^[A-Za-z0-9_.:;-]+$/u;
+const URI_LIKE_RE =
+  /(?:\b[A-Za-z][A-Za-z0-9+.-]*:\/\/|\b(?:mailto|tel|sms|urn|data|javascript):)\S+/iu;
+const URI_LIKE_GLOBAL_RE =
+  /(?:\b[A-Za-z][A-Za-z0-9+.-]*:\/\/|\b(?:mailto|tel|sms|urn|data|javascript):)\S+/giu;
+const FIGMA_TOKEN_LIKE_GLOBAL_RE = /\bfigd_[A-Za-z0-9_-]{8,}\b/giu;
 const DEFAULT_FIGMA_IMAGE_SCALE = 2;
 const ALLOWED_FIGMA_CDN_HOSTS: readonly string[] = [
   "figma.com",
@@ -66,7 +75,7 @@ export class FigmaRestFetchError extends Error {
   readonly retryAfterSeconds?: number;
   readonly figmaPlanTier?: string;
   readonly figmaRateLimitType?: string;
-  readonly figmaUpgradeLink?: string;
+  readonly figmaUpgradeLinkDigest?: string;
 
   constructor(input: {
     errorClass: FigmaRestFetchErrorClass;
@@ -76,7 +85,7 @@ export class FigmaRestFetchError extends Error {
     retryAfterSeconds?: number;
     figmaPlanTier?: string;
     figmaRateLimitType?: string;
-    figmaUpgradeLink?: string;
+    figmaUpgradeLinkDigest?: string;
     cause?: unknown;
   }) {
     super(
@@ -98,8 +107,8 @@ export class FigmaRestFetchError extends Error {
     if (input.figmaRateLimitType !== undefined) {
       this.figmaRateLimitType = input.figmaRateLimitType;
     }
-    if (input.figmaUpgradeLink !== undefined) {
-      this.figmaUpgradeLink = input.figmaUpgradeLink;
+    if (input.figmaUpgradeLinkDigest !== undefined) {
+      this.figmaUpgradeLinkDigest = input.figmaUpgradeLinkDigest;
     }
   }
 }
@@ -141,6 +150,11 @@ export interface FetchFigmaFileForTestIntelligenceInput {
   fileKey: string;
   accessToken: string;
   nodeId?: string;
+  /**
+   * Optional REST depth for bootstrap imports. Kept bounded so callers can
+   * discover page/top-level node structure without fetching huge boards.
+   */
+  depth?: number;
   /** Override for tests; production defaults to the hardened trusted fetch. */
   fetchImpl?: typeof fetch;
   /** Optional PEM CA bundle for enterprise TLS interception. */
@@ -149,6 +163,10 @@ export interface FetchFigmaFileForTestIntelligenceInput {
   timeoutMs?: number;
   /** Hard upper bound on the response body, in bytes (defaults to 32 MiB). */
   maxResponseBytes?: number;
+  /** Observer used by resumable import orchestration to persist safe metadata. */
+  onRateLimited?: FigmaRestRateLimitObserver;
+  /** Override for tests so 429 handling can be verified without wall-clock waits. */
+  sleepMs?: (ms: number) => Promise<void>;
 }
 
 const DEFAULT_MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
@@ -162,6 +180,62 @@ export interface FetchFigmaScreenCapturesForTestIntelligenceInput {
   timeoutMs?: number;
   maxResponseBytes?: number;
   scale?: number;
+}
+
+export interface FigmaRestRateLimitMetadata {
+  retryAfterSeconds?: number;
+  figmaPlanTier?: string;
+  figmaRateLimitType?: string;
+  figmaUpgradeLinkDigest?: string;
+}
+
+export type FigmaRestRateLimitObserver = (
+  metadata: Readonly<FigmaRestRateLimitMetadata>,
+) => void;
+
+export interface FetchFigmaNodesForTestIntelligenceInput {
+  fileKey: string;
+  accessToken: string;
+  nodeIds: readonly string[];
+  fetchImpl?: typeof fetch;
+  caCertPath?: string;
+  timeoutMs?: number;
+  maxResponseBytes?: number;
+  onRateLimited?: FigmaRestRateLimitObserver;
+  sleepMs?: (ms: number) => Promise<void>;
+}
+
+export interface FigmaRestNodeBatchSnapshot {
+  name: string;
+  lastModified?: string;
+  version?: string;
+  fileKey: string;
+  nodes: ReadonlyMap<string, FigmaRestNode>;
+}
+
+export interface FetchFigmaImageMetadataForTestIntelligenceInput {
+  fileKey: string;
+  accessToken: string;
+  nodeIds: readonly string[];
+  fetchImpl?: typeof fetch;
+  caCertPath?: string;
+  timeoutMs?: number;
+  maxResponseBytes?: number;
+  scale?: number;
+  onRateLimited?: FigmaRestRateLimitObserver;
+  sleepMs?: (ms: number) => Promise<void>;
+}
+
+export interface FigmaRestImageMetadataRecord {
+  nodeId: string;
+  renderable: boolean;
+  imageUrlDigest?: string;
+  reason?: "missing" | "null";
+}
+
+export interface FigmaRestImageMetadataBatch {
+  fileKey: string;
+  images: readonly FigmaRestImageMetadataRecord[];
 }
 
 /** Parse a public Figma URL and extract the (fileKey, nodeId?) pair. */
@@ -211,6 +285,13 @@ export const parseFigmaUrl = (
     rawNodeId === undefined || rawNodeId.length === 0
       ? undefined
       : rawNodeId.replace(/-/gu, ":");
+  if (nodeId !== undefined && !FIGMA_NODE_ID_RE.test(nodeId)) {
+    throw new FigmaRestFetchError({
+      errorClass: "request_invalid",
+      message: `figmaUrl node-id is invalid (${redactIdentifierForDiagnostics(nodeId)})`,
+      retryable: false,
+    });
+  }
   return nodeId === undefined ? { fileKey } : { fileKey, nodeId };
 };
 
@@ -242,10 +323,19 @@ export const fetchFigmaFileForTestIntelligence = async (
   const fetchImpl = resolveFigmaFetch(input.fetchImpl, input.caCertPath);
   const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxResponseBytes = input.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
-  const url = buildFigmaRestUrl(
+  const depth = resolveFigmaDepth(input.depth);
+  const nodeId =
     input.nodeId === undefined
-      ? { fileKey }
-      : { fileKey, nodeId: input.nodeId },
+      ? undefined
+      : normalizeNodeIds([input.nodeId])[0];
+  const url = buildFigmaRestUrl(
+    nodeId === undefined
+      ? depth === undefined
+        ? { fileKey }
+        : { fileKey, depth }
+      : depth === undefined
+        ? { fileKey, nodeId }
+        : { fileKey, nodeId, depth },
   );
   // Hard gate: the constructed URL must point at api.figma.com over https.
   // If a future change introduces a path-template bug, this assertion fails
@@ -263,7 +353,7 @@ export const fetchFigmaFileForTestIntelligence = async (
   }
 
   const dispatchInput =
-    input.nodeId === undefined
+    nodeId === undefined
       ? {
           url,
           accessToken: input.accessToken,
@@ -271,15 +361,23 @@ export const fetchFigmaFileForTestIntelligence = async (
           timeoutMs,
           maxResponseBytes,
           fetchImpl,
+          ...(input.onRateLimited !== undefined
+            ? { onRateLimited: input.onRateLimited }
+            : {}),
+          ...(input.sleepMs !== undefined ? { sleepMs: input.sleepMs } : {}),
         }
       : {
           url,
           accessToken: input.accessToken,
           fileKey,
-          nodeId: input.nodeId,
+          nodeId,
           timeoutMs,
           maxResponseBytes,
           fetchImpl,
+          ...(input.onRateLimited !== undefined
+            ? { onRateLimited: input.onRateLimited }
+            : {}),
+          ...(input.sleepMs !== undefined ? { sleepMs: input.sleepMs } : {}),
         };
   let lastError: FigmaRestFetchError | undefined;
   for (let attempt = 1; attempt <= 2; attempt += 1) {
@@ -299,11 +397,12 @@ export const fetchFigmaFileForTestIntelligence = async (
     if (!(result instanceof FigmaRestFetchError)) {
       return result;
     }
+    recordRateLimitMetadataFromError(result, input.onRateLimited);
     lastError = result;
     if (!result.retryable || attempt === 2) {
       throw result;
     }
-    if (!(await waitBeforeRetryingFigmaRequest(result))) {
+    if (!(await waitBeforeRetryingFigmaRequest(result, input.sleepMs))) {
       throw result;
     }
   }
@@ -454,16 +553,241 @@ export const fetchFigmaScreenCapturesForTestIntelligence = async (
   );
 };
 
+export const fetchFigmaNodesForTestIntelligence = async (
+  input: FetchFigmaNodesForTestIntelligenceInput,
+): Promise<FigmaRestNodeBatchSnapshot> => {
+  const fileKey = normalizeRequiredFigmaInput("fileKey", input.fileKey);
+  const accessToken = normalizeRequiredFigmaInput(
+    "accessToken",
+    input.accessToken,
+  );
+  const nodeIds = normalizeNodeIds(input.nodeIds);
+  const nodes = new Map<string, FigmaRestNode>();
+  if (nodeIds.length === 0) {
+    return { name: fileKey, fileKey, nodes };
+  }
+  const fetchImpl = resolveFigmaFetch(input.fetchImpl, input.caCertPath);
+  const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const maxResponseBytes = input.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
+  const url = buildFigmaNodesLookupUrl({ fileKey, nodeIds });
+  assertFigmaApiUrlIsSafe(url);
+  const response = await dispatchHttpRequest({
+    url,
+    accessToken,
+    fetchImpl,
+    timeoutMs,
+    ...(input.onRateLimited !== undefined
+      ? { onRateLimited: input.onRateLimited }
+      : {}),
+    ...(input.sleepMs !== undefined ? { sleepMs: input.sleepMs } : {}),
+  });
+  const payload = await readBoundedJsonObject({
+    response,
+    maxResponseBytes,
+    parseErrorMessage: "Figma REST node batch response body is not valid JSON",
+    shapeErrorMessage: "Figma REST node batch response is not a JSON object",
+  });
+  const rawNodes = payload.nodes;
+  if (typeof rawNodes !== "object" || rawNodes === null) {
+    throw new FigmaRestFetchError({
+      errorClass: "parse_error",
+      message: "Figma REST node batch response is missing 'nodes'",
+      retryable: false,
+    });
+  }
+  for (const nodeId of nodeIds) {
+    const entry = (rawNodes as Record<string, unknown>)[nodeId];
+    if (typeof entry !== "object" || entry === null) {
+      throw new FigmaRestFetchError({
+        errorClass: "not_found",
+        message: `Figma REST returned no node entry for '${redactIdentifierForDiagnostics(nodeId)}'`,
+        retryable: false,
+      });
+    }
+    const document = (entry as Record<string, unknown>).document;
+    if (typeof document !== "object" || document === null) {
+      throw new FigmaRestFetchError({
+        errorClass: "parse_error",
+        message: `Figma REST node entry '${redactIdentifierForDiagnostics(nodeId)}' has no 'document'`,
+        retryable: false,
+      });
+    }
+    nodes.set(nodeId, document as FigmaRestNode);
+  }
+  const name = typeof payload.name === "string" ? payload.name : fileKey;
+  const lastModified =
+    typeof payload.lastModified === "string" ? payload.lastModified : undefined;
+  const version =
+    typeof payload.version === "string" ? payload.version : undefined;
+  return {
+    name,
+    ...(lastModified !== undefined ? { lastModified } : {}),
+    ...(version !== undefined ? { version } : {}),
+    fileKey,
+    nodes,
+  };
+};
+
+export const fetchFigmaImageMetadataForTestIntelligence = async (
+  input: FetchFigmaImageMetadataForTestIntelligenceInput,
+): Promise<FigmaRestImageMetadataBatch> => {
+  const fileKey = normalizeRequiredFigmaInput("fileKey", input.fileKey);
+  const accessToken = normalizeRequiredFigmaInput(
+    "accessToken",
+    input.accessToken,
+  );
+  const nodeIds = normalizeNodeIds(input.nodeIds);
+  if (nodeIds.length === 0) return { fileKey, images: [] };
+  const fetchImpl = resolveFigmaFetch(input.fetchImpl, input.caCertPath);
+  const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const maxResponseBytes = input.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
+  const scale = clampImageScale(input.scale ?? DEFAULT_FIGMA_IMAGE_SCALE);
+  const url = buildFigmaImageLookupUrl({ fileKey, screenIds: nodeIds, scale });
+  assertFigmaApiUrlIsSafe(url);
+  const response = await dispatchHttpRequest({
+    url,
+    accessToken,
+    fetchImpl,
+    timeoutMs,
+    ...(input.onRateLimited !== undefined
+      ? { onRateLimited: input.onRateLimited }
+      : {}),
+    ...(input.sleepMs !== undefined ? { sleepMs: input.sleepMs } : {}),
+  });
+  const payload = await readBoundedJsonObject({
+    response,
+    maxResponseBytes,
+    parseErrorMessage: "Figma image metadata response body is not valid JSON",
+    shapeErrorMessage: "Figma image metadata response is not a JSON object",
+  });
+  if (typeof payload.images !== "object" || payload.images === null) {
+    throw new FigmaRestFetchError({
+      errorClass: "parse_error",
+      message: "Figma image metadata response is missing an images map",
+      retryable: false,
+    });
+  }
+  const rawImages = payload.images as Record<string, unknown>;
+  const images = nodeIds.map((nodeId): FigmaRestImageMetadataRecord => {
+    const imageUrl = rawImages[nodeId];
+    if (imageUrl === undefined) {
+      return { nodeId, renderable: false, reason: "missing" };
+    }
+    if (imageUrl === null) {
+      return { nodeId, renderable: false, reason: "null" };
+    }
+    if (typeof imageUrl !== "string" || imageUrl.trim().length === 0) {
+      throw new FigmaRestFetchError({
+        errorClass: "parse_error",
+        message: `Figma image metadata for '${redactIdentifierForDiagnostics(nodeId)}' is not a URL string`,
+        retryable: false,
+      });
+    }
+    assertFigmaCdnUrlIsSafe(imageUrl);
+    return {
+      nodeId,
+      renderable: true,
+      imageUrlDigest: sha256Hex({ kind: "figma_image_url", imageUrl }),
+    };
+  });
+  return { fileKey, images };
+};
+
 const buildFigmaRestUrl = (input: {
   fileKey: string;
   nodeId?: string;
+  depth?: number;
 }): string => {
   const file = encodeURIComponent(input.fileKey);
+  const params =
+    input.depth === undefined
+      ? ""
+      : `?${new URLSearchParams({ depth: String(input.depth) }).toString()}`;
   if (input.nodeId === undefined) {
-    return `https://${FIGMA_REST_HOST}/v1/files/${file}`;
+    return `https://${FIGMA_REST_HOST}/v1/files/${file}${params}`;
   }
-  const ids = encodeURIComponent(input.nodeId);
-  return `https://${FIGMA_REST_HOST}/v1/files/${file}/nodes?ids=${ids}`;
+  const search = new URLSearchParams({ ids: input.nodeId });
+  if (input.depth !== undefined) {
+    search.set("depth", String(input.depth));
+  }
+  return `https://${FIGMA_REST_HOST}/v1/files/${file}/nodes?${search.toString()}`;
+};
+
+const buildFigmaNodesLookupUrl = (input: {
+  fileKey: string;
+  nodeIds: readonly string[];
+}): string => {
+  const params = new URLSearchParams({
+    ids: input.nodeIds.join(","),
+  });
+  return `https://${FIGMA_REST_HOST}/v1/files/${encodeURIComponent(input.fileKey)}/nodes?${params.toString()}`;
+};
+
+const assertFigmaApiUrlIsSafe = (url: string): void => {
+  const parsed = new URL(url);
+  if (
+    parsed.protocol !== "https:" ||
+    parsed.hostname.toLowerCase() !== FIGMA_REST_HOST
+  ) {
+    throw new FigmaRestFetchError({
+      errorClass: "ssrf_refused",
+      message: `internal URL guard refused destination ${parsed.host}`,
+      retryable: false,
+    });
+  }
+};
+
+const normalizeRequiredFigmaInput = (
+  label: "fileKey" | "accessToken",
+  value: string,
+): string => {
+  const normalized = value.trim();
+  if (normalized.length === 0) {
+    throw new FigmaRestFetchError({
+      errorClass: "request_invalid",
+      message: `${label} is required`,
+      retryable: false,
+    });
+  }
+  return normalized;
+};
+
+const normalizeNodeIds = (nodeIds: readonly string[]): readonly string[] => {
+  const normalized = nodeIds.map((nodeId) => nodeId.trim());
+  const unique = [...new Set(normalized)];
+  if (unique.some((nodeId) => nodeId.length === 0)) {
+    throw new FigmaRestFetchError({
+      errorClass: "request_invalid",
+      message: "nodeIds must not contain empty values",
+      retryable: false,
+    });
+  }
+  const invalid = unique.find(
+    (nodeId) => !FIGMA_NODE_ID_RE.test(nodeId) || URI_LIKE_RE.test(nodeId),
+  );
+  if (invalid !== undefined) {
+    throw new FigmaRestFetchError({
+      errorClass: "request_invalid",
+      message: `nodeId is invalid (${redactIdentifierForDiagnostics(invalid)})`,
+      retryable: false,
+    });
+  }
+  return unique;
+};
+
+const redactIdentifierForDiagnostics = (value: string): string =>
+  redactBoundedMessage(value).replace(URI_LIKE_GLOBAL_RE, "[URI_REDACTED]");
+
+const resolveFigmaDepth = (depth: number | undefined): number | undefined => {
+  if (depth === undefined) return undefined;
+  if (!Number.isInteger(depth) || depth <= 0 || depth > 10) {
+    throw new FigmaRestFetchError({
+      errorClass: "request_invalid",
+      message: "depth must be an integer between 1 and 10",
+      retryable: false,
+    });
+  }
+  return depth;
 };
 
 const buildFigmaImageLookupUrl = (input: {
@@ -490,21 +814,16 @@ const resolveFigmaFetch = (
   return createTrustedFigmaFetch(caCertPath);
 };
 
-interface FigmaRateLimitMetadata {
-  retryAfterSeconds?: number;
-  figmaPlanTier?: string;
-  figmaRateLimitType?: string;
-  figmaUpgradeLink?: string;
-}
-
 const buildFigmaRateLimitMetadata = (
   response: Response,
-): FigmaRateLimitMetadata => {
+): FigmaRestRateLimitMetadata => {
   const retryAfterSeconds = parseRetryAfterSeconds(
     response.headers.get("retry-after"),
   );
-  const planTier = nonEmptyHeader(response.headers.get("x-figma-plan-tier"));
-  const rateLimitType = nonEmptyHeader(
+  const planTier = sanitizeRateLimitHeaderLabel(
+    response.headers.get("x-figma-plan-tier"),
+  );
+  const rateLimitType = sanitizeRateLimitHeaderLabel(
     response.headers.get("x-figma-rate-limit-type"),
   );
   const upgradeLink = nonEmptyHeader(
@@ -516,12 +835,19 @@ const buildFigmaRateLimitMetadata = (
     ...(rateLimitType !== undefined
       ? { figmaRateLimitType: rateLimitType }
       : {}),
-    ...(upgradeLink !== undefined ? { figmaUpgradeLink: upgradeLink } : {}),
+    ...(upgradeLink !== undefined
+      ? {
+          figmaUpgradeLinkDigest: sha256Hex({
+            kind: "figma_upgrade_link",
+            figmaUpgradeLink: upgradeLink,
+          }),
+        }
+      : {}),
   };
 };
 
 const buildFigmaRateLimitMessage = (
-  metadata: FigmaRateLimitMetadata,
+  metadata: FigmaRestRateLimitMetadata,
 ): string => {
   const details: string[] = [];
   if (metadata.retryAfterSeconds !== undefined) {
@@ -557,8 +883,18 @@ const nonEmptyHeader = (value: string | null): string | undefined => {
   return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
 };
 
+const sanitizeRateLimitHeaderLabel = (value: string | null): string | undefined => {
+  const sanitized = nonEmptyHeader(value);
+  if (sanitized === undefined) return undefined;
+  const redacted = redactBoundedMessage(sanitized)
+    .replace(/[^\w.[\]-]+/gu, "_")
+    .slice(0, 120);
+  return redacted.length === 0 ? undefined : redacted;
+};
+
 const waitBeforeRetryingFigmaRequest = async (
   error: FigmaRestFetchError,
+  sleepImpl: (ms: number) => Promise<void> = sleep,
 ): Promise<boolean> => {
   if (error.errorClass !== "rate_limited") return true;
   const retryAfterSeconds =
@@ -567,9 +903,30 @@ const waitBeforeRetryingFigmaRequest = async (
     return false;
   }
   if (retryAfterSeconds > 0) {
-    await sleep(retryAfterSeconds * 1000);
+    await sleepImpl(retryAfterSeconds * 1000);
   }
   return true;
+};
+
+const recordRateLimitMetadataFromError = (
+  error: FigmaRestFetchError,
+  observer: FigmaRestRateLimitObserver | undefined,
+): void => {
+  if (observer === undefined || error.errorClass !== "rate_limited") return;
+  observer({
+    ...(error.retryAfterSeconds !== undefined
+      ? { retryAfterSeconds: error.retryAfterSeconds }
+      : {}),
+    ...(error.figmaPlanTier !== undefined
+      ? { figmaPlanTier: error.figmaPlanTier }
+      : {}),
+    ...(error.figmaRateLimitType !== undefined
+      ? { figmaRateLimitType: error.figmaRateLimitType }
+      : {}),
+    ...(error.figmaUpgradeLinkDigest !== undefined
+      ? { figmaUpgradeLinkDigest: error.figmaUpgradeLinkDigest }
+      : {}),
+  });
 };
 
 const sleep = (ms: number): Promise<void> =>
@@ -747,6 +1104,8 @@ const dispatchOnce = async (input: {
   timeoutMs: number;
   maxResponseBytes: number;
   fetchImpl: typeof fetch;
+  onRateLimited?: FigmaRestRateLimitObserver;
+  sleepMs?: (ms: number) => Promise<void>;
 }): Promise<FigmaRestFileSnapshot | FigmaRestFetchError> => {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), input.timeoutMs);
@@ -860,15 +1219,131 @@ const readBoundedText = async (
   response: Response,
   maxBytes: number,
 ): Promise<string> => {
-  const text = await response.text();
-  if (Buffer.byteLength(text, "utf8") > maxBytes) {
+  const contentLength = response.headers.get("content-length");
+  if (contentLength !== null) {
+    const expectedBytes = Number(contentLength);
+    if (Number.isFinite(expectedBytes) && expectedBytes > maxBytes) {
+      await drainBody(response);
+      throw new FigmaRestFetchError({
+        errorClass: "transport",
+        message: `Figma REST response exceeds ${maxBytes} bytes`,
+        retryable: false,
+      });
+    }
+  }
+  if (response.body === null) return "";
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value === undefined) continue;
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBytes) {
+        await reader.cancel();
+        throw new FigmaRestFetchError({
+          errorClass: "transport",
+          message: `Figma REST response exceeds ${maxBytes} bytes`,
+          retryable: false,
+        });
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const body = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(body);
+};
+
+const readBoundedBytes = async (
+  response: Response,
+  maxBytes: number,
+  label: string,
+): Promise<Uint8Array> => {
+  const contentLength = response.headers.get("content-length");
+  if (contentLength !== null) {
+    const expectedBytes = Number(contentLength);
+    if (Number.isFinite(expectedBytes) && expectedBytes > maxBytes) {
+      await drainBody(response);
+      throw new FigmaRestFetchError({
+        errorClass: "transport",
+        message: `${label} exceeds ${maxBytes} bytes`,
+        retryable: false,
+      });
+    }
+  }
+  if (response.body === null) return new Uint8Array();
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value === undefined) continue;
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBytes) {
+        await reader.cancel();
+        throw new FigmaRestFetchError({
+          errorClass: "transport",
+          message: `${label} exceeds ${maxBytes} bytes`,
+          retryable: false,
+        });
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+};
+
+const readBoundedJsonObject = async (input: {
+  response: Response;
+  maxResponseBytes: number;
+  parseErrorMessage: string;
+  shapeErrorMessage: string;
+}): Promise<Record<string, unknown>> => {
+  const bodyText = await readBoundedText(
+    input.response,
+    input.maxResponseBytes,
+  );
+  let payload: unknown;
+  try {
+    payload = JSON.parse(bodyText) as unknown;
+  } catch {
     throw new FigmaRestFetchError({
-      errorClass: "transport",
-      message: `Figma REST response exceeds ${maxBytes} bytes`,
+      errorClass: "parse_error",
+      message: input.parseErrorMessage,
       retryable: false,
     });
   }
-  return text;
+  if (
+    typeof payload !== "object" ||
+    payload === null ||
+    Array.isArray(payload)
+  ) {
+    throw new FigmaRestFetchError({
+      errorClass: "parse_error",
+      message: input.shapeErrorMessage,
+      retryable: false,
+    });
+  }
+  return payload as Record<string, unknown>;
 };
 
 const interpretFigmaResponse = (input: {
@@ -907,7 +1382,7 @@ const interpretFigmaResponse = (input: {
     if (typeof entry !== "object" || entry === null) {
       return new FigmaRestFetchError({
         errorClass: "not_found",
-        message: `Figma REST returned no node entry for '${input.nodeId}'`,
+        message: `Figma REST returned no node entry for '${redactIdentifierForDiagnostics(input.nodeId)}'`,
         retryable: false,
       });
     }
@@ -915,7 +1390,7 @@ const interpretFigmaResponse = (input: {
     if (typeof document !== "object" || document === null) {
       return new FigmaRestFetchError({
         errorClass: "parse_error",
-        message: `Figma REST node entry '${input.nodeId}' has no 'document'`,
+        message: `Figma REST node entry '${redactIdentifierForDiagnostics(input.nodeId)}' has no 'document'`,
         retryable: false,
       });
     }
@@ -1032,14 +1507,11 @@ const fetchFigmaScreenshotBytes = async (input: {
     fetchImpl: input.fetchImpl,
     timeoutMs: input.timeoutMs,
   });
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  if (bytes.byteLength > input.maxResponseBytes) {
-    throw new FigmaRestFetchError({
-      errorClass: "transport",
-      message: `Figma screenshot response exceeds ${input.maxResponseBytes} bytes`,
-      retryable: false,
-    });
-  }
+  const bytes = await readBoundedBytes(
+    response,
+    input.maxResponseBytes,
+    "Figma screenshot response",
+  );
   if (!isValidPngBytes(bytes)) {
     throw new FigmaRestFetchError({
       errorClass: "parse_error",
@@ -1055,6 +1527,8 @@ const dispatchHttpRequest = async (input: {
   accessToken?: string;
   fetchImpl: typeof fetch;
   timeoutMs: number;
+  onRateLimited?: FigmaRestRateLimitObserver;
+  sleepMs?: (ms: number) => Promise<void>;
 }): Promise<Response> => {
   let lastError: FigmaRestFetchError | undefined;
   for (let attempt = 1; attempt <= 2; attempt += 1) {
@@ -1079,11 +1553,12 @@ const dispatchHttpRequest = async (input: {
       if (!(handled instanceof FigmaRestFetchError)) {
         return handled;
       }
+      recordRateLimitMetadataFromError(handled, input.onRateLimited);
       lastError = handled;
       if (!handled.retryable || attempt === 2) {
         throw handled;
       }
-      if (!(await waitBeforeRetryingFigmaRequest(handled))) {
+      if (!(await waitBeforeRetryingFigmaRequest(handled, input.sleepMs))) {
         throw handled;
       }
     } catch (err) {
@@ -1103,10 +1578,11 @@ const dispatchHttpRequest = async (input: {
               cause: err,
             });
       lastError = normalized;
+      recordRateLimitMetadataFromError(normalized, input.onRateLimited);
       if (!normalized.retryable || attempt === 2) {
         throw normalized;
       }
-      if (!(await waitBeforeRetryingFigmaRequest(normalized))) {
+      if (!(await waitBeforeRetryingFigmaRequest(normalized, input.sleepMs))) {
         throw normalized;
       }
     } finally {
@@ -1260,6 +1736,8 @@ const normalizeFigmaTransportErrorMessage = (input: unknown): string => {
 
 const redactBoundedMessage = (input: string): string => {
   const redacted = redactHighRiskSecrets(input, "[REDACTED]")
+    .replace(FIGMA_TOKEN_LIKE_GLOBAL_RE, "[REDACTED]")
+    .replace(URI_LIKE_GLOBAL_RE, "[URI_REDACTED]")
     .replace(/\s+/g, " ")
     .trim();
   if (redacted.length <= MAX_REDACTED_MESSAGE_LENGTH) return redacted;

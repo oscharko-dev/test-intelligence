@@ -33,6 +33,7 @@ const SOURCE = {
   sourceUrlHash: "b".repeat(64),
   nodeId: "12:34",
 } as const;
+const FIGMA_TOKEN_PREFIX = "figd" + "_";
 
 const MANIFEST_BASE = {
   schemaVersion: FIGMA_SNAPSHOT_MANIFEST_SCHEMA_VERSION,
@@ -260,6 +261,20 @@ void test("figma snapshot vault: rejects token-bearing and raw-URL content", () 
         }),
       ),
     /raw URL/,
+  );
+
+  assert.throws(
+    () =>
+      validateFigmaSnapshotImportStatus(
+        withDigest({
+          ...IMPORT_STATUS_BASE,
+          source: {
+            ...IMPORT_STATUS_BASE.source,
+            nodeId: `${FIGMA_TOKEN_PREFIX}supersecret_checkpoint_node_value_1234567890`,
+          },
+        }),
+      ),
+    /token-bearing content/,
   );
 });
 
