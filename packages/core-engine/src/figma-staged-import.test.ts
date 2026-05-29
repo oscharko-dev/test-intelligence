@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 
 import type { TenantScope } from "@oscharko-dev/ti-contracts";
@@ -113,6 +121,7 @@ interface MockFigmaFetchOptions {
   readonly failNodeIds?: ReadonlySet<string>;
   readonly oversizedNodeBatches?: boolean;
   readonly oversizedImageBatches?: boolean;
+  readonly oversizedSingletonBatches?: boolean;
   readonly rateLimitBootstrap?: boolean;
   readonly rateLimitBootstrapAlways?: boolean;
   readonly rateLimitFirstNodeBatch?: boolean;
@@ -176,14 +185,20 @@ const createMockFigmaFetch = (
         if (ids.some((nodeId) => options.failNodeIds?.has(nodeId) === true)) {
           return errJson(503, { err: "transient" });
         }
-        if (options.oversizedNodeBatches === true && ids.length > 1) {
+        if (
+          options.oversizedSingletonBatches === true ||
+          (options.oversizedNodeBatches === true && ids.length > 1)
+        ) {
           return new Response("x".repeat(2200), { status: 200 });
         }
         return okJson(createNodesResponse(ids));
       }
       if (url.pathname === `/v1/images/${FILE_KEY}`) {
         const ids = parseIds(url);
-        if (options.oversizedImageBatches === true && ids.length > 1) {
+        if (
+          options.oversizedSingletonBatches === true ||
+          (options.oversizedImageBatches === true && ids.length > 1)
+        ) {
           return new Response("x".repeat(2200), { status: 200 });
         }
         return okJson(createImagesResponse(ids));
@@ -275,11 +290,24 @@ void test("staged import completes large boards through bounded REST batches and
   );
   assert.equal(result.previewManifest.previewStatus, "complete");
   assert.ok(result.previewManifest.assets.length > 0);
+  assert.equal(result.previewManifest.budget?.candidateTileCount, 5);
+  assert.equal(result.previewManifest.budget?.skippedTileCount, 0);
   assert.equal(
     result.previewManifest.assets.length,
     result.previewManifest.tiles.length,
   );
   assert.equal(result.nodeIndex.nodes.length, nodeIds.length * 2);
+  assert.equal(result.importStatus.metrics?.nodeCount, nodeIds.length * 2);
+  assert.equal(result.importStatus.metrics?.chunkCount, nodeIds.length * 2);
+  assert.equal(
+    result.importStatus.metrics?.previewCount,
+    result.previewManifest.assets.length,
+  );
+  assert.equal(result.importStatus.metrics?.skippedPreviewCount, 0);
+  assert.equal(result.importStatus.metrics?.liveRestCallCount, 7);
+  assert.ok((result.importStatus.metrics?.payloadBytes ?? 0) > 0);
+  assert.ok((result.importStatus.metrics?.peakWorkingSetBytes ?? 0) > 0);
+  assert.ok((result.importStatus.metrics?.peakHeapUsedBytes ?? 0) > 0);
   assert.equal(
     result.importStatus.credential?.authMode,
     "personal_access_token",
@@ -290,7 +318,10 @@ void test("staged import completes large boards through bounded REST batches and
     "figma-import-budget/v1",
   );
   assert.equal(result.importStatus.budget?.resourceType, "image_metadata");
-  assert.equal("tokenResourceKeyHash" in (result.importStatus.budget ?? {}), false);
+  assert.equal(
+    "tokenResourceKeyHash" in (result.importStatus.budget ?? {}),
+    false,
+  );
   assert.ok((result.importStatus.budget?.remainingRequests ?? 0) > 0);
   assert.equal(mock.maxConcurrency(), 1);
   assert.equal(
@@ -327,9 +358,13 @@ void test("staged import source identity ignores sensitive Figma URL query mater
   const clean = await importWithMock(cleanWorkspaceRoot, cleanMock, {
     figmaUrl: `https://www.figma.com/design/${FILE_KEY}/Customer-Board?node-id=1-1`,
   });
-  const sensitive = await importWithMock(sensitiveWorkspaceRoot, sensitiveMock, {
-    figmaUrl: `https://www.figma.com/design/${FILE_KEY}/Customer-Board?node-id=1-1&access_token=private-token&private_share=tenant-secret`,
-  });
+  const sensitive = await importWithMock(
+    sensitiveWorkspaceRoot,
+    sensitiveMock,
+    {
+      figmaUrl: `https://www.figma.com/design/${FILE_KEY}/Customer-Board?node-id=1-1&access_token=private-token&private_share=tenant-secret`,
+    },
+  );
 
   assert.equal(sensitive.snapshotId, clean.snapshotId);
   assert.equal(
@@ -361,10 +396,7 @@ void test("staged import honors Retry-After and records sanitized rate-limit met
   assert.equal("figmaRateLimitType" in result.importStatus.rateLimit, false);
   assert.equal("remediation" in result.importStatus.rateLimit, false);
   assert.equal(result.rateLimitDiagnostics?.figmaPlanTier, "enterprise");
-  assert.equal(
-    result.rateLimitDiagnostics?.figmaRateLimitType,
-    "file_content",
-  );
+  assert.equal(result.rateLimitDiagnostics?.figmaRateLimitType, "file_content");
   assert.equal(
     result.rateLimitDiagnostics?.remediation?.scenario,
     "high_limit",
@@ -409,10 +441,7 @@ void test("staged import attaches sanitized diagnostics to bootstrap rate-limit 
       assert.equal(err.failureClass, "throttled");
       assert.equal(err.rateLimitDiagnostics?.retryAfterSeconds, 3);
       assert.equal(err.rateLimitDiagnostics?.figmaPlanTier, "starter");
-      assert.equal(
-        err.rateLimitDiagnostics?.figmaRateLimitType,
-        "low_limit",
-      );
+      assert.equal(err.rateLimitDiagnostics?.figmaRateLimitType, "low_limit");
       assert.equal(
         err.rateLimitDiagnostics?.remediation?.scenario,
         "low_limit",
@@ -476,6 +505,86 @@ void test("staged import refuses locally when per-resource request budget is exh
   assert.match(persisted, /"failureClass":"budget_exhausted"/u);
 });
 
+void test("staged import enforces large-board node, payload, preview, time, and memory budgets", async () => {
+  const nodeIds = ["1:1", "1:2", "1:3"];
+
+  const assertBudgetFailure = async (input: {
+    readonly policy: Parameters<typeof importWithMock>[2]["largeBoardPolicy"];
+    readonly expectedFailureClass: string;
+    readonly nowMs?: () => number;
+  }): Promise<void> => {
+    const workspaceRoot = await createWorkspaceRoot();
+    const mock = createMockFigmaFetch({ nodeIds });
+    await assert.rejects(
+      () =>
+        importWithMock(workspaceRoot, mock, {
+          figmaUrl: `https://www.figma.com/design/${FILE_KEY}/Customer-Board`,
+          largeBoardPolicy: input.policy,
+          ...(input.nowMs !== undefined ? { monotonicNowMs: input.nowMs } : {}),
+          memoryUsage: () => ({ heapUsed: 256 }),
+        }),
+      (err: unknown): boolean => {
+        assert.ok(err instanceof FigmaStagedImportError);
+        assert.equal(err.failureClass, input.expectedFailureClass);
+        assert.doesNotMatch(err.message, /https:\/\//u);
+        assert.doesNotMatch(err.message, /figd_/u);
+        return true;
+      },
+    );
+    const persisted = await readAllPersistedText(workspaceRoot);
+    assert.doesNotMatch(persisted, new RegExp(ACCESS_TOKEN, "u"));
+  };
+
+  await assertBudgetFailure({
+    policy: { maxNodeCount: 1 },
+    expectedFailureClass: "oversized_board",
+  });
+  await assertBudgetFailure({
+    policy: { maxPayloadBytes: 1 },
+    expectedFailureClass: "oversized_board",
+  });
+  await assertBudgetFailure({
+    policy: { maxPreviewBytes: 1 },
+    expectedFailureClass: "oversized_board",
+  });
+  await assertBudgetFailure({
+    policy: { maxWorkingSetBytes: 1 },
+    expectedFailureClass: "budget_exhausted",
+  });
+  let tick = 0;
+  await assertBudgetFailure({
+    policy: { maxElapsedMs: 1 },
+    expectedFailureClass: "budget_exhausted",
+    nowMs: () => {
+      tick += 2;
+      return tick;
+    },
+  });
+});
+
+void test("staged import bounds preview generation deterministically for large boards", async () => {
+  const nodeIds = Array.from({ length: 80 }, (_, index) => `1:${index + 1}`);
+  const workspaceRoot = await createWorkspaceRoot();
+  const mock = createMockFigmaFetch({ nodeIds });
+
+  const result = await importWithMock(workspaceRoot, mock, {
+    figmaUrl: `https://www.figma.com/design/${FILE_KEY}/Customer-Board`,
+    nodeBatchSize: 16,
+    imageBatchSize: 16,
+    largeBoardPolicy: { maxPreviewTiles: 7 },
+  });
+
+  assert.equal(result.previewManifest.assets.length, 7);
+  assert.equal(result.previewManifest.tiles.length, 7);
+  assert.equal(result.previewManifest.boundedPreview, true);
+  assert.equal(result.previewManifest.budget?.maxTiles, 7);
+  assert.equal(result.previewManifest.budget?.candidateTileCount, 80);
+  assert.equal(result.previewManifest.budget?.skippedTileCount, 73);
+  assert.equal(result.importStatus.limits?.maxPreviewTiles, 7);
+  assert.equal(result.importStatus.metrics?.previewCount, 7);
+  assert.equal(result.importStatus.metrics?.skippedPreviewCount, 73);
+});
+
 void test("staged import adaptively splits oversized node and image batches", async () => {
   const nodeIds = ["1:1", "1:2", "1:3", "1:4"];
   const workspaceRoot = await createWorkspaceRoot();
@@ -526,6 +635,31 @@ void test("staged import adaptively splits oversized node and image batches", as
         url.pathname === `/v1/images/${FILE_KEY}` && parseIds(url).length === 1,
     ),
     4,
+  );
+});
+
+void test("staged import fails closed when a singleton REST batch exceeds payload caps", async () => {
+  const workspaceRoot = await createWorkspaceRoot();
+  const mock = createMockFigmaFetch({
+    nodeIds: ["1:1"],
+    oversizedSingletonBatches: true,
+  });
+
+  await assert.rejects(
+    () =>
+      importWithMock(workspaceRoot, mock, {
+        figmaUrl: `https://www.figma.com/design/${FILE_KEY}/Customer-Board`,
+        nodeBatchSize: 1,
+        maxResponseBytes: 2000,
+      }),
+    (err: unknown): boolean => {
+      assert.ok(err instanceof FigmaStagedImportError);
+      assert.equal(err.errorCode, "figma_fetch_failed");
+      assert.equal(err.failureClass, "transport");
+      assert.equal(err.checkpoint?.lifecycleState, "failed");
+      assert.doesNotMatch(err.message, /https:\/\//u);
+      return true;
+    },
   );
 });
 
@@ -605,6 +739,29 @@ void test("staged import resumes a safe checkpoint after interruption", async ()
     },
   );
 
+  const budgetMock = createMockFigmaFetch({ nodeIds });
+  await assert.rejects(
+    () =>
+      importWithMock(workspaceRoot, budgetMock, {
+        figmaUrl: `https://www.figma.com/design/${FILE_KEY}/Customer-Board`,
+        nodeBatchSize: 1,
+        checkpoint,
+        largeBoardPolicy: { maxPayloadBytes: 1 },
+      }),
+    (err: unknown): boolean => {
+      assert.ok(err instanceof FigmaStagedImportError);
+      assert.equal(err.failureClass, "oversized_board");
+      return true;
+    },
+  );
+  assert.equal(
+    countRequests(
+      budgetMock,
+      (url) => url.pathname === `/v1/files/${FILE_KEY}/nodes`,
+    ),
+    0,
+  );
+
   const secondMock = createMockFigmaFetch({ nodeIds });
   const resumed = await importWithMock(workspaceRoot, secondMock, {
     figmaUrl: `https://www.figma.com/design/${FILE_KEY}/Customer-Board`,
@@ -616,6 +773,10 @@ void test("staged import resumes a safe checkpoint after interruption", async ()
   assert.ok(
     resumed.reusedChunkIds.some((chunkId) => chunkId.startsWith("node-")),
   );
+  assert.equal(resumed.importStatus.metrics?.cacheHitCount, 1);
+  assert.equal(resumed.importStatus.metrics?.resumedChunkCount, 1);
+  assert.equal(resumed.importStatus.metrics?.liveRestCallsAvoided, 1);
+  assert.ok((resumed.importStatus.metrics?.payloadBytes ?? 0) > 0);
   const requestedNodeIds = secondMock.requestedUrls
     .map((rawUrl) => new URL(rawUrl))
     .filter((url) => url.pathname === `/v1/files/${FILE_KEY}/nodes`)
@@ -639,6 +800,20 @@ void test("staged import reuses unchanged cached chunks on repeated imports", as
   assert.equal(second.snapshotId, first.snapshotId);
   assert.deepEqual(second.previewManifest, first.previewManifest);
   assert.equal(second.reusedChunkIds.length, first.importStatus.chunks.length);
+  assert.equal(
+    second.importStatus.metrics?.cacheHitCount,
+    first.importStatus.chunks.length,
+  );
+  assert.equal(
+    second.importStatus.metrics?.liveRestCallsAvoided,
+    first.importStatus.chunks.length,
+  );
+  assert.equal(
+    second.importStatus.metrics?.resumedChunkCount,
+    first.importStatus.chunks.length,
+  );
+  assert.ok((second.importStatus.metrics?.payloadBytes ?? 0) > 0);
+  assert.equal(second.importStatus.metrics?.liveRestCallCount, 1);
   assert.equal(
     countRequests(
       secondMock,
@@ -681,6 +856,75 @@ void test("staged import rejects corrupted checkpoints that reference missing ch
       return true;
     },
   );
+});
+
+void test("staged import rejects malformed cached chunks with deterministic failure class", async () => {
+  const nodeIds = ["1:1"];
+  const workspaceRoot = await createWorkspaceRoot();
+  const firstMock = createMockFigmaFetch({ nodeIds });
+  const first = await importWithMock(workspaceRoot, firstMock, {
+    figmaUrl: `https://www.figma.com/design/${FILE_KEY}/Customer-Board`,
+  });
+  const chunkId = first.importStatus.chunks.find((chunk) =>
+    chunk.chunkId.startsWith("node-"),
+  )?.chunkId;
+  assert.ok(chunkId !== undefined);
+  await writeFile(
+    join(first.vaultPath, ".staging", "chunks", `${chunkId}.json`),
+    '{"schemaVersion":"tampered"}\n',
+    "utf8",
+  );
+
+  const secondMock = createMockFigmaFetch({ nodeIds });
+  await assert.rejects(
+    () =>
+      importWithMock(workspaceRoot, secondMock, {
+        figmaUrl: `https://www.figma.com/design/${FILE_KEY}/Customer-Board`,
+      }),
+    (err: unknown): boolean => {
+      assert.ok(err instanceof FigmaStagedImportError);
+      assert.equal(err.errorCode, "chunk_rejected");
+      assert.equal(err.failureClass, "invalid_snapshot");
+      assert.equal(
+        countRequests(
+          secondMock,
+          (url) => url.pathname === `/v1/files/${FILE_KEY}/nodes`,
+        ),
+        0,
+      );
+      assert.doesNotMatch(err.message, /https:\/\//u);
+      return true;
+    },
+  );
+});
+
+void test("staged import refuses symlinked vault paths before writing outside the workspace", async () => {
+  const nodeIds = ["1:1"];
+  const workspaceRoot = await createWorkspaceRoot();
+  const firstMock = createMockFigmaFetch({ nodeIds });
+  const first = await importWithMock(workspaceRoot, firstMock, {
+    figmaUrl: `https://www.figma.com/design/${FILE_KEY}/Customer-Board`,
+  });
+  const outsideRoot = await mkdtemp(join(tmpdir(), "ti-figma-outside-vault-"));
+  await rm(first.vaultPath, { recursive: true, force: true });
+  await mkdir(dirname(first.vaultPath), { recursive: true });
+  await symlink(outsideRoot, first.vaultPath, "dir");
+
+  const secondMock = createMockFigmaFetch({ nodeIds });
+  await assert.rejects(
+    () =>
+      importWithMock(workspaceRoot, secondMock, {
+        figmaUrl: `https://www.figma.com/design/${FILE_KEY}/Customer-Board`,
+      }),
+    (err: unknown): boolean => {
+      assert.ok(err instanceof FigmaStagedImportError);
+      assert.equal(err.errorCode, "unsafe_path");
+      assert.equal(err.failureClass, "unsafe_path");
+      assert.doesNotMatch(err.message, /https:\/\//u);
+      return true;
+    },
+  );
+  assert.deepEqual(await readdir(outsideRoot), []);
 });
 
 void test("staged import rejects unsafe checkpoints with sanitized diagnostics", async () => {

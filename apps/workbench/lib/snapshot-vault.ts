@@ -43,6 +43,12 @@ export interface WorkbenchSnapshotBudgetSummary {
 export type WorkbenchSnapshotFailureClass =
   | "throttled"
   | "budget_exhausted"
+  | "oversized_board"
+  | "corrupted_checkpoint"
+  | "missing_chunk"
+  | "invalid_snapshot"
+  | "unsafe_path"
+  | "non_resumable_partial_state"
   | "missing_credential"
   | "invalid_credential"
   | "unsupported_auth_mode"

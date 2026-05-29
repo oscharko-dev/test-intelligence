@@ -1,4 +1,15 @@
 import assert from "node:assert/strict";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readdir,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import test from "node:test";
 
 import {
@@ -14,7 +25,9 @@ import {
 
 import {
   buildFigmaSnapshotVaultPath,
+  collectFigmaSnapshotVaultGarbage,
   computeFigmaSnapshotArtifactDigest,
+  FigmaSnapshotVaultError,
   serializeFigmaSnapshotArtifact,
   validateFigmaSnapshotImportStatus,
   validateFigmaSnapshotManifest,
@@ -138,7 +151,9 @@ const IMPORT_STATUS_BASE = {
   },
 } as const;
 
-const withDigest = <T extends Record<string, unknown>>(value: T): T & {
+const withDigest = <T extends Record<string, unknown>>(
+  value: T,
+): T & {
   contentDigest: string;
 } => ({
   ...value,
@@ -173,7 +188,10 @@ void test("figma snapshot vault: serialization and digest are deterministic acro
     },
   });
 
-  assert.equal(serializeFigmaSnapshotArtifact(left), serializeFigmaSnapshotArtifact(right));
+  assert.equal(
+    serializeFigmaSnapshotArtifact(left),
+    serializeFigmaSnapshotArtifact(right),
+  );
   assert.equal(left.contentDigest, right.contentDigest);
 });
 
@@ -192,9 +210,70 @@ void test("figma snapshot vault: validates each artifact kind", () => {
   ) as FigmaSnapshotImportStatus;
 
   assert.equal(manifest.schemaVersion, FIGMA_SNAPSHOT_MANIFEST_SCHEMA_VERSION);
-  assert.equal(nodeIndex.schemaVersion, FIGMA_SNAPSHOT_NODE_INDEX_SCHEMA_VERSION);
-  assert.equal(preview.schemaVersion, FIGMA_SNAPSHOT_PREVIEW_MANIFEST_SCHEMA_VERSION);
-  assert.equal(status.schemaVersion, FIGMA_SNAPSHOT_IMPORT_STATUS_SCHEMA_VERSION);
+  assert.equal(
+    nodeIndex.schemaVersion,
+    FIGMA_SNAPSHOT_NODE_INDEX_SCHEMA_VERSION,
+  );
+  assert.equal(
+    preview.schemaVersion,
+    FIGMA_SNAPSHOT_PREVIEW_MANIFEST_SCHEMA_VERSION,
+  );
+  assert.equal(
+    status.schemaVersion,
+    FIGMA_SNAPSHOT_IMPORT_STATUS_SCHEMA_VERSION,
+  );
+});
+
+void test("figma snapshot vault: validates large-board budget and metric metadata", () => {
+  const preview = validateFigmaSnapshotPreviewManifest(
+    withDigest({
+      ...PREVIEW_BASE,
+      budget: {
+        maxTiles: 2,
+        tileWidth: 1024,
+        tileHeight: 768,
+        candidateTileCount: 10,
+        selectedTileCount: 2,
+        skippedTileCount: 8,
+      },
+    }),
+  );
+  const status = validateFigmaSnapshotImportStatus(
+    withDigest({
+      ...IMPORT_STATUS_BASE,
+      failureClass: "oversized_board",
+      limits: {
+        maxNodeCount: 100,
+        maxPayloadBytes: 1_000_000,
+        maxPreviewTiles: 2,
+        maxPreviewBytes: 4096,
+        maxElapsedMs: 5000,
+        maxWorkingSetBytes: 2_000_000,
+        maxChunkCount: 20,
+      },
+      metrics: {
+        elapsedMs: 123,
+        nodeCount: 101,
+        payloadBytes: 4096,
+        previewBytes: 512,
+        chunkCount: 4,
+        previewCount: 2,
+        skippedPreviewCount: 8,
+        fetchedChunkCount: 2,
+        reusedChunkCount: 2,
+        cacheHitCount: 2,
+        liveRestCallCount: 3,
+        liveRestCallsAvoided: 2,
+        resumedChunkCount: 1,
+        peakWorkingSetBytes: 4096,
+        peakHeapUsedBytes: 8192,
+      },
+    }),
+  );
+
+  assert.equal(preview.budget?.skippedTileCount, 8);
+  assert.equal(status.failureClass, "oversized_board");
+  assert.equal(status.metrics?.peakHeapUsedBytes, 8192);
 });
 
 void test("figma snapshot vault: tolerates and strips legacy import rate-limit fields", () => {
@@ -257,8 +336,7 @@ void test("figma snapshot vault: rejects token-bearing and raw-URL content", () 
           assets: [
             {
               ...PREVIEW_BASE.assets[0],
-              relativePath:
-                "https://customer-bank.example/signed-snapshot-url",
+              relativePath: "https://customer-bank.example/signed-snapshot-url",
             },
           ],
         }),
@@ -372,4 +450,110 @@ void test("figma snapshot vault: builds deterministic tenant-scoped storage path
       }),
     /snapshotId must match/,
   );
+
+  const siblingProjectPath = buildFigmaSnapshotVaultPath({
+    workspaceRoot: "/tmp/workspace",
+    tenantScope: {
+      tenantId: TENANT_SCOPE.tenantId,
+      environmentId: TENANT_SCOPE.environmentId,
+      projectId: "policy-modernization",
+    },
+    fileKeyHash: SOURCE.fileKeyHash,
+    snapshotId: MANIFEST_BASE.snapshotId,
+  });
+  assert.notEqual(
+    siblingProjectPath,
+    buildFigmaSnapshotVaultPath({
+      workspaceRoot: "/tmp/workspace",
+      tenantScope: TENANT_SCOPE,
+      fileKeyHash: SOURCE.fileKeyHash,
+      snapshotId: MANIFEST_BASE.snapshotId,
+    }),
+  );
+});
+
+void test("figma snapshot vault: garbage collection is tenant/project scoped and path-safe", async () => {
+  const workspaceRoot = await mkdtemp(join(tmpdir(), "ti-figma-vault-gc-"));
+  try {
+    const retained = buildFigmaSnapshotVaultPath({
+      workspaceRoot,
+      tenantScope: TENANT_SCOPE,
+      fileKeyHash: SOURCE.fileKeyHash,
+      snapshotId: "snap-retained",
+    });
+    const deleted = buildFigmaSnapshotVaultPath({
+      workspaceRoot,
+      tenantScope: TENANT_SCOPE,
+      fileKeyHash: SOURCE.fileKeyHash,
+      snapshotId: "snap-deleted",
+    });
+    const siblingProject = buildFigmaSnapshotVaultPath({
+      workspaceRoot,
+      tenantScope: {
+        tenantId: TENANT_SCOPE.tenantId,
+        environmentId: TENANT_SCOPE.environmentId,
+        projectId: "policy-modernization",
+      },
+      fileKeyHash: SOURCE.fileKeyHash,
+      snapshotId: "snap-sibling",
+    });
+    await mkdir(retained, { recursive: true });
+    await mkdir(deleted, { recursive: true });
+    await mkdir(siblingProject, { recursive: true });
+    await writeFile(join(retained, "marker.txt"), "retain", "utf8");
+    await writeFile(join(deleted, "marker.txt"), "delete", "utf8");
+    await writeFile(join(siblingProject, "marker.txt"), "sibling", "utf8");
+    await writeFile(join(dirname(retained), ".stale.tmp"), "tmp", "utf8");
+
+    const result = await collectFigmaSnapshotVaultGarbage({
+      workspaceRoot,
+      tenantScope: TENANT_SCOPE,
+      fileKeyHash: SOURCE.fileKeyHash,
+      retainSnapshotIds: ["snap-retained"],
+    });
+
+    assert.deepEqual(result.deletedSnapshotIds, ["snap-deleted"]);
+    assert.deepEqual(result.deletedTempFiles, [".stale.tmp"]);
+    assert.deepEqual(await readdir(dirname(retained)), ["snap-retained"]);
+    assert.equal((await lstat(retained)).isDirectory(), true);
+    assert.equal((await lstat(siblingProject)).isDirectory(), true);
+  } finally {
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
+void test("figma snapshot vault: garbage collection refuses symlinked entries", async () => {
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), "ti-figma-vault-gc-symlink-"),
+  );
+  const outsideRoot = await mkdtemp(join(tmpdir(), "ti-figma-vault-outside-"));
+  try {
+    const symlinked = buildFigmaSnapshotVaultPath({
+      workspaceRoot,
+      tenantScope: TENANT_SCOPE,
+      fileKeyHash: SOURCE.fileKeyHash,
+      snapshotId: "snap-symlink",
+    });
+    await mkdir(dirname(symlinked), { recursive: true });
+    await symlink(outsideRoot, symlinked, "dir");
+
+    await assert.rejects(
+      () =>
+        collectFigmaSnapshotVaultGarbage({
+          workspaceRoot,
+          tenantScope: TENANT_SCOPE,
+          fileKeyHash: SOURCE.fileKeyHash,
+          retainSnapshotIds: [],
+        }),
+      (err: unknown): boolean => {
+        assert.ok(err instanceof FigmaSnapshotVaultError);
+        assert.equal(err.errorCode, "unsafe_path");
+        return true;
+      },
+    );
+    assert.deepEqual(await readdir(outsideRoot), []);
+  } finally {
+    await rm(workspaceRoot, { recursive: true, force: true });
+    await rm(outsideRoot, { recursive: true, force: true });
+  }
 });

@@ -10,6 +10,8 @@ import {
   type FigmaSnapshotImportCredentialMetadata,
   type FigmaSnapshotImportFailureClass,
   type FigmaSnapshotImportLifecycleState,
+  type FigmaSnapshotImportLimitMetadata,
+  type FigmaSnapshotImportPerformanceMetrics,
   type FigmaSnapshotImportRateLimitRemediation,
   type FigmaSnapshotImportStatus,
   type FigmaSnapshotManifest,
@@ -53,7 +55,10 @@ import {
 import {
   buildFigmaSnapshotVaultPath,
   computeFigmaSnapshotArtifactDigest,
+  ensureFigmaSnapshotVaultDirectory,
+  FigmaSnapshotVaultError,
   serializeFigmaSnapshotArtifact,
+  assertFigmaSnapshotVaultPathContained,
   validateFigmaSnapshotImportStatus,
   validateFigmaSnapshotManifest,
 } from "./figma-snapshot-vault.js";
@@ -114,6 +119,12 @@ export type FigmaStagedImportErrorCode =
   | "unsupported_auth_mode"
   | "rate_limited"
   | "budget_exhausted"
+  | "oversized_board"
+  | "corrupted_checkpoint"
+  | "missing_chunk"
+  | "invalid_snapshot"
+  | "unsafe_path"
+  | "non_resumable_partial_state"
   | "checkpoint_rejected"
   | "chunk_rejected"
   | "figma_fetch_failed"
@@ -160,6 +171,7 @@ export interface ImportStagedFigmaSnapshotInput {
   readonly accessToken?: string;
   readonly credential?: FigmaImportCredentialInput;
   readonly budgetPolicy?: FigmaImportBudgetPolicyInput;
+  readonly largeBoardPolicy?: FigmaSnapshotImportLimitMetadata;
   readonly figmaUrl?: string;
   readonly fileKey?: string;
   readonly nodeId?: string;
@@ -175,6 +187,8 @@ export interface ImportStagedFigmaSnapshotInput {
   readonly checkpoint?: unknown;
   readonly reuseCache?: boolean;
   readonly now?: () => Date;
+  readonly monotonicNowMs?: () => number;
+  readonly memoryUsage?: () => { readonly heapUsed: number };
   readonly sleepMs?: (ms: number) => Promise<void>;
 }
 
@@ -237,6 +251,7 @@ type StagedChunkArtifact =
   | StagedImageMetadataChunkArtifact;
 
 interface MutableImportState {
+  readonly workspaceRoot: string;
   readonly fileKey: string;
   readonly source: FigmaSnapshotSourceIdentifier;
   readonly snapshotId: string;
@@ -245,6 +260,11 @@ interface MutableImportState {
   readonly credential: FigmaSnapshotImportCredentialMetadata;
   readonly governance: FigmaImportGovernance;
   readonly allChunkIds: readonly string[];
+  readonly limits?: FigmaSnapshotImportLimitMetadata;
+  readonly startedAtMs: number;
+  readonly nowMs: () => number;
+  readonly memoryUsage?: () => { readonly heapUsed: number };
+  readonly metrics: MutableImportMetrics;
   readonly completedChunkIds: Set<string>;
   readonly chunkInventory: Map<string, FigmaSnapshotImportChunkInventoryEntry>;
   readonly rateLimit: MutableRateLimitMetadata;
@@ -256,10 +276,29 @@ interface MutableImportState {
   status?: FigmaSnapshotImportStatus;
 }
 
+interface MutableImportMetrics {
+  nodeCount: number;
+  previewCount: number;
+  skippedPreviewCount: number;
+  liveRestCallCount: number;
+  peakWorkingSetBytes: number;
+  peakHeapUsedBytes?: number;
+  readonly chunkPayloadBytes: Map<string, number>;
+  readonly resumedChunkIds: Set<string>;
+  nodeIndexBytes: number;
+  previewManifestBytes: number;
+  previewAssetBytes: number;
+  manifestBytes: number;
+  importStatusBytes: number;
+}
+
 export const importStagedFigmaSnapshot = async (
   input: ImportStagedFigmaSnapshotInput,
 ): Promise<ImportStagedFigmaSnapshotResult> => {
   const importedAt = (input.now ?? (() => new Date()))().toISOString();
+  const nowMs = input.monotonicNowMs ?? (() => Date.now());
+  const startedAtMs = nowMs();
+  const limits = resolveLargeBoardPolicy(input.largeBoardPolicy);
   const source = resolveSource(input);
   const credential = (() => {
     try {
@@ -283,6 +322,10 @@ export const importStagedFigmaSnapshot = async (
     ...(input.sleepMs !== undefined ? { sleepMs: input.sleepMs } : {}),
   });
   const rateLimit: MutableRateLimitMetadata = {};
+  let bootstrapLiveRestCallCount = 0;
+  const onBootstrapFigmaRestRequest = (): void => {
+    bootstrapLiveRestCallCount += 1;
+  };
   const onRateLimited = (metadata: Readonly<FigmaRestRateLimitMetadata>) => {
     if (metadata.retryAfterSeconds !== undefined) {
       rateLimit.retryAfterSeconds = metadata.retryAfterSeconds;
@@ -325,6 +368,7 @@ export const importStagedFigmaSnapshot = async (
         ? { maxResponseBytes: input.maxResponseBytes }
         : {}),
       onRateLimited,
+      onFigmaRestRequest: onBootstrapFigmaRestRequest,
       ...(input.sleepMs !== undefined ? { sleepMs: input.sleepMs } : {}),
     });
   } catch (err) {
@@ -361,6 +405,7 @@ export const importStagedFigmaSnapshot = async (
     root.imageChunkId,
   ]);
   const state: MutableImportState = {
+    workspaceRoot: input.workspaceRoot,
     fileKey: source.fileKey,
     source: source.source,
     snapshotId,
@@ -369,6 +414,24 @@ export const importStagedFigmaSnapshot = async (
     credential: credential.metadata,
     governance,
     allChunkIds,
+    ...(limits !== undefined ? { limits } : {}),
+    startedAtMs,
+    nowMs,
+    memoryUsage: input.memoryUsage ?? process.memoryUsage.bind(process),
+    metrics: {
+      nodeCount: 0,
+      previewCount: 0,
+      skippedPreviewCount: 0,
+      liveRestCallCount: bootstrapLiveRestCallCount,
+      peakWorkingSetBytes: 0,
+      chunkPayloadBytes: new Map<string, number>(),
+      resumedChunkIds: new Set<string>(),
+      nodeIndexBytes: 0,
+      previewManifestBytes: 0,
+      previewAssetBytes: 0,
+      manifestBytes: 0,
+      importStatusBytes: 0,
+    },
     completedChunkIds: new Set<string>(),
     chunkInventory: new Map<string, FigmaSnapshotImportChunkInventoryEntry>(),
     rateLimit,
@@ -376,16 +439,32 @@ export const importStagedFigmaSnapshot = async (
     reusedChunkIds: [],
     dirty: true,
   };
-  for (const chunkId of allChunkIds) {
-    state.chunkInventory.set(chunkId, {
-      chunkId,
-      state: "pending",
-      nodeCount: 0,
+  try {
+    assertImportLimits(state, "planned import chunk inventory");
+    for (const chunkId of allChunkIds) {
+      state.chunkInventory.set(chunkId, {
+        chunkId,
+        state: "pending",
+        nodeCount: 0,
+      });
+    }
+    await ensureFigmaSnapshotVaultDirectory({
+      workspaceRoot: input.workspaceRoot,
+      directoryPath: vaultPath,
+      label: "Figma snapshot vault",
     });
+    await ensureFigmaSnapshotVaultDirectory({
+      workspaceRoot: input.workspaceRoot,
+      directoryPath: join(vaultPath, STAGING_CHUNKS_DIRECTORY),
+      label: "Figma snapshot staging chunks",
+    });
+  } catch (err) {
+    const failureClass = classifyImportFailure(err);
+    throw buildImportError({ err, failureClass });
   }
-  await mkdir(join(vaultPath, STAGING_CHUNKS_DIRECTORY), { recursive: true });
   const checkpoint = await resolveCheckpoint({
     explicitCheckpoint: input.checkpoint,
+    workspaceRoot: input.workspaceRoot,
     vaultPath,
     snapshotId,
     source: source.source,
@@ -415,65 +494,116 @@ export const importStagedFigmaSnapshot = async (
     onRateLimited,
   });
 
-  const nodeRecords = await loadCommittedNodeRecords({
-    state,
-    rootPlans,
-    figmaRevisionDigest,
-  });
-  const nodeIndex = buildFigmaSnapshotLocalNodeIndex({
-    snapshotId,
-    tenantScope: input.tenantScope,
-    source: source.source,
-    records: nodeRecords,
-  });
-  await writeJsonAtomically(
-    join(vaultPath, NODE_INDEX_FILENAME),
-    serializeFigmaSnapshotArtifact(nodeIndex),
-  );
-  await persistImportStatus(state, "previewing");
-  const previewManifest = planFigmaSnapshotPreviewCache({ nodeIndex });
-  await writeFigmaSnapshotPreviewCacheAssets(vaultPath, previewManifest);
-  await writeJsonAtomically(
-    join(vaultPath, PREVIEW_MANIFEST_FILENAME),
-    serializeFigmaSnapshotArtifact(previewManifest),
-  );
-  const completedStatus = await persistImportStatus(state, "completed");
-  const manifest = withArtifactDigest<FigmaSnapshotManifest>({
-    schemaVersion: FIGMA_SNAPSHOT_MANIFEST_SCHEMA_VERSION,
-    snapshotId,
-    tenantScope: input.tenantScope,
-    source: source.source,
-    importStrategy: "hybrid",
-    ...(bootstrap.version !== undefined
-      ? { figmaVersion: bootstrap.version }
-      : {}),
-    ...(bootstrap.lastModified !== undefined
-      ? { figmaLastModified: bootstrap.lastModified }
-      : {}),
-    importedAt,
-    artifactDigests: {
-      nodeIndexDigest: nodeIndex.contentDigest,
-      importStatusDigest: completedStatus.contentDigest,
-      previewManifestDigest: previewManifest.contentDigest,
-    },
-  });
-  validateFigmaSnapshotManifest(manifest);
-  await writeJsonAtomically(
-    join(vaultPath, MANIFEST_FILENAME),
-    serializeFigmaSnapshotArtifact(manifest),
-  );
-  const rateLimitDiagnostics = buildRateLimitDiagnostics(rateLimit);
-  return {
-    snapshotId,
-    vaultPath,
-    manifest,
-    nodeIndex,
-    previewManifest,
-    importStatus: completedStatus,
-    ...(rateLimitDiagnostics !== undefined ? { rateLimitDiagnostics } : {}),
-    fetchedChunkIds: state.fetchedChunkIds,
-    reusedChunkIds: state.reusedChunkIds,
-  };
+  try {
+    const nodeRecords = await loadCommittedNodeRecords({
+      state,
+      rootPlans,
+      figmaRevisionDigest,
+    });
+    state.metrics.nodeCount = nodeRecords.length;
+    updatePeakWorkingSetBytes(state);
+    assertImportLimits(state, "node index generation");
+    const nodeIndex = buildFigmaSnapshotLocalNodeIndex({
+      snapshotId,
+      tenantScope: input.tenantScope,
+      source: source.source,
+      records: nodeRecords,
+    });
+    const nodeIndexContent = serializeFigmaSnapshotArtifact(nodeIndex);
+    state.metrics.nodeIndexBytes = Buffer.byteLength(nodeIndexContent, "utf8");
+    updatePeakWorkingSetBytes(state);
+    assertImportLimits(state, "node index payload");
+    await writeJsonAtomically(
+      join(vaultPath, NODE_INDEX_FILENAME),
+      nodeIndexContent,
+      {
+        workspaceRoot: input.workspaceRoot,
+        label: "Figma snapshot node index",
+      },
+    );
+    await persistImportStatus(state, "previewing");
+    const previewManifest = planFigmaSnapshotPreviewCache({
+      nodeIndex,
+      ...(limits?.maxPreviewTiles !== undefined
+        ? { maxTiles: limits.maxPreviewTiles }
+        : {}),
+    });
+    const previewManifestContent =
+      serializeFigmaSnapshotArtifact(previewManifest);
+    state.metrics.previewCount = previewManifest.assets.length;
+    state.metrics.skippedPreviewCount =
+      previewManifest.budget?.skippedTileCount ?? 0;
+    state.metrics.previewManifestBytes = Buffer.byteLength(
+      previewManifestContent,
+      "utf8",
+    );
+    state.metrics.previewAssetBytes = previewManifest.assets.reduce(
+      (total, asset) => total + asset.byteLength,
+      0,
+    );
+    updatePeakWorkingSetBytes(state);
+    assertImportLimits(state, "preview generation");
+    await writeFigmaSnapshotPreviewCacheAssets(vaultPath, previewManifest, {
+      workspaceRoot: input.workspaceRoot,
+    });
+    await writeJsonAtomically(
+      join(vaultPath, PREVIEW_MANIFEST_FILENAME),
+      previewManifestContent,
+      {
+        workspaceRoot: input.workspaceRoot,
+        label: "Figma snapshot preview manifest",
+      },
+    );
+    const completedStatus = await persistImportStatus(state, "completed");
+    const manifest = withArtifactDigest<FigmaSnapshotManifest>({
+      schemaVersion: FIGMA_SNAPSHOT_MANIFEST_SCHEMA_VERSION,
+      snapshotId,
+      tenantScope: input.tenantScope,
+      source: source.source,
+      importStrategy: "hybrid",
+      ...(bootstrap.version !== undefined
+        ? { figmaVersion: bootstrap.version }
+        : {}),
+      ...(bootstrap.lastModified !== undefined
+        ? { figmaLastModified: bootstrap.lastModified }
+        : {}),
+      importedAt,
+      artifactDigests: {
+        nodeIndexDigest: nodeIndex.contentDigest,
+        importStatusDigest: completedStatus.contentDigest,
+        previewManifestDigest: previewManifest.contentDigest,
+      },
+    });
+    validateFigmaSnapshotManifest(manifest);
+    const manifestContent = serializeFigmaSnapshotArtifact(manifest);
+    state.metrics.manifestBytes = Buffer.byteLength(manifestContent, "utf8");
+    updatePeakWorkingSetBytes(state);
+    assertImportLimits(state, "snapshot manifest");
+    await writeJsonAtomically(
+      join(vaultPath, MANIFEST_FILENAME),
+      manifestContent,
+      {
+        workspaceRoot: input.workspaceRoot,
+        label: "Figma snapshot manifest",
+      },
+    );
+    const rateLimitDiagnostics = buildRateLimitDiagnostics(rateLimit);
+    return {
+      snapshotId,
+      vaultPath,
+      manifest,
+      nodeIndex,
+      previewManifest,
+      importStatus: completedStatus,
+      ...(rateLimitDiagnostics !== undefined ? { rateLimitDiagnostics } : {}),
+      fetchedChunkIds: state.fetchedChunkIds,
+      reusedChunkIds: state.reusedChunkIds,
+    };
+  } catch (err) {
+    const failureClass = classifyImportFailure(err);
+    await persistFailedStatus(state, undefined, failureClass);
+    throw wrapImportError(err, state, failureClass);
+  }
 };
 
 const resolveSource = (
@@ -688,6 +818,10 @@ const importNodeChunks = async (input: {
 }): Promise<void> => {
   const missing: LogicalRootPlan[] = [];
   for (const root of input.rootPlans) {
+    if (input.state.completedChunkIds.has(root.nodeChunkId)) {
+      markCompletedCheckpointChunkReused(input.state, root.nodeChunkId);
+      continue;
+    }
     const cached = await readCachedChunk({
       state: input.state,
       chunkKind: "node",
@@ -696,6 +830,11 @@ const importNodeChunks = async (input: {
       reuseCache: input.input.reuseCache !== false,
     });
     if (cached !== undefined) {
+      stateAddNodeCount(
+        input.state,
+        cached.records.length,
+        "cached node chunk",
+      );
       markChunkCompleted(input.state, {
         chunkId: cached.chunkId,
         nodeCount: cached.records.length,
@@ -742,6 +881,9 @@ const fetchNodeBatchAdaptive = async (input: {
         ? { maxResponseBytes: input.input.maxResponseBytes }
         : {}),
       onRateLimited: input.onRateLimited,
+      onFigmaRestRequest: () => {
+        input.state.metrics.liveRestCallCount += 1;
+      },
       ...(input.input.sleepMs !== undefined
         ? { sleepMs: input.input.sleepMs }
         : {}),
@@ -760,6 +902,7 @@ const fetchNodeBatchAdaptive = async (input: {
         node,
         chunkId: root.nodeChunkId,
       });
+      stateAddNodeCount(input.state, records.length, "fetched node chunk");
       const artifact = withChunkDigest<StagedNodeChunkArtifact>({
         schemaVersion: STAGING_SCHEMA_VERSION,
         plannerVersion: PLANNER_VERSION,
@@ -812,6 +955,10 @@ const importImageMetadataChunks = async (input: {
 }): Promise<void> => {
   const missing: LogicalRootPlan[] = [];
   for (const root of input.rootPlans) {
+    if (input.state.completedChunkIds.has(root.imageChunkId)) {
+      markCompletedCheckpointChunkReused(input.state, root.imageChunkId);
+      continue;
+    }
     const cached = await readCachedChunk({
       state: input.state,
       chunkKind: "image_metadata",
@@ -869,6 +1016,9 @@ const fetchImageMetadataBatchAdaptive = async (input: {
         ? { scale: input.input.imageScale }
         : {}),
       onRateLimited: input.onRateLimited,
+      onFigmaRestRequest: () => {
+        input.state.metrics.liveRestCallCount += 1;
+      },
       ...(input.input.sleepMs !== undefined
         ? { sleepMs: input.input.sleepMs }
         : {}),
@@ -1074,6 +1224,7 @@ const loadCommittedNodeRecords = async (input: {
 
 const resolveCheckpoint = async (input: {
   explicitCheckpoint: unknown;
+  workspaceRoot: string;
   vaultPath: string;
   snapshotId: string;
   source: FigmaSnapshotSourceIdentifier;
@@ -1084,6 +1235,10 @@ const resolveCheckpoint = async (input: {
   }
   const persisted = await readJsonIfExists(
     join(input.vaultPath, IMPORT_STATUS_FILENAME),
+    {
+      workspaceRoot: input.workspaceRoot,
+      label: "Figma staged import checkpoint",
+    },
   );
   if (persisted === undefined) return undefined;
   return validateCompatibleCheckpoint(persisted, input);
@@ -1108,11 +1263,18 @@ const validateCompatibleCheckpoint = (
         "checkpoint source, tenant scope, or snapshot id is incompatible",
       );
     }
+    const chunkById = new Map(
+      checkpoint.chunks.map((chunk) => [chunk.chunkId, chunk]),
+    );
     const completed = new Set(checkpoint.checkpoint.completedChunkIds);
+    if (
+      checkpoint.checkpoint.resumeFromChunkId !== undefined &&
+      !completed.has(checkpoint.checkpoint.resumeFromChunkId)
+    ) {
+      throw new Error("checkpoint resumeFromChunkId is not completed");
+    }
     for (const chunkId of completed) {
-      const inventory = checkpoint.chunks.find(
-        (chunk) => chunk.chunkId === chunkId,
-      );
+      const inventory = chunkById.get(chunkId);
       if (inventory === undefined || inventory.state !== "completed") {
         throw new Error(
           "checkpoint completedChunkIds do not match chunk inventory",
@@ -1123,6 +1285,7 @@ const validateCompatibleCheckpoint = (
   } catch (err) {
     throw new FigmaStagedImportError({
       errorCode: "checkpoint_rejected",
+      failureClass: "corrupted_checkpoint",
       message: `Figma staged import checkpoint rejected: ${sanitizeErrorMessage(
         {
           error: err,
@@ -1141,26 +1304,55 @@ const applyCheckpoint = async (input: {
   figmaRevisionDigest: string;
 }): Promise<void> => {
   try {
+    const chunkById = new Map(
+      input.checkpoint.chunks.map((chunk) => [chunk.chunkId, chunk]),
+    );
+    if (input.checkpoint.lifecycleState === "completed") {
+      const completed = new Set(input.checkpoint.checkpoint.completedChunkIds);
+      const missing = input.state.allChunkIds.filter(
+        (chunkId) => !completed.has(chunkId),
+      );
+      if (missing.length > 0) {
+        throw new FigmaStagedImportError({
+          errorCode: "non_resumable_partial_state",
+          failureClass: "non_resumable_partial_state",
+          message:
+            "Figma staged import checkpoint is completed but missing chunk inventory",
+          retryable: false,
+        });
+      }
+    }
     for (const chunk of input.checkpoint.chunks) {
       input.state.chunkInventory.set(chunk.chunkId, chunk);
     }
     for (const chunkId of input.checkpoint.checkpoint.completedChunkIds) {
-      const inventory = input.checkpoint.chunks.find(
-        (chunk) => chunk.chunkId === chunkId,
-      );
+      const inventory = chunkById.get(chunkId);
       if (inventory === undefined) continue;
       const chunkKind = chunkId.startsWith("node-") ? "node" : "image_metadata";
-      await readChunkFile({
+      const chunk = await readChunkFile({
         state: input.state,
         chunkKind,
         chunkId,
         figmaRevisionDigest: input.figmaRevisionDigest,
       });
+      if (chunk.chunkKind === "node") {
+        stateAddNodeCount(
+          input.state,
+          chunk.records.length,
+          "resumed node chunk",
+        );
+      }
       input.state.completedChunkIds.add(chunkId);
+      input.state.metrics.resumedChunkIds.add(chunkId);
     }
   } catch (err) {
+    if (err instanceof FigmaStagedImportError) throw err;
+    const failureClass = isFileNotFound(err)
+      ? "missing_chunk"
+      : "corrupted_checkpoint";
     throw new FigmaStagedImportError({
       errorCode: "checkpoint_rejected",
+      failureClass,
       message: `Figma staged import checkpoint chunk inventory rejected: ${sanitizeErrorMessage(
         {
           error: err,
@@ -1185,6 +1377,18 @@ const readCachedChunk = async <TKind extends StagedChunkKind>(input: {
     return await readChunkFile(input);
   } catch (err) {
     if (isFileNotFound(err)) return undefined;
+    if (err instanceof FigmaSnapshotVaultError) {
+      throw new FigmaStagedImportError({
+        errorCode: failureClassToErrorCode(
+          err.errorCode === "unsafe_path" ? "unsafe_path" : "invalid_snapshot",
+        ),
+        failureClass:
+          err.errorCode === "unsafe_path" ? "unsafe_path" : "invalid_snapshot",
+        message: "Figma staged import JSON artifact failed vault checks",
+        retryable: false,
+        cause: err,
+      });
+    }
     throw err;
   }
 };
@@ -1196,12 +1400,14 @@ const readChunkFile = async <TKind extends StagedChunkKind>(input: {
   figmaRevisionDigest: string;
 }): Promise<Extract<StagedChunkArtifact, { chunkKind: TKind }>> => {
   try {
-    const payload = JSON.parse(
-      await readFile(
-        chunkFilePath(input.state.vaultPath, input.chunkId),
-        "utf8",
-      ),
-    ) as unknown;
+    const path = chunkFilePath(input.state.vaultPath, input.chunkId);
+    await assertFigmaSnapshotVaultPathContained({
+      workspaceRoot: input.state.workspaceRoot,
+      targetPath: path,
+      label: "Figma staged import chunk",
+    });
+    const content = await readFile(path, "utf8");
+    const payload = JSON.parse(content) as unknown;
     const chunk = validateChunkArtifact(payload);
     if (
       chunk.chunkKind !== input.chunkKind ||
@@ -1212,11 +1418,28 @@ const readChunkFile = async <TKind extends StagedChunkKind>(input: {
     ) {
       throw new Error("chunk metadata is incompatible with the current import");
     }
+    stateRecordChunkPayloadBytes(input.state, {
+      chunkId: chunk.chunkId,
+      byteLength: Buffer.byteLength(content, "utf8"),
+      phase: `${chunk.chunkKind} chunk payload`,
+    });
     return chunk as Extract<StagedChunkArtifact, { chunkKind: TKind }>;
   } catch (err) {
     if (isFileNotFound(err)) throw err;
+    if (err instanceof FigmaStagedImportError) throw err;
+    if (err instanceof FigmaSnapshotVaultError) {
+      throw new FigmaStagedImportError({
+        errorCode: "unsafe_path",
+        failureClass: "unsafe_path",
+        message:
+          "Figma staged import chunk failed vault path containment checks",
+        retryable: false,
+        cause: err,
+      });
+    }
     throw new FigmaStagedImportError({
       errorCode: "chunk_rejected",
+      failureClass: "invalid_snapshot",
       message: `Figma staged import chunk rejected: ${sanitizeErrorMessage({
         error: err,
         fallback: "invalid chunk",
@@ -1263,12 +1486,24 @@ const persistChunk = async (
   artifact: StagedChunkArtifact,
 ): Promise<void> => {
   validateChunkArtifact(artifact);
+  const content = `${canonicalJson(artifact)}\n`;
+  state.metrics.chunkPayloadBytes.set(
+    artifact.chunkId,
+    Buffer.byteLength(content, "utf8"),
+  );
+  updatePeakWorkingSetBytes(state);
+  assertImportLimits(state, `${artifact.chunkKind} chunk payload`);
   try {
     await writeJsonAtomically(
       chunkFilePath(state.vaultPath, artifact.chunkId),
-      `${canonicalJson(artifact)}\n`,
+      content,
+      {
+        workspaceRoot: state.workspaceRoot,
+        label: "Figma staged import chunk",
+      },
     );
   } catch (err) {
+    if (err instanceof FigmaStagedImportError) throw err;
     throw new FigmaStagedImportError({
       errorCode: "persist_failed",
       message: `Figma staged import chunk persistence failed: ${sanitizeErrorMessage(
@@ -1317,6 +1552,8 @@ const persistImportStatus = async (
     ...(state.failureClass !== undefined
       ? { failureClass: state.failureClass }
       : {}),
+    ...(state.limits !== undefined ? { limits: state.limits } : {}),
+    metrics: snapshotPerformanceMetrics(state),
     chunks: [...state.chunkInventory.values()].sort((left, right) =>
       left.chunkId.localeCompare(right.chunkId),
     ),
@@ -1325,10 +1562,17 @@ const persistImportStatus = async (
       completedChunkIds: [...state.completedChunkIds].sort(),
     },
   });
+  const content = serializeFigmaSnapshotArtifact(status);
+  state.metrics.importStatusBytes = Buffer.byteLength(content, "utf8");
+  updatePeakWorkingSetBytes(state);
   validateFigmaSnapshotImportStatus(status);
   await writeJsonAtomically(
     join(state.vaultPath, IMPORT_STATUS_FILENAME),
-    serializeFigmaSnapshotArtifact(status),
+    content,
+    {
+      workspaceRoot: state.workspaceRoot,
+      label: "Figma staged import status",
+    },
   );
   state.status = status;
   state.dirty = false;
@@ -1364,7 +1608,7 @@ const markChunkCompleted = (
   input: {
     chunkId: string;
     nodeCount: number;
-    contentDigest: string;
+    contentDigest?: string;
     reused: boolean;
   },
 ): void => {
@@ -1373,11 +1617,270 @@ const markChunkCompleted = (
     chunkId: input.chunkId,
     state: "completed",
     nodeCount: input.nodeCount,
-    contentDigest: input.contentDigest,
+    ...(input.contentDigest !== undefined
+      ? { contentDigest: input.contentDigest }
+      : {}),
   });
-  if (input.reused) state.reusedChunkIds.push(input.chunkId);
-  else state.fetchedChunkIds.push(input.chunkId);
+  if (input.reused) {
+    if (!state.reusedChunkIds.includes(input.chunkId)) {
+      state.reusedChunkIds.push(input.chunkId);
+    }
+  } else if (!state.fetchedChunkIds.includes(input.chunkId)) {
+    state.fetchedChunkIds.push(input.chunkId);
+  }
   state.dirty = true;
+};
+
+const markCompletedCheckpointChunkReused = (
+  state: MutableImportState,
+  chunkId: string,
+): void => {
+  const inventory = state.chunkInventory.get(chunkId);
+  if (inventory === undefined || inventory.state !== "completed") return;
+  markChunkCompleted(state, {
+    chunkId,
+    nodeCount: inventory.nodeCount,
+    ...(inventory.contentDigest !== undefined
+      ? { contentDigest: inventory.contentDigest }
+      : {}),
+    reused: true,
+  });
+};
+
+const stateAddNodeCount = (
+  state: MutableImportState,
+  nodeCount: number,
+  phase: string,
+): void => {
+  state.metrics.nodeCount += nodeCount;
+  updatePeakWorkingSetBytes(state);
+  assertImportLimits(state, phase);
+};
+
+const stateRecordChunkPayloadBytes = (
+  state: MutableImportState,
+  input: {
+    readonly chunkId: string;
+    readonly byteLength: number;
+    readonly phase: string;
+  },
+): void => {
+  state.metrics.chunkPayloadBytes.set(input.chunkId, input.byteLength);
+  updatePeakWorkingSetBytes(state);
+  assertImportLimits(state, input.phase);
+};
+
+const resolveLargeBoardPolicy = (
+  policy: FigmaSnapshotImportLimitMetadata | undefined,
+): FigmaSnapshotImportLimitMetadata | undefined => {
+  if (policy === undefined) return undefined;
+  const normalized: FigmaSnapshotImportLimitMetadata = {
+    ...(policy.maxNodeCount !== undefined
+      ? {
+          maxNodeCount: assertPositiveInteger(
+            policy.maxNodeCount,
+            "maxNodeCount",
+          ),
+        }
+      : {}),
+    ...(policy.maxPayloadBytes !== undefined
+      ? {
+          maxPayloadBytes: assertPositiveInteger(
+            policy.maxPayloadBytes,
+            "maxPayloadBytes",
+          ),
+        }
+      : {}),
+    ...(policy.maxPreviewTiles !== undefined
+      ? {
+          maxPreviewTiles: assertPositiveInteger(
+            policy.maxPreviewTiles,
+            "maxPreviewTiles",
+          ),
+        }
+      : {}),
+    ...(policy.maxPreviewBytes !== undefined
+      ? {
+          maxPreviewBytes: assertPositiveInteger(
+            policy.maxPreviewBytes,
+            "maxPreviewBytes",
+          ),
+        }
+      : {}),
+    ...(policy.maxElapsedMs !== undefined
+      ? {
+          maxElapsedMs: assertPositiveInteger(
+            policy.maxElapsedMs,
+            "maxElapsedMs",
+          ),
+        }
+      : {}),
+    ...(policy.maxWorkingSetBytes !== undefined
+      ? {
+          maxWorkingSetBytes: assertPositiveInteger(
+            policy.maxWorkingSetBytes,
+            "maxWorkingSetBytes",
+          ),
+        }
+      : {}),
+    ...(policy.maxChunkCount !== undefined
+      ? {
+          maxChunkCount: assertPositiveInteger(
+            policy.maxChunkCount,
+            "maxChunkCount",
+          ),
+        }
+      : {}),
+  };
+  return Object.keys(normalized).length === 0 ? undefined : normalized;
+};
+
+const assertImportLimits = (state: MutableImportState, phase: string): void => {
+  const limits = state.limits;
+  if (limits === undefined) return;
+  const metrics = snapshotPerformanceMetrics(state);
+  if (
+    limits.maxChunkCount !== undefined &&
+    state.allChunkIds.length > limits.maxChunkCount
+  ) {
+    throwLimitExceeded("oversized_board", phase, "chunk count", {
+      observed: state.allChunkIds.length,
+      limit: limits.maxChunkCount,
+    });
+  }
+  if (
+    limits.maxNodeCount !== undefined &&
+    metrics.nodeCount > limits.maxNodeCount
+  ) {
+    throwLimitExceeded("oversized_board", phase, "node count", {
+      observed: metrics.nodeCount,
+      limit: limits.maxNodeCount,
+    });
+  }
+  if (
+    limits.maxPayloadBytes !== undefined &&
+    metrics.payloadBytes > limits.maxPayloadBytes
+  ) {
+    throwLimitExceeded("oversized_board", phase, "payload bytes", {
+      observed: metrics.payloadBytes,
+      limit: limits.maxPayloadBytes,
+    });
+  }
+  if (
+    limits.maxPreviewBytes !== undefined &&
+    metrics.previewBytes > limits.maxPreviewBytes
+  ) {
+    throwLimitExceeded("oversized_board", phase, "preview bytes", {
+      observed: metrics.previewBytes,
+      limit: limits.maxPreviewBytes,
+    });
+  }
+  if (
+    limits.maxElapsedMs !== undefined &&
+    metrics.elapsedMs > limits.maxElapsedMs
+  ) {
+    throwLimitExceeded("budget_exhausted", phase, "elapsed milliseconds", {
+      observed: metrics.elapsedMs,
+      limit: limits.maxElapsedMs,
+    });
+  }
+  if (
+    limits.maxWorkingSetBytes !== undefined &&
+    metrics.peakWorkingSetBytes > limits.maxWorkingSetBytes
+  ) {
+    throwLimitExceeded("budget_exhausted", phase, "working-set bytes", {
+      observed: metrics.peakWorkingSetBytes,
+      limit: limits.maxWorkingSetBytes,
+    });
+  }
+};
+
+const snapshotPerformanceMetrics = (
+  state: MutableImportState,
+): FigmaSnapshotImportPerformanceMetrics => {
+  const payloadBytes =
+    sumValues(state.metrics.chunkPayloadBytes) +
+    state.metrics.nodeIndexBytes +
+    state.metrics.previewManifestBytes +
+    state.metrics.previewAssetBytes +
+    state.metrics.manifestBytes;
+  const elapsedMs = Math.max(0, Math.ceil(state.nowMs() - state.startedAtMs));
+  const peakHeapUsedBytes = state.metrics.peakHeapUsedBytes;
+  const liveRestCallsAvoided = new Set([
+    ...state.reusedChunkIds,
+    ...state.metrics.resumedChunkIds,
+  ]).size;
+  return {
+    elapsedMs,
+    nodeCount: state.metrics.nodeCount,
+    payloadBytes,
+    previewBytes:
+      state.metrics.previewManifestBytes + state.metrics.previewAssetBytes,
+    chunkCount: state.allChunkIds.length,
+    previewCount: state.metrics.previewCount,
+    skippedPreviewCount: state.metrics.skippedPreviewCount,
+    fetchedChunkCount: state.fetchedChunkIds.length,
+    reusedChunkCount: state.reusedChunkIds.length,
+    cacheHitCount: state.reusedChunkIds.length,
+    liveRestCallCount: state.metrics.liveRestCallCount,
+    liveRestCallsAvoided,
+    resumedChunkCount: state.metrics.resumedChunkIds.size,
+    peakWorkingSetBytes: state.metrics.peakWorkingSetBytes,
+    ...(peakHeapUsedBytes !== undefined ? { peakHeapUsedBytes } : {}),
+  };
+};
+
+const updatePeakWorkingSetBytes = (state: MutableImportState): void => {
+  const payloadBytes =
+    sumValues(state.metrics.chunkPayloadBytes) +
+    state.metrics.nodeIndexBytes +
+    state.metrics.previewManifestBytes +
+    state.metrics.previewAssetBytes +
+    state.metrics.manifestBytes +
+    state.metrics.importStatusBytes;
+  state.metrics.peakWorkingSetBytes = Math.max(
+    state.metrics.peakWorkingSetBytes,
+    payloadBytes,
+  );
+  const heapUsed = state.memoryUsage?.().heapUsed;
+  if (heapUsed !== undefined && Number.isFinite(heapUsed) && heapUsed >= 0) {
+    state.metrics.peakHeapUsedBytes = Math.max(
+      state.metrics.peakHeapUsedBytes ?? 0,
+      Math.ceil(heapUsed),
+    );
+  }
+};
+
+const sumValues = (values: ReadonlyMap<string, number>): number => {
+  let total = 0;
+  for (const value of values.values()) total += value;
+  return total;
+};
+
+const assertPositiveInteger = (value: number, label: string): number => {
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new FigmaStagedImportError({
+      errorCode: "invalid_request",
+      failureClass: "invalid_request",
+      message: `Figma staged import ${label} must be a positive integer`,
+      retryable: false,
+    });
+  }
+  return value;
+};
+
+const throwLimitExceeded = (
+  failureClass: FigmaSnapshotImportFailureClass,
+  phase: string,
+  label: string,
+  input: { readonly observed: number; readonly limit: number },
+): never => {
+  throw new FigmaStagedImportError({
+    errorCode: failureClassToErrorCode(failureClass),
+    failureClass,
+    message: `Figma staged import ${phase} exceeded ${label} budget (${input.observed} > ${input.limit})`,
+    retryable: false,
+  });
 };
 
 const withArtifactDigest = <
@@ -1495,12 +1998,42 @@ const buildChunkId = (input: {
 const writeJsonAtomically = async (
   path: string,
   content: string,
+  options: { readonly workspaceRoot?: string; readonly label?: string } = {},
 ): Promise<void> => {
-  await mkdir(dirname(path), { recursive: true });
+  const label = options.label ?? "Figma staged import artifact";
+  try {
+    if (options.workspaceRoot !== undefined) {
+      await ensureFigmaSnapshotVaultDirectory({
+        workspaceRoot: options.workspaceRoot,
+        directoryPath: dirname(path),
+        label,
+      });
+      await assertFigmaSnapshotVaultPathContained({
+        workspaceRoot: options.workspaceRoot,
+        targetPath: path,
+        label,
+      });
+    } else {
+      await mkdir(dirname(path), { recursive: true });
+    }
+  } catch (err) {
+    throw wrapVaultPersistenceError(err, label);
+  }
   const tempPath = join(
     dirname(path),
     `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`,
   );
+  if (options.workspaceRoot !== undefined) {
+    try {
+      await assertFigmaSnapshotVaultPathContained({
+        workspaceRoot: options.workspaceRoot,
+        targetPath: tempPath,
+        label: `${label} temporary file`,
+      });
+    } catch (err) {
+      throw wrapVaultPersistenceError(err, label);
+    }
+  }
   await writeFile(
     tempPath,
     content.endsWith("\n") ? content : `${content}\n`,
@@ -1512,8 +2045,36 @@ const writeJsonAtomically = async (
 const chunkFilePath = (vaultPath: string, chunkId: string): string =>
   join(vaultPath, STAGING_CHUNKS_DIRECTORY, `${chunkId}.json`);
 
-const readJsonIfExists = async (path: string): Promise<unknown | undefined> => {
+const wrapVaultPersistenceError = (err: unknown, label: string): Error => {
+  if (err instanceof FigmaStagedImportError) return err;
+  if (err instanceof FigmaSnapshotVaultError) {
+    const failureClass =
+      err.errorCode === "unsafe_path" ? "unsafe_path" : "persistence_failed";
+    return new FigmaStagedImportError({
+      errorCode: failureClassToErrorCode(failureClass),
+      failureClass,
+      message: `${label} failed Snapshot Vault containment or persistence checks`,
+      retryable: false,
+      cause: err,
+    });
+  }
+  return err instanceof Error
+    ? err
+    : new Error("Snapshot Vault persistence failed");
+};
+
+const readJsonIfExists = async (
+  path: string,
+  options: { readonly workspaceRoot?: string; readonly label?: string } = {},
+): Promise<unknown | undefined> => {
   try {
+    if (options.workspaceRoot !== undefined) {
+      await assertFigmaSnapshotVaultPathContained({
+        workspaceRoot: options.workspaceRoot,
+        targetPath: path,
+        label: options.label ?? "Figma staged import JSON artifact",
+      });
+    }
     return JSON.parse(await readFile(path, "utf8")) as unknown;
   } catch (err) {
     if (isFileNotFound(err)) return undefined;
@@ -1655,7 +2216,9 @@ const buildRateLimitDiagnostics = (
     ...(metadata.retryAfterSeconds !== undefined
       ? { retryAfterSeconds: metadata.retryAfterSeconds }
       : {}),
-    ...(metadata.remaining !== undefined ? { remaining: metadata.remaining } : {}),
+    ...(metadata.remaining !== undefined
+      ? { remaining: metadata.remaining }
+      : {}),
     ...(metadata.resetAt !== undefined ? { resetAt: metadata.resetAt } : {}),
     ...(metadata.figmaPlanTier !== undefined
       ? { figmaPlanTier: metadata.figmaPlanTier }
@@ -1678,6 +2241,16 @@ const classifyImportFailure = (
 ): FigmaSnapshotImportFailureClass => {
   if (err instanceof FigmaImportGovernanceError) return err.failureClass;
   if (err instanceof FigmaStagedImportError) return err.failureClass;
+  if (err instanceof FigmaSnapshotVaultError) {
+    switch (err.errorCode) {
+      case "unsafe_path":
+        return "unsafe_path";
+      case "invalid_snapshot":
+        return "invalid_snapshot";
+      case "persistence_failed":
+        return "persistence_failed";
+    }
+  }
   if (err instanceof FigmaRestFetchError) {
     switch (err.errorClass) {
       case "rate_limited":
@@ -1704,6 +2277,13 @@ const failureClassToErrorCode = (
   switch (failureClass) {
     case "throttled":
       return "rate_limited";
+    case "oversized_board":
+    case "corrupted_checkpoint":
+    case "missing_chunk":
+    case "invalid_snapshot":
+    case "unsafe_path":
+    case "non_resumable_partial_state":
+      return failureClass;
     case "missing_credential":
     case "invalid_credential":
     case "unsupported_auth_mode":
@@ -1729,6 +2309,13 @@ const errorCodeToFailureClass = (
     case "unsupported_auth_mode":
     case "budget_exhausted":
     case "invalid_request":
+      return errorCode;
+    case "oversized_board":
+    case "corrupted_checkpoint":
+    case "missing_chunk":
+    case "invalid_snapshot":
+    case "unsafe_path":
+    case "non_resumable_partial_state":
       return errorCode;
     case "persist_failed":
       return "persistence_failed";

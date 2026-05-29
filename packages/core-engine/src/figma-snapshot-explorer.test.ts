@@ -112,7 +112,10 @@ const createMixedRecords = (): readonly FigmaSnapshotNodeRecord[] => [
     nodeName: "Deep Beneficiary Leaf",
     nodeType: "TEXT",
     textSnippet: "Bezugsberechtigter",
-    ancestorNodeIds: Array.from({ length: 1_500 }, (_, index) => `deep:${index}`),
+    ancestorNodeIds: Array.from(
+      { length: 1_500 },
+      (_, index) => `deep:${index}`,
+    ),
     bbox: { x: 20, y: 220, width: 180, height: 24 },
   }),
 ];
@@ -127,7 +130,9 @@ const buildIndex = (
     records,
   });
 
-const createManifest = (nodeIndex: FigmaSnapshotNodeIndex): FigmaSnapshotManifest =>
+const createManifest = (
+  nodeIndex: FigmaSnapshotNodeIndex,
+): FigmaSnapshotManifest =>
   withDigest<FigmaSnapshotManifest>({
     schemaVersion: FIGMA_SNAPSHOT_MANIFEST_SCHEMA_VERSION,
     snapshotId: nodeIndex.snapshotId,
@@ -161,13 +166,17 @@ void test("figma snapshot explorer: builds a deterministic searchable local node
     ],
   );
 
-  const hidden = left.nodes.filter((node) => node.labels.includes("duplicate-label"));
+  const hidden = left.nodes.filter((node) =>
+    node.labels.includes("duplicate-label"),
+  );
   assert.deepEqual(
     hidden.map((node) => node.nodeId),
     ["hidden:one", "hidden:two"],
   );
   assert.equal(
-    left.nodes.find((node) => node.nodeId === "off:canvas")?.labels.includes("off-canvas"),
+    left.nodes
+      .find((node) => node.nodeId === "off:canvas")
+      ?.labels.includes("off-canvas"),
     true,
   );
   assert.equal(
@@ -177,7 +186,8 @@ void test("figma snapshot explorer: builds a deterministic searchable local node
     true,
   );
   assert.equal(
-    left.nodes.find((node) => node.nodeId === "deep:leaf")?.ancestorNodeIds.length,
+    left.nodes.find((node) => node.nodeId === "deep:leaf")?.ancestorNodeIds
+      .length,
     1_500,
   );
 });
@@ -191,12 +201,9 @@ void test("figma snapshot explorer: freezes validated artifacts before caching",
   assert.equal(Object.isFrozen(index.nodes), true);
   assert.equal(Object.isFrozen(firstNode), true);
   assert.equal(Object.isFrozen(firstNode.labels), true);
-  assert.throws(
-    () => {
-      (firstNode.labels as string[]).push("https://customer.example/mutated");
-    },
-    TypeError,
-  );
+  assert.throws(() => {
+    (firstNode.labels as string[]).push("https://customer.example/mutated");
+  }, TypeError);
 });
 
 void test("figma snapshot explorer: queries local snapshots without live Figma REST", () => {
@@ -297,7 +304,8 @@ void test("figma snapshot explorer: preserves design-system-heavy component hint
   ]);
 
   assert.deepEqual(
-    index.nodes.find((node) => node.nodeId === "ds:button:primary")?.componentHints,
+    index.nodes.find((node) => node.nodeId === "ds:button:primary")
+      ?.componentHints,
     [
       "action:continue",
       "control:button",
@@ -342,11 +350,22 @@ void test("figma snapshot explorer: plans bounded hash-addressed preview metadat
   assert.deepEqual(preview, again);
   assert.equal(preview.previewStatus, "complete");
   assert.equal(preview.boundedPreview, true);
+  assert.deepEqual(preview.budget, {
+    maxTiles: 2,
+    tileWidth: 100,
+    tileHeight: 50,
+    candidateTileCount: 6,
+    selectedTileCount: 2,
+    skippedTileCount: 4,
+  });
   assert.equal(preview.assets.length, 2);
   assert.equal(preview.tiles.length, 2);
   for (const asset of preview.assets) {
     assert.match(asset.assetId, /^asset-[a-f0-9]{32}$/u);
-    assert.match(asset.relativePath, /^previews\/asset-[a-f0-9]{32}\.preview-plan\.json$/u);
+    assert.match(
+      asset.relativePath,
+      /^previews\/asset-[a-f0-9]{32}\.preview-plan\.json$/u,
+    );
     assert.equal(
       asset.mediaType,
       "application/vnd.test-intelligence.figma-preview-plan+json",
@@ -361,19 +380,53 @@ void test("figma snapshot explorer: plans bounded hash-addressed preview metadat
 });
 
 void test("figma snapshot explorer: keeps large synthetic indexes searchable with bounded preview metadata", () => {
-  const records = Array.from({ length: 2_500 }, (_, index) =>
+  const records = Array.from({ length: 3_000 }, (_, index) =>
     createRecord({
       nodeId: `large:${index.toString().padStart(4, "0")}`,
-      nodeName: index % 10 === 0 ? `IBAN Row ${index}` : `Customer Row ${index}`,
-      nodeType: index % 5 === 0 ? "TEXT_FIELD" : "FRAME",
-      textSnippet: index % 10 === 0 ? "IBAN" : `Customer ${index}`,
-      bbox: { x: index % 100, y: index, width: 240, height: 32 },
-      ancestorNodeIds: ["page:1", `section:${Math.floor(index / 100)}`],
+      nodeName:
+        index % 97 === 0
+          ? "Duplicate Policy Label"
+          : index % 10 === 0
+            ? `IBAN Row ${index}`
+            : `Customer Row ${index}`,
+      nodeType:
+        index % 13 === 0
+          ? "INSTANCE"
+          : index % 5 === 0
+            ? "TEXT_FIELD"
+            : "FRAME",
+      textSnippet:
+        index % 97 === 0
+          ? "Duplicate Policy Label"
+          : index % 10 === 0
+            ? "IBAN"
+            : `Customer ${index}`,
+      componentHints:
+        index % 13 === 0
+          ? ["ds/button", "variant:primary", "control:button"]
+          : ["ds/card", `variant:${index % 7}`],
+      visible: index % 37 !== 0,
+      bbox:
+        index % 41 === 0
+          ? undefined
+          : {
+              x: index % 53 === 0 ? -2_000 : index % 100,
+              y: index,
+              width: 240,
+              height: 32,
+            },
+      ancestorNodeIds: Array.from(
+        { length: index % 211 === 0 ? 1_500 : 2 },
+        (_, ancestorIndex) =>
+          `section:${Math.floor(index / 100)}:${ancestorIndex}`,
+      ),
     }),
   );
   const index = buildIndex(records);
+  const reversed = buildIndex([...records].reverse());
 
-  assert.equal(index.nodes.length, 2_500);
+  assert.deepEqual(index, reversed);
+  assert.equal(index.nodes.length, 3_000);
   assert.equal(
     queryFigmaSnapshotNodeIndex({
       nodeIndex: index,
@@ -390,14 +443,28 @@ void test("figma snapshot explorer: keeps large synthetic indexes searchable wit
   assert.equal(preview.assets.length, 25);
   assert.equal(preview.tiles.length, 25);
   assert.equal(preview.boundedPreview, true);
+  assert.equal(preview.budget?.candidateTileCount, 2_926);
+  assert.equal(preview.budget?.skippedTileCount, 2_901);
+  assert.ok(
+    index.nodes.some((node) => node.labels.includes("duplicate-label")),
+  );
+  assert.ok(index.nodes.some((node) => node.labels.includes("hidden")));
+  assert.ok(index.nodes.some((node) => node.labels.includes("off-canvas")));
+  assert.ok(index.nodes.some((node) => node.labels.includes("missing-bounds")));
+  assert.ok(index.nodes.some((node) => node.ancestorNodeIds.length === 1_500));
 });
 
 void test("figma snapshot explorer: attaches and writes preview manifests consistently with the snapshot manifest", async () => {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), "ti-figma-snapshot-explorer-"));
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), "ti-figma-snapshot-explorer-"),
+  );
   try {
     const index = buildIndex();
     const manifest = createManifest(index);
-    const preview = planFigmaSnapshotPreviewCache({ nodeIndex: index, maxTiles: 4 });
+    const preview = planFigmaSnapshotPreviewCache({
+      nodeIndex: index,
+      maxTiles: 4,
+    });
     const updatedManifest = attachFigmaSnapshotPreviewManifestDigest({
       manifest,
       previewManifest: preview,
@@ -429,8 +496,14 @@ void test("figma snapshot explorer: attaches and writes preview manifests consis
       join(written.vaultPath, firstAsset.relativePath),
       "utf8",
     );
-    assert.equal(Buffer.byteLength(persistedAsset, "utf8"), firstAsset.byteLength);
-    assert.equal(sha256Hex(JSON.parse(persistedAsset) as unknown), firstAsset.sha256);
+    assert.equal(
+      Buffer.byteLength(persistedAsset, "utf8"),
+      firstAsset.byteLength,
+    );
+    assert.equal(
+      sha256Hex(JSON.parse(persistedAsset) as unknown),
+      firstAsset.sha256,
+    );
     validateFigmaSnapshotPreviewManifest(persistedPreview);
     validateFigmaSnapshotManifest(persistedManifest);
   } finally {
@@ -439,7 +512,9 @@ void test("figma snapshot explorer: attaches and writes preview manifests consis
 });
 
 void test("figma snapshot explorer: writes fractional-bound preview assets with consistent tile dimensions", async () => {
-  const workspaceRoot = await mkdtemp(join(tmpdir(), "ti-figma-fractional-preview-"));
+  const workspaceRoot = await mkdtemp(
+    join(tmpdir(), "ti-figma-fractional-preview-"),
+  );
   try {
     const index = buildIndex([
       createRecord({
@@ -464,9 +539,15 @@ void test("figma snapshot explorer: writes fractional-bound preview assets with 
     assert.equal(tile.height, asset.height);
 
     await writeFigmaSnapshotPreviewCacheAssets(workspaceRoot, preview);
-    const persistedAsset = await readFile(join(workspaceRoot, asset.relativePath), "utf8");
+    const persistedAsset = await readFile(
+      join(workspaceRoot, asset.relativePath),
+      "utf8",
+    );
     assert.equal(Buffer.byteLength(persistedAsset, "utf8"), asset.byteLength);
-    assert.equal(sha256Hex(JSON.parse(persistedAsset) as unknown), asset.sha256);
+    assert.equal(
+      sha256Hex(JSON.parse(persistedAsset) as unknown),
+      asset.sha256,
+    );
   } finally {
     await rm(workspaceRoot, { recursive: true, force: true });
   }
