@@ -109,9 +109,16 @@ export function prettyEnv(env: string): string {
   return env.replace(/^TEST_INTELLIGENCE_/, "").toLowerCase();
 }
 
-export function validateSettings(values: Settings): ValidationIssue[] {
+export function validateSettings(
+  values: Settings,
+  options: { requireFigmaToken?: boolean } = {},
+): ValidationIssue[] {
+  const requireFigmaToken = options.requireFigmaToken ?? true;
   const issues: ValidationIssue[] = [];
   for (const key of REQUIRED_SETTINGS) {
+    if (key === "TEST_INTELLIGENCE_FIGMA_ACCESS_TOKEN" && !requireFigmaToken) {
+      continue;
+    }
     const v = values[key];
     if (v === undefined || v === null || v === "" || v === false) {
       issues.push({

@@ -1,9 +1,11 @@
-import { readFile, stat } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { lstat, readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import isPathInside from "is-path-inside";
 import {
   SUPPORTED_REGION_ATTESTATION_HOSTING_REGIONS,
   type RegionAttestationHostingRegion,
+  type TenantScope,
 } from "@oscharko-dev/ti-contracts";
 import type { RunConfig, ValidationIssue } from "@/lib/types";
 import { looksLikeFigmaDesignUrl } from "@/lib/runs-form";
@@ -13,6 +15,10 @@ import {
   type SettingsKey,
 } from "@/lib/settings-state";
 import { readPersistedWorkbenchSettingsOverrides } from "./workbench-settings-store";
+import {
+  formatWorkbenchTenantScope,
+  resolveWorkbenchTenantScope,
+} from "./workbench-tenant-scope";
 
 export interface WorkbenchEnvStatus {
   featureGate: boolean;
@@ -29,7 +35,7 @@ export interface ResolvedWorkbenchEnv {
   endpoint: string;
   deployment: string;
   apiKey: string;
-  figmaToken: string;
+  figmaToken?: string;
   ictRegisterRef: string;
   visualEndpoint: string;
   visualPrimaryDeployment: string;
@@ -48,6 +54,8 @@ export interface PreparedWorkbenchRun {
   config: RunConfig;
   jobId: string;
   generatedAt: string;
+  tenantScope: TenantScope;
+  tenantScopeKey: string;
   repoRoot: string;
   outputRoot: string;
   allowedOutputRoots: string[];
@@ -87,6 +95,7 @@ const DEFAULT_VISUAL_FALLBACK_DEPLOYMENT = "phi-4-multimodal-instruct";
 const DEFAULT_LOCAL_ICT_REGISTER_REF = "test-intelligence-local-ict";
 const MAX_CUSTOM_CONTEXT_BYTES = 256 * 1024;
 const SAFE_JOB_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{2,95}$/u;
+const SAFE_SNAPSHOT_SEGMENT = /^[A-Za-z0-9._-]+$/u;
 
 const truthy = (value: string | undefined): boolean => {
   if (value === undefined) return false;
@@ -124,7 +133,7 @@ const readFirstEnv = (
   return undefined;
 };
 
-const readWorkbenchRequestSettings = (
+export const readWorkbenchRequestSettings = (
   value: unknown,
 ): Partial<Record<SettingsKey, string | boolean>> => {
   if (typeof value !== "object" || value === null) return {};
@@ -144,7 +153,7 @@ const readWorkbenchRequestSettings = (
   return out;
 };
 
-const mergeWorkbenchEnvWithSettings = (
+export const mergeWorkbenchEnvWithSettings = (
   env: NodeJS.ProcessEnv,
   settings: Partial<Record<SettingsKey, string | boolean>>,
 ): NodeJS.ProcessEnv => {
@@ -242,7 +251,9 @@ export const resolveRunOutputDir = ({
 
 export const resolveWorkbenchEnv = (
   env: NodeJS.ProcessEnv,
+  options: { requireFigmaToken?: boolean } = {},
 ): ResolvedWorkbenchEnv => {
+  const requireFigmaToken = options.requireFigmaToken ?? true;
   if (env.WORKBENCH_RUNNER_MODE === "mock") {
     return {
       endpoint: "mock://test-intelligence",
@@ -309,7 +320,7 @@ export const resolveWorkbenchEnv = (
     featureGateOverride ||
     (endpoint !== undefined &&
       apiKey !== undefined &&
-      figmaToken !== undefined);
+      (!requireFigmaToken || figmaToken !== undefined));
   const ictRegisterRef =
     readFirstEnv(env, [
       "TEST_INTELLIGENCE_ICT_REGISTER_REF",
@@ -381,7 +392,7 @@ export const resolveWorkbenchEnv = (
       "TEST_INTELLIGENCE_LLM_API_KEY, TEST_INTELLIGENCE_LLM_GATEWAY_API_KEY, or WORKSPACE_TEST_SPACE_LLM_API_KEY",
     );
   }
-  if (figmaToken === undefined) {
+  if (requireFigmaToken && figmaToken === undefined) {
     missing.push("FIGMA_ACCESS_TOKEN or TEST_INTELLIGENCE_FIGMA_ACCESS_TOKEN");
   }
   if (regionAttestedRegion === undefined) {
@@ -398,7 +409,7 @@ export const resolveWorkbenchEnv = (
     missing.length > 0 ||
     endpoint === undefined ||
     apiKey === undefined ||
-    figmaToken === undefined ||
+    (requireFigmaToken && figmaToken === undefined) ||
     regionAttestedRegion === undefined ||
     regionAttestationSigningKey === undefined
   ) {
@@ -412,7 +423,7 @@ export const resolveWorkbenchEnv = (
     endpoint,
     deployment,
     apiKey,
-    figmaToken,
+    ...(figmaToken !== undefined ? { figmaToken } : {}),
     ictRegisterRef,
     visualEndpoint: visualEndpoint ?? endpoint,
     visualPrimaryDeployment,
@@ -430,6 +441,16 @@ export const resolveWorkbenchEnv = (
   };
 };
 
+const readSelectionList = (
+  value: unknown,
+): string[] =>
+  Array.isArray(value)
+    ? value
+        .filter((entry): entry is string => typeof entry === "string")
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0)
+    : [];
+
 const parseConfig = (value: unknown): RunConfig => {
   if (typeof value !== "object" || value === null) {
     throw new WorkbenchRunValidationError({
@@ -439,9 +460,27 @@ const parseConfig = (value: unknown): RunConfig => {
     });
   }
   const raw = value as Record<string, unknown>;
+  const sourceMode = raw.sourceMode === "snapshot" ? "snapshot" : "figma-url";
+  const rawSelection =
+    typeof raw.snapshotSelection === "object" && raw.snapshotSelection !== null
+      ? (raw.snapshotSelection as Record<string, unknown>)
+      : {};
   const autoJiraStory = raw.autoJiraStory === true;
   return {
-    figmaUrl: typeof raw.figmaUrl === "string" ? raw.figmaUrl.trim() : "",
+    sourceMode,
+    figmaUrl:
+      sourceMode === "figma-url" && typeof raw.figmaUrl === "string"
+        ? raw.figmaUrl.trim()
+        : "",
+    snapshotId:
+      sourceMode === "snapshot" && typeof raw.snapshotId === "string"
+        ? raw.snapshotId.trim()
+        : "",
+    snapshotSelection: {
+      nodeIds: readSelectionList(rawSelection.nodeIds),
+      pageIds: readSelectionList(rawSelection.pageIds),
+      frameIds: readSelectionList(rawSelection.frameIds),
+    },
     customContext:
       !autoJiraStory && typeof raw.customContext === "string"
         ? raw.customContext.trim()
@@ -493,13 +532,49 @@ export const prepareWorkbenchRun = async ({
     parsed.settings,
   );
   const issues: ValidationIssue[] = [];
-  const figma = looksLikeFigmaDesignUrl(config.figmaUrl);
-  if (!figma.ok) {
-    issues.push({
-      field: "figmaUrl",
-      label: "Figma URL",
-      message: figma.reason ?? "Invalid Figma URL",
-    });
+  if (config.sourceMode === "snapshot") {
+    if (
+      config.snapshotId.length === 0 ||
+      !SAFE_SNAPSHOT_SEGMENT.test(config.snapshotId) ||
+      config.snapshotId === "." ||
+      config.snapshotId === ".."
+    ) {
+      issues.push({
+        field: "snapshotId",
+        label: "Snapshot ID",
+        message:
+          "Snapshot ID must contain only letters, numbers, dot, underscore or dash.",
+      });
+    }
+    const selectionSize =
+      config.snapshotSelection.nodeIds.length +
+      config.snapshotSelection.pageIds.length +
+      config.snapshotSelection.frameIds.length;
+    if (selectionSize === 0) {
+      issues.push({
+        field: "snapshotSelection",
+        label: "Snapshot selection",
+        message:
+          "Select at least one local page, frame, mask, element or group.",
+      });
+    }
+    if (config.autoJiraStory) {
+      issues.push({
+        field: "autoJiraStory",
+        label: "Auto Jira Story",
+        message:
+          "Auto Jira Story requires live visual capture and cannot run from a local snapshot.",
+      });
+    }
+  } else {
+    const figma = looksLikeFigmaDesignUrl(config.figmaUrl);
+    if (!figma.ok) {
+      issues.push({
+        field: "figmaUrl",
+        label: "Figma URL",
+        message: figma.reason ?? "Invalid Figma URL",
+      });
+    }
   }
   if (!config.outputDir) {
     issues.push({
@@ -552,8 +627,8 @@ export const prepareWorkbenchRun = async ({
         ],
       });
     }
-    const info = await stat(candidate).catch(() => null);
-    if (info === null || !info.isFile()) {
+    const info = await lstat(candidate).catch(() => null);
+    if (info === null || !info.isFile() || info.isSymbolicLink()) {
       throw new WorkbenchRunValidationError({
         status: 400,
         code: "RUN_CONFIG_INVALID",
@@ -567,7 +642,25 @@ export const prepareWorkbenchRun = async ({
         ],
       });
     }
-    caCertPath = candidate;
+    const [realRepoRoot, realCandidate] = await Promise.all([
+      realpath(repoRoot),
+      realpath(candidate),
+    ]);
+    if (!isPathInside(realCandidate, realRepoRoot)) {
+      throw new WorkbenchRunValidationError({
+        status: 400,
+        code: "RUN_CONFIG_INVALID",
+        message: "Run configuration is invalid.",
+        issues: [
+          {
+            field: "caCerts",
+            label: "NODE_EXTRA_CA_CERTS",
+            message: "CA bundle path must stay inside the workspace.",
+          },
+        ],
+      });
+    }
+    caCertPath = realCandidate;
   }
   const outputRoot = path.resolve(repoRoot, config.outputDir);
   const allowedOutputRoots = resolveAllowedOutputRoots(repoRoot, requestedEnv);
@@ -622,19 +715,25 @@ export const prepareWorkbenchRun = async ({
 
   const generatedAt = now.toISOString();
   const jobId =
-    config.jobIdOverride || `ti-workbench-${Math.trunc(now.getTime())}`;
+    config.jobIdOverride ||
+    `ti-workbench-${Math.trunc(now.getTime())}-${randomUUID().slice(0, 8)}`;
   const artifactDir = resolveRunOutputDir({
     outputRoot,
     outputRunSubdir: config.outputRunSubdir,
     jobId,
     generatedAt,
   });
-  const resolvedEnv = resolveWorkbenchEnv(requestedEnv);
+  const resolvedEnv = resolveWorkbenchEnv(requestedEnv, {
+    requireFigmaToken: config.sourceMode === "figma-url",
+  });
+  const tenantScope = resolveWorkbenchTenantScope(requestedEnv);
 
   return {
     config,
     jobId,
     generatedAt,
+    tenantScope,
+    tenantScopeKey: formatWorkbenchTenantScope(tenantScope),
     repoRoot,
     outputRoot,
     allowedOutputRoots,

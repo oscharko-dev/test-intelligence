@@ -43,7 +43,7 @@ interface WorkbenchContextValue {
   inspectorCollapsed: boolean;
   toggleInspector: () => void;
   setInspectorCollapsed: (next: boolean) => void;
-  startRun: () => Promise<void>;
+  startRun: (configOverride?: RunConfig) => Promise<void>;
   resetRun: () => void;
   runBusy: boolean;
   runError: string | null;
@@ -124,7 +124,13 @@ export function WorkbenchProvider({
     () => extractSettingsOverrides(settings),
     [settings],
   );
-  const settingsIssues = useMemo(() => validateSettings(settings), [settings]);
+  const settingsIssues = useMemo(
+    () =>
+      validateSettings(settings, {
+        requireFigmaToken: runForm.sourceMode !== "snapshot",
+      }),
+    [runForm.sourceMode, settings],
+  );
 
   const applyLoadedSettings = useCallback((next: Settings): void => {
     setSavedSettings(next);
@@ -314,13 +320,21 @@ export function WorkbenchProvider({
     setSettingsError(null);
   }, [savedSettings]);
 
-  const startRun = useCallback(async (): Promise<void> => {
-    if (runFormIssues.length > 0) return;
-    if (settingsIssues.length > 0) {
+  const startRun = useCallback(async (configOverride?: RunConfig): Promise<void> => {
+    const config = configOverride ?? runForm;
+    const configIssues = validateForm(config);
+    if (configIssues.length > 0) return;
+    const currentSettingsIssues = validateSettings(settings, {
+      requireFigmaToken: config.sourceMode !== "snapshot",
+    });
+    if (currentSettingsIssues.length > 0) {
       setRunError(
-        `Workbench runner is not configured. Missing settings: ${settingsIssues.map((issue) => issue.field).join(", ")}.`,
+        `Workbench runner is not configured. Missing settings: ${currentSettingsIssues.map((issue) => issue.field).join(", ")}.`,
       );
       return;
+    }
+    if (configOverride !== undefined) {
+      setRunForm(configOverride);
     }
     setStartingRun(true);
     setRunError(null);
@@ -329,7 +343,7 @@ export function WorkbenchProvider({
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          ...runForm,
+          ...config,
           settings: settingsPayload,
         }),
       });
@@ -353,7 +367,7 @@ export function WorkbenchProvider({
     } finally {
       setStartingRun(false);
     }
-  }, [runForm, runFormIssues, settingsIssues, settingsPayload]);
+  }, [runForm, settings, settingsPayload]);
 
   const resetRun = useCallback(() => {
     setRunError(null);

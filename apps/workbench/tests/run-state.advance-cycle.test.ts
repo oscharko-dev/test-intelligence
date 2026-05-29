@@ -1,17 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { ADVANCE_ORDER, INITIAL_RUN, runReducer } from "@/lib/run-state";
+import { DEFAULT_FORM } from "@/lib/runs-form";
 import type { AdvanceTarget, RunConfig, RunState } from "@/lib/types";
 
 const SAMPLE_CONFIG: RunConfig = {
+  ...DEFAULT_FORM,
   figmaUrl: "https://www.figma.com/design/ABC/E?node-id=1-2",
-  customContext: "",
-  autoJiraStory: false,
   outputDir: ".out",
-  outputRunSubdir: "job-id",
-  visualSidecar: true,
-  allowPolicyBlocked: false,
-  caCerts: "",
-  jobIdOverride: "",
 };
 
 describe("full ADVANCE_ORDER walk", () => {

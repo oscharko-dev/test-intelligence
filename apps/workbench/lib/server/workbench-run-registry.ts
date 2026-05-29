@@ -38,9 +38,14 @@ import {
   safeRelativePath,
   type PreparedWorkbenchRun,
 } from "./workbench-run-validation";
+import {
+  formatWorkbenchTenantScope,
+  resolveWorkbenchTenantScope,
+} from "./workbench-tenant-scope";
 
 interface WorkbenchRunRecord {
   state: RunState;
+  tenantScope: string;
   promise?: Promise<void>;
 }
 
@@ -336,6 +341,33 @@ const fileInfo = async (
 const downloadHrefFor = (jobId: string, relativePath: string): string =>
   `/api/workbench/runs/${encodeURIComponent(jobId)}/files?path=${encodeURIComponent(relativePath)}`;
 
+const ABSOLUTE_PATH_RE =
+  /(?:\/[A-Za-z0-9._ -]+(?:\/[A-Za-z0-9._ -]+)+|[A-Za-z]:\\(?:[^\\\s]+\\)+[^\\\s]+)/gu;
+
+const sanitizeClientMessage = (message: string): string =>
+  message
+    .replace(ABSOLUTE_PATH_RE, "[local-path]")
+    .replace(
+      /(api[-_ ]?key|access[-_ ]?token|authorization)\s*[:=]\s*\S+/giu,
+      "$1=[redacted]",
+    )
+    .trim();
+
+export const toClientRunState = (state: RunState): RunState => {
+  const {
+    artifactDir: _artifactDir,
+    outputRoot: _outputRoot,
+    errorMessage,
+    ...rest
+  } = state;
+  return {
+    ...rest,
+    ...(errorMessage !== undefined
+      ? { errorMessage: sanitizeClientMessage(errorMessage) }
+      : {}),
+  };
+};
+
 const artifactFromPath = async ({
   jobId,
   artifactDir,
@@ -564,7 +596,7 @@ const sanitizeErrorMessage = (
     error instanceof Error
       ? error.message
       : "Workbench runner failed unexpectedly.";
-  const secrets = [prepared.env.apiKey, prepared.env.figmaToken].filter(
+  const secrets = [prepared.env.apiKey, prepared.env.figmaToken ?? ""].filter(
     (value) => value.length >= 4,
   );
   let message = raw.replace(/[\u0000-\u001f\u007f]+/gu, " ").slice(0, 900);
@@ -572,6 +604,7 @@ const sanitizeErrorMessage = (
     message = message.split(secret).join("[redacted]");
   }
   return message
+    .replace(ABSOLUTE_PATH_RE, "[local-path]")
     .replace(
       /(api[-_ ]?key|access[-_ ]?token|authorization)\s*[:=]\s*\S+/giu,
       "$1=[redacted]",
@@ -634,17 +667,29 @@ const executeRealRun = async (
     });
   }
   await mkdir(safeArtifactDir, { recursive: true });
+  const source: RunFigmaToQcTestCasesInput["source"] =
+    prepared.config.sourceMode === "snapshot"
+      ? {
+          kind: "figma_snapshot",
+          workspaceRoot: prepared.repoRoot,
+          snapshotId: prepared.config.snapshotId,
+          tenantScope: prepared.tenantScope,
+          selectedNodeIds: prepared.config.snapshotSelection.nodeIds,
+          selectedPageIds: prepared.config.snapshotSelection.pageIds,
+          selectedFrameIds: prepared.config.snapshotSelection.frameIds,
+        }
+      : {
+          kind: "figma_url",
+          figmaUrl: prepared.config.figmaUrl,
+          accessToken: prepared.env.figmaToken ?? "",
+          ...(prepared.caCertPath !== undefined
+            ? { caCertPath: prepared.caCertPath }
+            : {}),
+        };
   const input: RunFigmaToQcTestCasesInput = {
     jobId: prepared.jobId,
     generatedAt: prepared.generatedAt,
-    source: {
-      kind: "figma_url",
-      figmaUrl: prepared.config.figmaUrl,
-      accessToken: prepared.env.figmaToken,
-      ...(prepared.caCertPath !== undefined
-        ? { caCertPath: prepared.caCertPath }
-        : {}),
-    },
+    source,
     outputRoot: resolvedOutputRoot,
     artifactDir: safeArtifactDir,
     llm: buildLlmConfig(prepared),
@@ -796,11 +841,15 @@ const executeMockRun = async (
     }),
   );
   const perCaseBodies = perCase.map((_, index) =>
-    [
-      `# Testfall ${index + 1}`,
-      "",
-      `Quelle: ${prepared.config.figmaUrl}`,
-      "",
+      [
+        `# Testfall ${index + 1}`,
+        "",
+      `Quelle: ${
+        prepared.config.sourceMode === "snapshot"
+          ? `Figma snapshot ${prepared.config.snapshotId}`
+          : prepared.config.figmaUrl
+      }`,
+        "",
       "## Erwartung",
       "",
       "Der fachliche Ablauf ist auditierbar dokumentiert.",
@@ -898,6 +947,7 @@ export const startWorkbenchRun = (prepared: PreparedWorkbenchRun): RunState => {
   }
   const record: WorkbenchRunRecord = {
     state: createQueuedRun(prepared),
+    tenantScope: prepared.tenantScopeKey,
   };
   const initialState = record.state;
   store.jobs.set(prepared.jobId, record);
@@ -908,6 +958,18 @@ export const startWorkbenchRun = (prepared: PreparedWorkbenchRun): RunState => {
 
 export const getWorkbenchRun = (jobId: string): RunState | undefined =>
   getStore().jobs.get(jobId)?.state;
+
+export const getWorkbenchRunForClient = (
+  jobId: string,
+  env: NodeJS.ProcessEnv = process.env,
+): RunState | undefined => {
+  const record = getStore().jobs.get(jobId);
+  if (record === undefined) return undefined;
+  if (record.tenantScope !== formatWorkbenchTenantScope(resolveWorkbenchTenantScope(env))) {
+    return undefined;
+  }
+  return toClientRunState(record.state);
+};
 
 export const getWorkbenchRunCompletionForTests = (
   jobId: string,
@@ -926,9 +988,17 @@ const contentTypeFor = (filePath: string): string => {
 export const readWorkbenchRunFile = async (
   jobId: string,
   requestedPath: string,
+  env: NodeJS.ProcessEnv = process.env,
 ): Promise<ReadWorkbenchRunFileResult> => {
   const record = getStore().jobs.get(jobId);
   if (record === undefined) {
+    throw new WorkbenchRunRegistryError({
+      status: 404,
+      code: "WORKBENCH_RUN_NOT_FOUND",
+      message: "Workbench run not found.",
+    });
+  }
+  if (record.tenantScope !== formatWorkbenchTenantScope(resolveWorkbenchTenantScope(env))) {
     throw new WorkbenchRunRegistryError({
       status: 404,
       code: "WORKBENCH_RUN_NOT_FOUND",

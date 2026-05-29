@@ -1,7 +1,14 @@
 import type { OutputSubdir, RunConfig, ValidationIssue } from "./types";
 
 export const DEFAULT_FORM: RunConfig = {
+  sourceMode: "figma-url",
   figmaUrl: "",
+  snapshotId: "",
+  snapshotSelection: {
+    nodeIds: [],
+    pageIds: [],
+    frameIds: [],
+  },
   customContext: "",
   autoJiraStory: false,
   outputDir: "",
@@ -28,6 +35,7 @@ export interface FigmaUrlCheck {
 
 const WINDOWS_ABSOLUTE_PATH = /^(?:[A-Za-z]:[\\/]|\\\\)/u;
 const SAFE_WORKSPACE_RELATIVE_PATH = /^[A-Za-z0-9._/-]+$/u;
+const SAFE_SNAPSHOT_SEGMENT = /^[A-Za-z0-9._-]+$/u;
 
 function isWorkspaceRelativePath(value: string): boolean {
   const trimmed = value.trim();
@@ -68,13 +76,48 @@ export function looksLikeFigmaDesignUrl(url: string): FigmaUrlCheck {
 
 export function validateForm(f: RunConfig): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
-  const fig = looksLikeFigmaDesignUrl(f.figmaUrl);
-  if (!fig.ok) {
-    issues.push({
-      field: "figmaUrl",
-      label: "Figma URL",
-      message: fig.reason ?? "Invalid Figma URL",
-    });
+  if (f.sourceMode === "snapshot") {
+    if (
+      f.snapshotId.trim().length === 0 ||
+      !SAFE_SNAPSHOT_SEGMENT.test(f.snapshotId) ||
+      f.snapshotId === "." ||
+      f.snapshotId === ".."
+    ) {
+      issues.push({
+        field: "snapshotId",
+        label: "Snapshot ID",
+        message:
+          "Snapshot ID must contain only letters, numbers, dot, underscore or dash.",
+      });
+    }
+    const selectionSize =
+      f.snapshotSelection.nodeIds.length +
+      f.snapshotSelection.pageIds.length +
+      f.snapshotSelection.frameIds.length;
+    if (selectionSize === 0) {
+      issues.push({
+        field: "snapshotSelection",
+        label: "Snapshot selection",
+        message: "Select at least one local page, frame, mask, element or group.",
+      });
+    }
+    if (f.autoJiraStory) {
+      issues.push({
+        field: "autoJiraStory",
+        label: "Auto Jira Story",
+        message:
+          "Auto Jira Story requires live visual capture and is disabled for local snapshots.",
+      });
+    }
+  } else {
+    const fig = looksLikeFigmaDesignUrl(f.figmaUrl);
+    if (!fig.ok) {
+      issues.push({
+        field: "figmaUrl",
+        label: "Figma URL",
+        message: fig.reason ?? "Invalid Figma URL",
+      });
+    }
   }
   const outDir = f.outputDir.trim();
   if (!outDir) {
@@ -119,7 +162,21 @@ export function buildCli(f: RunConfig): string {
   const lines: string[] = [];
   if (f.caCerts) lines.push(`NODE_EXTRA_CA_CERTS=${f.caCerts} \\`);
   lines.push(`pnpm exec test-intelligence run \\`);
-  lines.push(`  --figma-url "${f.figmaUrl || "<figma-url>"}" \\`);
+  if (f.sourceMode === "snapshot") {
+    lines.push(`  --figma-snapshot-id "${f.snapshotId || "<snapshot-id>"}" \\`);
+    lines.push(`  --figma-snapshot-root . \\`);
+    for (const pageId of f.snapshotSelection.pageIds) {
+      lines.push(`  --figma-snapshot-page-id "${pageId}" \\`);
+    }
+    for (const frameId of f.snapshotSelection.frameIds) {
+      lines.push(`  --figma-snapshot-frame-id "${frameId}" \\`);
+    }
+    for (const nodeId of f.snapshotSelection.nodeIds) {
+      lines.push(`  --figma-snapshot-node-id "${nodeId}" \\`);
+    }
+  } else {
+    lines.push(`  --figma-url "${f.figmaUrl || "<figma-url>"}" \\`);
+  }
   if (f.customContext) {
     lines.push(`  --custom-context-markdown "${f.customContext}" \\`);
   }
