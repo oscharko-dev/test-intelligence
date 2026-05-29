@@ -21,8 +21,8 @@ Explain the product belief this epic validates and the trust or capability it sh
 ## Architecture Invariants
 
 - Existing architecture boundaries, quality gates, security posture, evidence semantics, and deterministic verification must not be weakened.
-- Productive model calls must remain behind the Model Gateway.
-- Workflow authority must remain explicit and documented.
+- Productive model calls, external integrations, and generated artifacts must preserve existing Test Intelligence policy gates and audit semantics.
+- Workflow authority, tenant boundaries, and evidence provenance must remain explicit and documented.
 
 ## Target Outcome
 

@@ -32,14 +32,14 @@ Describe the goal of this issue and the user, developer, platform, or governance
 ## Expected Verification
 
 - [ ] Required GitHub check: `ci`.
-- [ ] Studio browser quality gate when Studio UI or BFF browser behavior changes.
-- [ ] Studio performance and memory gates when editor performance, Monaco, rendering, or large-output behavior changes.
-- [ ] Studio visual regression when visible UI structure changes.
+- [ ] Workbench browser quality gate when Workbench UI, local API, or browser behavior changes.
+- [ ] Workbench performance and memory gates when run history, artifact rendering, previews, or large-output behavior changes.
+- [ ] Workbench visual regression when visible UI structure changes.
 - [ ] Markdown link check when documentation changes.
-- [ ] W0.2 release gate when W0.2 product-path semantics change.
-- [ ] W0.3 release gate when W0.3 workflow or Studio hardening semantics change.
+- [ ] `pnpm run release:check` when release, package, contract, artifact, or publication semantics change.
+- [ ] Package, lockfile, SBOM, license, or supply-chain checks when dependency or package-surface behavior changes.
 - [ ] Security review when trust boundaries, auth/session, secrets, CSP, model access, execution, patch application, or external calls change.
-- [ ] Qodana/static-analysis review when security-sensitive or shared control-plane code changes.
+- [ ] CodeQL/static-analysis review when security-sensitive or shared control-plane code changes.
 
 ## Review Settlement and Formal Issue Completion
 

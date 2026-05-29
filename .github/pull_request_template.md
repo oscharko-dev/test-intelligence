@@ -1,6 +1,6 @@
 ## Summary
 
-Describe what changed and why it matters for Keiko.
+Describe what changed and why it matters for Test Intelligence.
 
 Refs #<issue_number>
 

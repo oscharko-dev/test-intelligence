@@ -13493,8 +13493,7 @@ const stampGeneratedTestCase = (input: {
 
 const normalizeOptionalDraftString = (value: unknown): string | undefined => {
   if (typeof value !== "string") return undefined;
-  const trimmed = value.trim();
-  return trimmed.length === 0 ? undefined : trimmed;
+  return value.trim().length === 0 ? undefined : value;
 };
 
 const isReplayCacheStoreValidationError = (
