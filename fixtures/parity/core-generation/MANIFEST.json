@@ -3,7 +3,7 @@
   "fileCount": 2,
   "files": {
     "coverage-plan.json": "sha256:3a08d25428c74edd72586315fb6c140927c5406d89fbebc6b6cffe22ab714928",
-    "draft-list.json": "sha256:451980f56ed04bf3f71f7819405259b41cfe33f79ed4a6e8aa8b4dcd98062de8"
+    "draft-list.json": "sha256:84aca1d1d367dc15e8300e28a4229b9ad95b305130f0e672714bbf106047db84"
   },
   "scenario": "core-generation",
   "wdSourceSha": "006dabdf0abe30b9cac2b742a7238c6625d8e8c1"

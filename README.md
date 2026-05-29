@@ -7,6 +7,16 @@ The current user-facing surface is the **Workbench** in `apps/workbench`. It is
 a local Next.js operator UI for configuring runs, launching the runtime, and
 inspecting generated artifacts.
 
+The `0.2.0-beta.0` release adds **Snapshot Vault** for enterprise Figma board
+ingestion. Operators can import or refresh a Figma board once, inspect and
+select local snapshot evidence, then run generation repeatedly from immutable
+local artifacts without repeated live Figma REST reads during generation. Import
+and refresh still require valid Figma access and still obey Figma platform
+licensing, access-control, and rate-limit rules.
+
+See [SNAPSHOT_VAULT.md](SNAPSHOT_VAULT.md) for the full operator guide and
+[RELEASE_READINESS.md](RELEASE_READINESS.md) for the release evidence map.
+
 ## npm Installation
 
 Install the published package:
@@ -110,6 +120,14 @@ browser receives snapshot IDs, hashed source identity, tenant scope, selected
 page/frame/node IDs, queue status, retry timing, and active-job remediation
 guidance; it does not need raw Figma URLs, authorization headers, tokens,
 private request logs, or private vault paths for run-from-snapshot.
+
+Supported Snapshot Vault import credential modes are `personal_access_token`
+and `enterprise_service_token`. The `oauth_access_token` mode is schema-ready
+and fails closed in `0.2.0-beta.0` until an OAuth resolver is added. Snapshot
+artifacts are tenant-scoped and digest-stamped so downstream evidence can
+reference reproducible local Figma evidence without exposing raw customer URLs,
+tokens, screenshots, private snapshots, private runtime logs, or private
+request transcripts.
 
 Run History is read-only sample data until persisted history loading is
 implemented.

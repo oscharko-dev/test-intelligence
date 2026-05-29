@@ -33,7 +33,7 @@ export interface PackageIdentity {
 export const PACKAGE_NAME: string = "@oscharko-dev/test-intelligence";
 
 /** Semantic version of this build, kept in sync with root `package.json`. */
-export const PACKAGE_VERSION: string = "0.1.0-beta.6";
+export const PACKAGE_VERSION: string = "0.2.0-beta.0";
 
 /**
  * Classifies a semantic version string into a {@link ReleaseStage}.

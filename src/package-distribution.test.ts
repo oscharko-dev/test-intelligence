@@ -121,10 +121,15 @@ void test("npm pack produces a tarball whose contents match package.json files[]
 
     // Files explicitly listed in package.json files[] MUST ship.
     assert.match(tarballListing, /package\/README\.md/);
+    assert.match(tarballListing, /package\/CHANGELOG\.md/);
     assert.match(tarballListing, /package\/LICENSE/);
     assert.match(tarballListing, /package\/NOTICE/);
+    assert.match(tarballListing, /package\/SNAPSHOT_VAULT\.md/);
+    assert.match(tarballListing, /package\/RELEASE_READINESS\.md/);
+    assert.match(tarballListing, /package\/VERSIONING\.md/);
     assert.match(tarballListing, /package\/GOVERNANCE\.md/);
     assert.match(tarballListing, /package\/CONTRIBUTING\.md/);
+    assert.match(tarballListing, /package\/TROUBLESHOOTING\.md/);
     assert.match(tarballListing, /package\/SECURITY\.md/);
     assert.match(tarballListing, /package\/CODE_OF_CONDUCT\.md/);
     assert.match(tarballListing, /package\/SUPPORT\.md/);

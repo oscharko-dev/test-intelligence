@@ -12,11 +12,11 @@
     },
     "contracts": {
       "fileCount": 3,
-      "manifestSha256": "sha256:41aaaa2e80d97594fa833509f57af3a37316af0a640edaef8983f704c96d6e52"
+      "manifestSha256": "sha256:ddb56ad457366fc839e2ac8bf1e0d6abb2999c22deb89f24149716f52c23e0af"
     },
     "core-generation": {
       "fileCount": 2,
-      "manifestSha256": "sha256:ff9aca9c5518eb251349556068099363341741fd3597952eaa762372f9947786"
+      "manifestSha256": "sha256:c36a1f4d2cb6024553bf9d0a767029d7fedd05b47da95a83ea201bdb18a2c5d5"
     },
     "evidence": {
       "fileCount": 3,

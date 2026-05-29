@@ -2,6 +2,32 @@
 
 All notable public changes are tracked here.
 
+## 0.2.0-beta.0 - 2026-05-29
+
+- Released the Figma Snapshot Vault beta workflow for enterprise-scale board
+  ingestion: resumable import and refresh, tenant-scoped local snapshots,
+  searchable local node indexes, bounded preview metadata, Workbench scope
+  selection, and CLI/Workbench run-from-snapshot generation.
+- Added public Snapshot Vault documentation covering REST/rate-limit savings,
+  supported Figma auth modes, recommended enterprise setup, operator workflow,
+  troubleshooting, and limitations.
+- Aligned package and workspace release metadata to `0.2.0-beta.0`, including
+  CLI and server runtime package identity.
+- Aligned Snapshot Vault artifact schema constants to the `1.1.0` release
+  family and generated test-case schema metadata to `1.4.0` for optional
+  Snapshot Vault audit-source references.
+- Documented the release-readiness evidence map for package shape,
+  installable-package validation, Markdown link checking, secret/customer-data
+  review, SBOM parity, and release-gate rationale.
+- Migration impact: existing live-Figma and non-Figma evidence remains
+  read-compatible because Snapshot Vault fields are optional or scoped to new
+  Snapshot Vault artifacts. Consumers that validate exact generated-case or
+  Snapshot Vault schema constants must accept the new `0.2.0-beta.0` constants.
+- Known limitations: Snapshot Vault does not bypass Figma access controls,
+  licensing, plan restrictions, or rate limits. Initial import and refresh
+  still require valid Figma access. OAuth access-token import is schema-ready
+  but fails closed until an OAuth resolver is added.
+
 ## 0.1.0-beta.6 - 2026-05-28
 
 - Upgraded the Workbench runtime stack to Next.js 16, React 19.2, and the

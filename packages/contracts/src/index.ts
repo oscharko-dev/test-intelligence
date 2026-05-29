@@ -84,8 +84,11 @@ export const TEST_INTELLIGENCE_CONTRACT_VERSION = "1.39.0" as const;
  * `audit.truncatedInstructionCount` records how many upstream repair
  * instructions were clipped before regeneration so validation can emit
  * a non-blocking audit warning.
+ *
+ * 1.4.0 — Issue #37: public `0.2.0-beta.0` release alignment for optional
+ * Snapshot Vault audit metadata introduced across the #28 delivery wave.
  */
-export const GENERATED_TEST_CASE_SCHEMA_VERSION = "1.3.0" as const;
+export const GENERATED_TEST_CASE_SCHEMA_VERSION = "1.4.0" as const;
 
 /** Persisted polarity labels for generated test cases (Issue #2030). */
 export const ALLOWED_GENERATED_TEST_CASE_POLARITIES = [
@@ -7799,16 +7802,16 @@ export interface TenantScope {
 }
 
 /** Schema version for persisted Figma Snapshot Vault manifest artifacts. */
-export const FIGMA_SNAPSHOT_MANIFEST_SCHEMA_VERSION = "1.0.0" as const;
+export const FIGMA_SNAPSHOT_MANIFEST_SCHEMA_VERSION = "1.1.0" as const;
 
 /** Schema version for persisted Figma Snapshot Vault node-index artifacts. */
-export const FIGMA_SNAPSHOT_NODE_INDEX_SCHEMA_VERSION = "1.0.0" as const;
+export const FIGMA_SNAPSHOT_NODE_INDEX_SCHEMA_VERSION = "1.1.0" as const;
 
 /** Schema version for persisted Figma Snapshot Vault preview manifests. */
-export const FIGMA_SNAPSHOT_PREVIEW_MANIFEST_SCHEMA_VERSION = "1.0.0" as const;
+export const FIGMA_SNAPSHOT_PREVIEW_MANIFEST_SCHEMA_VERSION = "1.1.0" as const;
 
 /** Schema version for persisted Figma Snapshot Vault import-status artifacts. */
-export const FIGMA_SNAPSHOT_IMPORT_STATUS_SCHEMA_VERSION = "1.0.0" as const;
+export const FIGMA_SNAPSHOT_IMPORT_STATUS_SCHEMA_VERSION = "1.1.0" as const;
 
 /** Supported import strategies for a persisted Figma snapshot. */
 export type FigmaSnapshotImportStrategy = "rest_file" | "rest_nodes" | "hybrid";
