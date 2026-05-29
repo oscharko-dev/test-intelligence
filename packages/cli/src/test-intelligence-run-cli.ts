@@ -61,9 +61,13 @@ import {
   DEFAULT_OUTPUT_ROOT,
   resolveTestIntelligenceEnabled,
 } from "./cli-defaults.js";
-import { TEST_INTELLIGENCE_ENV } from "@oscharko-dev/ti-contracts";
+import {
+  DEFAULT_TENANT_SCOPE,
+  TEST_INTELLIGENCE_ENV,
+} from "@oscharko-dev/ti-contracts";
 import type {
   FinOpsBudgetEnvelope,
+  TenantScope,
   TestCasePolicyReport,
 } from "@oscharko-dev/ti-contracts";
 import {
@@ -87,6 +91,7 @@ import {
 import {
   MAX_TENANT_BUNDLE_BYTES,
   parseAndCanonicalizeTenantBundle,
+  resolveTenantScopeSegments,
   type TenantBundleInput,
 } from "@oscharko-dev/ti-tenant";
 import {
@@ -410,10 +415,35 @@ const parsePositiveIntegerEnv = (
   return parsed;
 };
 
+const appendRepeatedStringFlag = (
+  current: readonly string[],
+  flag: string,
+  value: string | undefined,
+): string[] => {
+  const normalized = value?.trim();
+  if (!normalized) {
+    throw new TestIntelligenceRunOperatorError(
+      `${flag} requires a non-empty value`,
+    );
+  }
+  return [...current, normalized];
+};
+
+const formatTenantScope = (scope: TenantScope): string => {
+  const [tenantId, environmentId, projectId] = resolveTenantScopeSegments(scope);
+  return `${tenantId}/${environmentId}/${projectId}`;
+};
+
 /** Parsed, validated flags for the test-intelligence run command. */
 export interface TestIntelligenceRunOptions {
   figmaUrl: string | undefined;
   figmaJsonFile: string | undefined;
+  figmaSnapshotId?: string | undefined;
+  figmaSnapshotRoot?: string | undefined;
+  figmaSnapshotNodeIds?: readonly string[] | undefined;
+  figmaSnapshotPageIds?: readonly string[] | undefined;
+  figmaSnapshotFrameIds?: readonly string[] | undefined;
+  tenantScope?: TenantScope | undefined;
   /** Output directory for run artifacts. `undefined` → default derived from job id. */
   output: string | undefined;
   /**
@@ -647,6 +677,20 @@ export const parseTestIntelligenceRunArgs = (
   let figmaUrl: string | undefined;
   let figmaJsonFile: string | undefined;
   let figmaJsonFileFlag: "--figma-json-file" | "--figma-payload" | undefined;
+  let figmaSnapshotId: string | undefined;
+  let figmaSnapshotRoot: string | undefined;
+  let figmaSnapshotNodeIds: string[] = [];
+  let figmaSnapshotPageIds: string[] = [];
+  let figmaSnapshotFrameIds: string[] = [];
+  let tenantScopeTenantId: string =
+    env.TEST_INTELLIGENCE_TENANT_ID?.trim() || DEFAULT_TENANT_SCOPE.tenantId;
+  let tenantScopeEnvironmentId: string =
+    env.TEST_INTELLIGENCE_ENVIRONMENT_ID?.trim() ||
+    DEFAULT_TENANT_SCOPE.environmentId;
+  let tenantScopeProjectId: string =
+    env.TEST_INTELLIGENCE_PROJECT_ID?.trim() ||
+    DEFAULT_TENANT_SCOPE.projectId ||
+    "default";
   let output: string | undefined;
   let outputRunSubdir: TestIntelligenceOutputRunSubdirMode | undefined;
   let modelEndpoint: string | undefined =
@@ -804,6 +848,106 @@ export const parseTestIntelligenceRunArgs = (
       }
       figmaJsonFile = value;
       figmaJsonFileFlag = arg as "--figma-json-file" | "--figma-payload";
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--figma-snapshot-id") {
+      const value = next?.trim();
+      if (!value) {
+        throw new TestIntelligenceRunOperatorError(
+          "--figma-snapshot-id requires a non-empty snapshot id",
+        );
+      }
+      if (figmaSnapshotId !== undefined) {
+        throw new TestIntelligenceRunOperatorError(
+          "--figma-snapshot-id may be specified at most once",
+        );
+      }
+      figmaSnapshotId = value;
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--figma-snapshot-root") {
+      const value = next?.trim();
+      if (!value) {
+        throw new TestIntelligenceRunOperatorError(
+          "--figma-snapshot-root requires a non-empty path",
+        );
+      }
+      if (figmaSnapshotRoot !== undefined) {
+        throw new TestIntelligenceRunOperatorError(
+          "--figma-snapshot-root may be specified at most once",
+        );
+      }
+      figmaSnapshotRoot = value;
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--figma-snapshot-node-id") {
+      figmaSnapshotNodeIds = appendRepeatedStringFlag(
+        figmaSnapshotNodeIds,
+        arg,
+        next,
+      );
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--figma-snapshot-page-id") {
+      figmaSnapshotPageIds = appendRepeatedStringFlag(
+        figmaSnapshotPageIds,
+        arg,
+        next,
+      );
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--figma-snapshot-frame-id") {
+      figmaSnapshotFrameIds = appendRepeatedStringFlag(
+        figmaSnapshotFrameIds,
+        arg,
+        next,
+      );
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--tenant-id") {
+      const value = next?.trim();
+      if (!value) {
+        throw new TestIntelligenceRunOperatorError(
+          "--tenant-id requires a non-empty id",
+        );
+      }
+      tenantScopeTenantId = value;
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--environment-id") {
+      const value = next?.trim();
+      if (!value) {
+        throw new TestIntelligenceRunOperatorError(
+          "--environment-id requires a non-empty id",
+        );
+      }
+      tenantScopeEnvironmentId = value;
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--project-id") {
+      const value = next?.trim();
+      if (!value) {
+        throw new TestIntelligenceRunOperatorError(
+          "--project-id requires a non-empty id",
+        );
+      }
+      tenantScopeProjectId = value;
       index += 1;
       continue;
     }
@@ -1303,14 +1447,28 @@ export const parseTestIntelligenceRunArgs = (
     );
   }
 
-  if (figmaUrl !== undefined && figmaJsonFile !== undefined) {
+  const sourceCount = [figmaUrl, figmaJsonFile, figmaSnapshotId].filter(
+    (value) => value !== undefined,
+  ).length;
+  if (sourceCount > 1) {
     throw new TestIntelligenceRunOperatorError(
-      "--figma-url and --figma-json-file/--figma-payload are mutually exclusive; pass exactly one",
+      "--figma-url, --figma-json-file/--figma-payload, and --figma-snapshot-id are mutually exclusive; pass exactly one",
     );
   }
-  if (figmaUrl === undefined && figmaJsonFile === undefined) {
+  if (sourceCount === 0) {
     throw new TestIntelligenceRunOperatorError(
-      "One of --figma-url or --figma-json-file/--figma-payload is required",
+      "One of --figma-url, --figma-json-file/--figma-payload, or --figma-snapshot-id is required",
+    );
+  }
+  if (
+    figmaSnapshotId === undefined &&
+    (figmaSnapshotRoot !== undefined ||
+      figmaSnapshotNodeIds.length > 0 ||
+      figmaSnapshotPageIds.length > 0 ||
+      figmaSnapshotFrameIds.length > 0)
+  ) {
+    throw new TestIntelligenceRunOperatorError(
+      "--figma-snapshot-root and snapshot selection flags require --figma-snapshot-id",
     );
   }
   if (enableVisualSidecar && noVisualSidecar) {
@@ -1341,10 +1499,37 @@ export const parseTestIntelligenceRunArgs = (
       "--coverage-baseline-update requires --coverage-baseline-archetype <id>",
     );
   }
+  const tenantScope: TenantScope = {
+    tenantId: tenantScopeTenantId,
+    environmentId: tenantScopeEnvironmentId,
+    projectId: tenantScopeProjectId,
+  };
+  try {
+    resolveTenantScopeSegments(tenantScope);
+  } catch (err) {
+    throw new TestIntelligenceRunOperatorError(
+      `tenant scope is invalid: ${sanitizeErrorMessage({
+        error: err,
+        fallback: "invalid tenant scope",
+      })}`,
+    );
+  }
 
   return {
     figmaUrl,
     figmaJsonFile,
+    ...(figmaSnapshotId !== undefined ? { figmaSnapshotId } : {}),
+    ...(figmaSnapshotRoot !== undefined ? { figmaSnapshotRoot } : {}),
+    ...(figmaSnapshotNodeIds.length > 0
+      ? { figmaSnapshotNodeIds: [...figmaSnapshotNodeIds] }
+      : {}),
+    ...(figmaSnapshotPageIds.length > 0
+      ? { figmaSnapshotPageIds: [...figmaSnapshotPageIds] }
+      : {}),
+    ...(figmaSnapshotFrameIds.length > 0
+      ? { figmaSnapshotFrameIds: [...figmaSnapshotFrameIds] }
+      : {}),
+    tenantScope,
     output,
     ...(outputRunSubdir !== undefined ? { outputRunSubdir } : {}),
     modelEndpoint,
@@ -3623,6 +3808,26 @@ const resolveSource = async (
   options: TestIntelligenceRunOptions,
   loadFigmaJsonFile: (filePath: string) => Promise<unknown>,
 ): Promise<ResolvedSource> => {
+  if (options.figmaSnapshotId !== undefined) {
+    return {
+      source: {
+        kind: "figma_snapshot",
+        workspaceRoot: resolve(options.figmaSnapshotRoot ?? "."),
+        snapshotId: options.figmaSnapshotId,
+        tenantScope: options.tenantScope ?? DEFAULT_TENANT_SCOPE,
+        ...(options.figmaSnapshotNodeIds !== undefined
+          ? { selectedNodeIds: options.figmaSnapshotNodeIds }
+          : {}),
+        ...(options.figmaSnapshotPageIds !== undefined
+          ? { selectedPageIds: options.figmaSnapshotPageIds }
+          : {}),
+        ...(options.figmaSnapshotFrameIds !== undefined
+          ? { selectedFrameIds: options.figmaSnapshotFrameIds }
+          : {}),
+      },
+      customerLabel: `Figma snapshot ${options.figmaSnapshotId}`,
+    };
+  }
   if (options.figmaJsonFile !== undefined) {
     const absolutePath = resolve(options.figmaJsonFile);
     const parsed = await loadFigmaJsonFile(absolutePath);
@@ -4355,6 +4560,13 @@ export const runTestIntelligenceCommand = async (
           ? []
           : [`  output base   : ${outputDir}`]),
         `  source kind   : ${resolved.source.kind}`,
+        ...(resolved.source.kind === "figma_snapshot"
+          ? [
+              `  snapshot id   : ${resolved.source.snapshotId}`,
+              `  snapshot root : ${resolved.source.workspaceRoot}`,
+              `  tenant scope  : ${formatTenantScope(options.tenantScope ?? DEFAULT_TENANT_SCOPE)}`,
+            ]
+          : []),
         `  deployment    : ${options.modelDeployment}`,
         `  judge deploy  : ${options.logicJudgeDeployment ?? "(reuses generator deployment)"}`,
         `  req synth     : ${options.requirementsSynthesisDeployment ?? "(reuses generator deployment)"}`,
@@ -4466,6 +4678,10 @@ export const runTestIntelligenceCommand = async (
     jobId,
     generatedAt,
     source: resolved.source,
+    replayCacheTenantScope: options.tenantScope ?? DEFAULT_TENANT_SCOPE,
+    ...(resolved.customerLabel !== undefined
+      ? { customerLabel: resolved.customerLabel }
+      : {}),
     outputRoot: outputDir,
     artifactDir: runOutputDir,
     llm: {
@@ -4696,6 +4912,24 @@ Source (exactly one required):
                              pre-fetched on a connected machine via
                              "test-intelligence figma-export"
                              (Issue #2187).
+  --figma-snapshot-id <id>   Local immutable Figma Snapshot Vault id. Does not
+                             require FIGMA_ACCESS_TOKEN during generation.
+  --figma-snapshot-root <dir>
+                             Workspace root that contains
+                             .test-intelligence/figma-snapshots/.
+                             Default: current working directory.
+  --figma-snapshot-node-id <id>
+                             Repeatable node selection for snapshot-backed runs.
+  --figma-snapshot-page-id <id>
+                             Repeatable page selection for snapshot-backed runs.
+  --figma-snapshot-frame-id <id>
+                             Repeatable frame selection for snapshot-backed runs.
+  --tenant-id <id>           Active tenant scope for snapshot and replay cache.
+                             Default: env TEST_INTELLIGENCE_TENANT_ID or default.
+  --environment-id <id>      Active environment scope. Default:
+                             env TEST_INTELLIGENCE_ENVIRONMENT_ID or default.
+  --project-id <id>          Active project scope. Default:
+                             env TEST_INTELLIGENCE_PROJECT_ID or default.
 
 Output:
   --output <dir>             Run-artifact destination.

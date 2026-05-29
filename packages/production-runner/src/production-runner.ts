@@ -6,6 +6,7 @@
  *
  *   1. Resolve the Figma source:
  *        - figma_url      → fetch via {@link fetchFigmaFileForTestIntelligence}
+ *        - figma_snapshot → resolve local immutable Snapshot Vault evidence
  *        - figma_paste    / figma_plugin → parse caller-supplied JSON
  *        - figma_paste_normalized → caller hands us an already-parsed file
  *          (used by tests; the request-handler always parses upstream).
@@ -106,6 +107,7 @@ import {
   type GeneratedTestCaseAuditMetadata,
   type GeneratedTestCaseFigmaTrace,
   type GeneratedTestCaseList,
+  type GeneratedTestCaseSnapshotSourceRef,
   type GeneratedTestCaseStep,
   type HumanReviewQueueItem,
   type LlmGatewayErrorClass,
@@ -425,6 +427,11 @@ import {
   withTenantScope,
 } from "@oscharko-dev/ti-tenant";
 import {
+  FigmaSnapshotRunSourceError,
+  resolveFigmaSnapshotRunSource,
+  type FigmaSnapshotTraceAnchor,
+} from "./figma-snapshot-run-source.js";
+import {
   createLlmCircuitBreaker,
   toLlmCircuitPersistentState,
 } from "@oscharko-dev/ti-model-gateway";
@@ -555,6 +562,7 @@ export const PRODUCTION_RUNNER_FAILURE_CLASSES = [
   "EMPTY_FIGMA_INPUT",
   "FIGMA_FETCH_FAILED",
   "FIGMA_PAYLOAD_TOO_LARGE",
+  "FIGMA_SNAPSHOT_REJECTED",
   "FIGMA_URL_REJECTED",
   "LLM_GATEWAY_FAILED",
   "LLM_REFUSAL",
@@ -707,6 +715,15 @@ export type ProductionRunnerSource =
   | {
       kind: "figma_rest_file";
       file: FigmaRestFileSnapshot;
+    }
+  | {
+      kind: "figma_snapshot";
+      workspaceRoot: string;
+      snapshotId: string;
+      tenantScope?: TenantScope;
+      selectedNodeIds?: readonly string[];
+      selectedPageIds?: readonly string[];
+      selectedFrameIds?: readonly string[];
     };
 
 interface InternalFixtureBackedFigmaRestFileSnapshot extends FigmaRestFileSnapshot {
@@ -3035,6 +3052,17 @@ export const runFigmaToQcTestCases = async (
         retryable: false,
       });
     }
+    if (
+      input.autoJiraStoryFromVisual === true &&
+      input.source.kind !== "figma_url"
+    ) {
+      throw new ProductionRunnerError({
+        failureClass: "AUTO_JIRA_STORY_INVALID",
+        message:
+          "autoJiraStoryFromVisual requires a Figma URL source because local snapshots and pasted JSON cannot provide live screenshot captures.",
+        retryable: false,
+      });
+    }
     const customerEvalRubric = resolveCustomerEvalRubric(
       input.customerEvalMarkdown,
     );
@@ -3045,6 +3073,7 @@ export const runFigmaToQcTestCases = async (
     const canonicalCustomerProfile = resolveCustomerProfile(
       input.customerProfile,
     );
+    const tenantScope: TenantScope = __tenantScope;
 
     // 1. Resolve Figma source.
     emit({
@@ -3053,11 +3082,15 @@ export const runFigmaToQcTestCases = async (
       details: { source: input.source.kind },
     });
     const figmaPayloadCap = resolveFigmaPayloadCap(input.maxFigmaPayloadBytes);
-    const figmaFile = await resolveFigmaSource(input.source, figmaPayloadCap);
-    const figmaPayloadActualBytes = assertFigmaPayloadWithinLimit(
-      figmaFile,
-      figmaPayloadCap,
-    );
+    const resolvedSourceEvidence = await resolveProductionRunnerSourceEvidence({
+      source: input.source,
+      maxPayloadBytes: figmaPayloadCap,
+      tenantScope,
+    });
+    const figmaFile = resolvedSourceEvidence.figmaFile;
+    const figmaPayloadActualBytes = resolvedSourceEvidence.payloadBytes;
+    const snapshotSourceRef = resolvedSourceEvidence.snapshotSource;
+    const snapshotTraceAnchors = resolvedSourceEvidence.snapshotTraceAnchors;
     await cleanArtifactDirForFreshRun(artifactDir);
     const normalizedUntrusted = normalizeUntrustedContent({
       figma: { document: figmaFile.document },
@@ -3078,6 +3111,7 @@ export const runFigmaToQcTestCases = async (
       figmaFile as InternalFixtureBackedFigmaRestFileSnapshot,
     );
     const intentInput =
+      resolvedSourceEvidence.intentInput ??
       intentInputOverride ??
       normalizeFigmaFileToIntentInput({
         fileKey: figmaFile.fileKey,
@@ -3147,10 +3181,6 @@ export const runFigmaToQcTestCases = async (
         detectedActions: intent.detectedActions.length,
       },
     });
-    // Issue #2176 — bind to the AsyncLocalStorage scope already opened at
-    // the top of `runFigmaToQcTestCases` so every persistent-store read
-    // observes the same scope this constant was derived from.
-    const tenantScope: TenantScope = __tenantScope;
     if (input.source.kind === "figma_url" && input.llm.bundle !== undefined) {
       emit({
         phase: "visual_sidecar_started",
@@ -4273,6 +4303,13 @@ export const runFigmaToQcTestCases = async (
         ...compiled.cacheKey,
         deterministicPostProcessingVersion:
           DETERMINISTIC_POST_PROCESSING_VERSION,
+        ...(snapshotSourceRef !== undefined
+          ? {
+              snapshotId: snapshotSourceRef.snapshotId,
+              snapshotDigest: snapshotSourceRef.snapshotDigest,
+              snapshotScopeDigest: snapshotSourceRef.scopeDigest,
+            }
+          : {}),
       };
       const generationCacheKey =
         generationClient.constrainedDecoding === undefined
@@ -4457,6 +4494,9 @@ export const runFigmaToQcTestCases = async (
               promptHash: compiled.request.hashes.promptHash,
               schemaHash: compiled.request.hashes.schemaHash,
               truncatedInstructionCount: 0,
+              ...(snapshotSourceRef !== undefined
+                ? { snapshotSource: snapshotSourceRef }
+                : {}),
             };
             const testCases = attemptOutcome.drafts.map((draft, index) =>
               stampGeneratedTestCase({
@@ -4465,6 +4505,9 @@ export const runFigmaToQcTestCases = async (
                 index,
                 audit,
                 intent,
+                ...(snapshotTraceAnchors !== undefined
+                  ? { snapshotTraceAnchors }
+                  : {}),
                 ...(inputPass.pass.identitySalt !== undefined
                   ? { identitySalt: inputPass.pass.identitySalt }
                   : {}),
@@ -4511,6 +4554,9 @@ export const runFigmaToQcTestCases = async (
                   inputHash: compiled.request.hashes.inputHash,
                   promptHash: compiled.request.hashes.promptHash,
                   schemaHash: compiled.request.hashes.schemaHash,
+                  ...(snapshotSourceRef !== undefined
+                    ? { snapshotSource: snapshotSourceRef }
+                    : {}),
                   reason: `Generated list failed replay-cache store validation: ${formatReplayCacheValidationErrors(err)}`,
                 }),
               };
@@ -4635,6 +4681,13 @@ export const runFigmaToQcTestCases = async (
             ...compiled.cacheKey,
             deterministicPostProcessingVersion:
               DETERMINISTIC_POST_PROCESSING_VERSION,
+            ...(snapshotSourceRef !== undefined
+              ? {
+                  snapshotId: snapshotSourceRef.snapshotId,
+                  snapshotDigest: snapshotSourceRef.snapshotDigest,
+                  snapshotScopeDigest: snapshotSourceRef.scopeDigest,
+                }
+              : {}),
           };
           const generationCacheKey =
             crossFamilyGeneratorClient.constrainedDecoding === undefined
@@ -4682,6 +4735,9 @@ export const runFigmaToQcTestCases = async (
             inputHash: compiled.request.hashes.inputHash,
             promptHash: compiled.request.hashes.promptHash,
             schemaHash: compiled.request.hashes.schemaHash,
+            ...(snapshotSourceRef !== undefined
+              ? { snapshotSource: snapshotSourceRef }
+              : {}),
             reason: fallbackErr.message,
           });
           return {
@@ -4773,6 +4829,9 @@ export const runFigmaToQcTestCases = async (
             promptHash: compiled.request.hashes.promptHash,
             schemaHash: compiled.request.hashes.schemaHash,
             truncatedInstructionCount: 0,
+            ...(snapshotSourceRef !== undefined
+              ? { snapshotSource: snapshotSourceRef }
+              : {}),
           };
           const cases = validation.value.testCases.map((draft, index) =>
             stampGeneratedTestCase({
@@ -4781,6 +4840,9 @@ export const runFigmaToQcTestCases = async (
               index,
               audit,
               intent,
+              ...(snapshotTraceAnchors !== undefined
+                ? { snapshotTraceAnchors }
+                : {}),
               ...(pass.identitySalt !== undefined
                 ? { identitySalt: pass.identitySalt }
                 : {}),
@@ -5731,6 +5793,9 @@ export const runFigmaToQcTestCases = async (
                 promptHash: repairCompiled.request.hashes.promptHash,
                 schemaHash: repairCompiled.request.hashes.schemaHash,
                 truncatedInstructionCount,
+                ...(snapshotSourceRef !== undefined
+                  ? { snapshotSource: snapshotSourceRef }
+                  : {}),
               };
               const repairCases = repairValidation.value.testCases.map(
                 (draft, index) =>
@@ -5740,6 +5805,9 @@ export const runFigmaToQcTestCases = async (
                     index,
                     audit: repairAudit,
                     intent,
+                    ...(snapshotTraceAnchors !== undefined
+                      ? { snapshotTraceAnchors }
+                      : {}),
                     ...(pass.identitySalt !== undefined
                       ? { identitySalt: pass.identitySalt }
                       : {}),
@@ -8275,8 +8343,98 @@ const resolveFigmaPayloadCap = (override: number | undefined): number => {
   return override;
 };
 
+interface ResolvedProductionRunnerSourceEvidence {
+  readonly figmaFile: FigmaRestFileSnapshot;
+  readonly payloadBytes: number;
+  readonly intentInput?: IntentDerivationFigmaInput;
+  readonly snapshotSource?: GeneratedTestCaseSnapshotSourceRef;
+  readonly snapshotTraceAnchors?: readonly FigmaSnapshotTraceAnchor[];
+}
+
+const resolveProductionRunnerSourceEvidence = async (input: {
+  readonly source: ProductionRunnerSource;
+  readonly maxPayloadBytes: number;
+  readonly tenantScope: TenantScope;
+}): Promise<ResolvedProductionRunnerSourceEvidence> => {
+  if (input.source.kind === "figma_snapshot") {
+    if (
+      input.source.tenantScope !== undefined &&
+      !tenantScopesEqual(input.source.tenantScope, input.tenantScope)
+    ) {
+      throw new ProductionRunnerError({
+        failureClass: "FIGMA_SNAPSHOT_REJECTED",
+        message:
+          "Figma snapshot source tenant scope does not match the active run scope.",
+        retryable: false,
+      });
+    }
+    try {
+      const resolved = await resolveFigmaSnapshotRunSource({
+        workspaceRoot: input.source.workspaceRoot,
+        tenantScope: input.tenantScope,
+        snapshotId: input.source.snapshotId,
+        selection: {
+          ...(input.source.selectedNodeIds !== undefined
+            ? { nodeIds: input.source.selectedNodeIds }
+            : {}),
+          ...(input.source.selectedPageIds !== undefined
+            ? { pageIds: input.source.selectedPageIds }
+            : {}),
+          ...(input.source.selectedFrameIds !== undefined
+            ? { frameIds: input.source.selectedFrameIds }
+            : {}),
+        },
+      });
+      if (resolved.payloadBytes > input.maxPayloadBytes) {
+        throw new ProductionRunnerError({
+          failureClass: "FIGMA_PAYLOAD_TOO_LARGE",
+          message: `Figma snapshot payload exceeds ${input.maxPayloadBytes} bytes limit.`,
+          retryable: false,
+        });
+      }
+      return {
+        figmaFile: {
+          fileKey: resolved.fileKey,
+          name: resolved.name,
+          document: {
+            id: `snapshot:${resolved.manifest.snapshotId}`,
+            name: resolved.name,
+            type: "DOCUMENT",
+            children: [],
+          } as FigmaRestNode,
+        },
+        payloadBytes: resolved.payloadBytes,
+        intentInput: resolved.intentInput,
+        snapshotSource: resolved.auditRef,
+        snapshotTraceAnchors: resolved.traceAnchors,
+      };
+    } catch (err) {
+      if (err instanceof ProductionRunnerError) {
+        throw err;
+      }
+      if (err instanceof FigmaSnapshotRunSourceError) {
+        throw new ProductionRunnerError({
+          failureClass: "FIGMA_SNAPSHOT_REJECTED",
+          message: `Figma snapshot rejected (${err.errorCode}): ${err.message}`,
+          retryable: false,
+          cause: err,
+        });
+      }
+      throw err;
+    }
+  }
+  const figmaFile = await resolveFigmaSource(input.source, input.maxPayloadBytes);
+  return {
+    figmaFile,
+    payloadBytes: assertFigmaPayloadWithinLimit(
+      figmaFile,
+      input.maxPayloadBytes,
+    ),
+  };
+};
+
 const resolveFigmaSource = async (
-  source: ProductionRunnerSource,
+  source: Exclude<ProductionRunnerSource, { kind: "figma_snapshot" }>,
   maxPayloadBytes: number,
 ): Promise<FigmaRestFileSnapshot> => {
   if (source.kind === "figma_paste_normalized") {
@@ -8338,6 +8496,10 @@ const resolveFigmaSource = async (
   }
 };
 
+const tenantScopesEqual = (left: TenantScope, right: TenantScope): boolean =>
+  canonicalJson(resolveTenantScopeSegments(left)) ===
+  canonicalJson(resolveTenantScopeSegments(right));
+
 const cleanArtifactDirForFreshRun = async (
   artifactDir: string,
 ): Promise<void> => {
@@ -8391,6 +8553,9 @@ const resolveSourceLabel = (source: ProductionRunnerSource): string => {
     } catch {
       return "(figma_url)";
     }
+  }
+  if (source.kind === "figma_snapshot") {
+    return `(figma_snapshot:${source.snapshotId})`;
   }
   return "(figma_paste)";
 };
@@ -11128,6 +11293,7 @@ const buildDeterministicGeneratorFallbackSeedList = (input: {
   readonly inputHash: string;
   readonly promptHash: string;
   readonly schemaHash: string;
+  readonly snapshotSource?: GeneratedTestCaseSnapshotSourceRef;
   readonly reason: string;
 }): GeneratedTestCaseList => {
   const targets = resolveDeterministicCaseCountScreenTargets({
@@ -11171,6 +11337,9 @@ const buildDeterministicGeneratorFallbackSeedList = (input: {
     promptHash: input.promptHash,
     schemaHash: input.schemaHash,
     truncatedInstructionCount: 0,
+    ...(input.snapshotSource !== undefined
+      ? { snapshotSource: input.snapshotSource }
+      : {}),
   };
   return {
     schemaVersion: GENERATED_TEST_CASE_SCHEMA_VERSION,
@@ -13361,6 +13530,7 @@ const stampGeneratedTestCase = (input: {
   index: number;
   audit: GeneratedTestCaseAuditMetadata;
   intent: BusinessTestIntentIr;
+  snapshotTraceAnchors?: readonly FigmaSnapshotTraceAnchor[];
   identitySalt?: string;
 }): GeneratedTestCase => {
   const knownScreenIds = new Set(input.intent.screens.map((s) => s.screenId));
@@ -13380,9 +13550,13 @@ const stampGeneratedTestCase = (input: {
       traceRefs.push({ screenId: fallbackScreen });
     }
   }
+  const anchoredTraceRefs = applySnapshotTraceAnchors(
+    traceRefs,
+    input.snapshotTraceAnchors,
+  );
   const qualitySignals = deriveQualitySignals({
     draft: input.draft,
-    traceRefs,
+    traceRefs: anchoredTraceRefs,
     intent: input.intent,
   });
   const steps: GeneratedTestCaseStep[] = input.draft.steps.map((s, i) => {
@@ -13422,7 +13596,7 @@ const stampGeneratedTestCase = (input: {
           ...(step.expected !== undefined ? { expected: step.expected } : {}),
         })),
         expectedResults: input.draft.expectedResults,
-        figmaTraceRefs: traceRefs,
+        figmaTraceRefs: anchoredTraceRefs,
         ...(input.draft.regulatoryRelevance !== undefined
           ? { regulatoryRelevance: input.draft.regulatoryRelevance }
           : {}),
@@ -13463,7 +13637,7 @@ const stampGeneratedTestCase = (input: {
     testData: [...input.draft.testData],
     steps,
     expectedResults: [...input.draft.expectedResults],
-    figmaTraceRefs: traceRefs,
+    figmaTraceRefs: anchoredTraceRefs,
     assumptions: [...(input.draft.assumptions ?? [])],
     openQuestions: [...(input.draft.openQuestions ?? [])],
     qcMappingPreview: {
@@ -13489,6 +13663,30 @@ const stampGeneratedTestCase = (input: {
       ),
     ),
   );
+};
+
+const applySnapshotTraceAnchors = (
+  traceRefs: readonly GeneratedTestCaseFigmaTrace[],
+  anchors: readonly FigmaSnapshotTraceAnchor[] | undefined,
+): GeneratedTestCaseFigmaTrace[] => {
+  if (anchors === undefined || anchors.length === 0) {
+    return [...traceRefs];
+  }
+  const byScreen = new Map(anchors.map((anchor) => [anchor.screenId, anchor]));
+  return traceRefs.map((traceRef) => {
+    const anchor = byScreen.get(traceRef.screenId);
+    if (anchor === undefined) return { ...traceRef };
+    return {
+      screenId: traceRef.screenId,
+      nodeId: traceRef.nodeId ?? anchor.nodeId,
+      nodeName: traceRef.nodeName ?? anchor.nodeName,
+      ...(traceRef.nodePath !== undefined
+        ? { nodePath: traceRef.nodePath }
+        : anchor.nodePath !== undefined
+          ? { nodePath: anchor.nodePath }
+          : {}),
+    };
+  });
 };
 
 const normalizeOptionalDraftString = (value: unknown): string | undefined => {

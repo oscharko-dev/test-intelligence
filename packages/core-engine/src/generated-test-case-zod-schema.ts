@@ -190,6 +190,17 @@ export const generatedTestCaseListZodSchema: z.ZodType = z
           // `GeneratedTestCaseAuditMetadata` interface and the structural
           // validator's `AUDIT_KEYS`, which both already include it.
           truncatedInstructionCount: z.number().int().min(0).optional(),
+          snapshotSource: z
+            .strictObject({
+              snapshotId: z.string().min(1),
+              snapshotDigest: z.string().regex(SHA256_HEX_PATTERN),
+              nodeIndexDigest: z.string().regex(SHA256_HEX_PATTERN),
+              scopeDigest: z.string().regex(SHA256_HEX_PATTERN),
+              selectedNodeIds: z.array(z.string().min(1)),
+              selectedPageIds: z.array(z.string().min(1)),
+              selectedFrameIds: z.array(z.string().min(1)),
+            })
+            .optional(),
         }),
         regulatoryRelevance: z
           .strictObject({

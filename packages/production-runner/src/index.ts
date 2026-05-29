@@ -16,6 +16,7 @@ export * from "./drift-canary.js";
 export * from "./evidence-verify.js";
 export * from "./export-pipeline.js";
 export * from "./faithfulness-eval.js";
+export * from "./figma-snapshot-run-source.js";
 export * from "./finops-slo.js";
 export * from "./genealogy.js";
 export * from "./hallucination-eval.js";

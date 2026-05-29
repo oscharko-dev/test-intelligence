@@ -147,6 +147,40 @@ void test("valid fixture parses successfully with parse (no throw)", () => {
   });
 });
 
+void test("valid fixture parses with local snapshot source audit metadata", () => {
+  const fixture = makeValid();
+  firstCase(fixture).audit.snapshotSource = {
+    snapshotId: "snapshot-20260529",
+    snapshotDigest: VALID_HASH,
+    nodeIndexDigest: VALID_HASH_2,
+    scopeDigest: VALID_HASH_3,
+    selectedNodeIds: ["node-1"],
+    selectedPageIds: ["page-1"],
+    selectedFrameIds: ["frame-1"],
+  };
+
+  const result = generatedTestCaseListZodSchema.safeParse(fixture);
+
+  assert.equal(result.success, true);
+});
+
+void test("invalid snapshot source digest is rejected", () => {
+  const fixture = makeValid();
+  firstCase(fixture).audit.snapshotSource = {
+    snapshotId: "snapshot-20260529",
+    snapshotDigest: "not-a-digest",
+    nodeIndexDigest: VALID_HASH_2,
+    scopeDigest: VALID_HASH_3,
+    selectedNodeIds: ["node-1"],
+    selectedPageIds: [],
+    selectedFrameIds: [],
+  };
+
+  const result = generatedTestCaseListZodSchema.safeParse(fixture);
+
+  assert.equal(result.success, false);
+});
+
 // ---------------------------------------------------------------------------
 // Wrong literal version fields
 // ---------------------------------------------------------------------------

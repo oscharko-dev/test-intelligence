@@ -194,6 +194,39 @@ void test("memory cache: miss → store → hit cycle skips the mocked LLM clien
   await runHitMissCycle(cache);
 });
 
+void test("replay cache key digest includes local snapshot identity and selected scope", () => {
+  const { cacheKey } = compileForFixture("job-snapshot");
+  const baseSnapshotKey: ReplayCacheKey = {
+    ...cacheKey,
+    snapshotId: "snapshot-a",
+    snapshotDigest: "a".repeat(64),
+    snapshotScopeDigest: "b".repeat(64),
+  };
+
+  const baseDigest = computeReplayCacheKeyDigest(baseSnapshotKey);
+  assert.notEqual(
+    baseDigest,
+    computeReplayCacheKeyDigest({
+      ...baseSnapshotKey,
+      snapshotId: "snapshot-b",
+    }),
+  );
+  assert.notEqual(
+    baseDigest,
+    computeReplayCacheKeyDigest({
+      ...baseSnapshotKey,
+      snapshotDigest: "c".repeat(64),
+    }),
+  );
+  assert.notEqual(
+    baseDigest,
+    computeReplayCacheKeyDigest({
+      ...baseSnapshotKey,
+      snapshotScopeDigest: "d".repeat(64),
+    }),
+  );
+});
+
 void test("replay execution: miss calls LLM once, stores result, and returns cacheHit=false", async () => {
   const cache = createMemoryReplayCache();
   const { cacheKey, cacheKeyDigest } = compileForFixture("job-1");
