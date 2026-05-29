@@ -17,10 +17,12 @@ import {
   serializeFigmaSnapshotArtifact,
 } from "@oscharko-dev/ti-core-engine";
 import { describe, expect, it, afterEach } from "vitest";
+import { POST as snapshotsRoute } from "@/app/api/workbench/snapshots/route";
 import { POST as previewSelectionRoute } from "@/app/api/workbench/snapshots/[snapshotId]/selection-preview/route";
 import {
   listWorkbenchSnapshots,
   previewWorkbenchSnapshotSelection,
+  getWorkbenchSnapshotImportCompletionForTests,
   getWorkbenchSnapshotImportJob,
   resetWorkbenchSnapshotImportStoreForTests,
   searchWorkbenchSnapshot,
@@ -103,8 +105,18 @@ async function writeSnapshotFixture(repoRoot: string): Promise<void> {
     retry: { attempt: 1, maxAttempts: 3 },
     rateLimit: {
       remaining: 42,
-      figmaPlanTier: "enterprise",
-      figmaRateLimitType: "file",
+    },
+    credential: {
+      authMode: "enterprise_service_token",
+    },
+    budget: {
+      policyVersion: "figma-import-budget/v1",
+      resourceType: "node_batch",
+      windowSeconds: 60,
+      maxRequestsPerWindow: 80,
+      usedRequests: 4,
+      remainingRequests: 76,
+      resetAt: "2026-05-29T08:01:00.000Z",
     },
     chunks: [
       {
@@ -178,6 +190,69 @@ const envFor = (repoRoot: string): NodeJS.ProcessEnv => ({
   WORKBENCH_REPO_ROOT: repoRoot,
 });
 
+const createWorkbenchBootstrapFile = (nodeIds: readonly string[]): unknown => ({
+  name: "Workbench Board",
+  lastModified: "2026-05-29T09:00:00Z",
+  version: "version-1",
+  document: {
+    id: "0:0",
+    name: "Document",
+    type: "DOCUMENT",
+    children: [
+      {
+        id: "1:0",
+        name: "Primary Page",
+        type: "CANVAS",
+        children: nodeIds.map((nodeId, index) => ({
+          id: nodeId,
+          name: `Screen ${index + 1}`,
+          type: "FRAME",
+          visible: true,
+        })),
+      },
+    ],
+  },
+});
+
+const createWorkbenchNodesResponse = (
+  nodeIds: readonly string[],
+): unknown => ({
+  name: "Workbench Board",
+  lastModified: "2026-05-29T09:00:00Z",
+  version: "version-1",
+  nodes: Object.fromEntries(
+    nodeIds.map((nodeId) => [
+      nodeId,
+      {
+        document: {
+          id: nodeId,
+          name: `Screen ${nodeId}`,
+          type: "FRAME",
+          visible: true,
+          absoluteBoundingBox: { x: 0, y: 0, width: 1440, height: 900 },
+        },
+      },
+    ]),
+  ),
+});
+
+const createWorkbenchFigmaFetch = (
+  nodeIds: readonly string[],
+): typeof fetch =>
+  (async (input: RequestInfo | URL) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/v1/files/ABC") {
+      return Response.json(createWorkbenchBootstrapFile(nodeIds));
+    }
+    if (url.pathname === "/v1/files/ABC/nodes") {
+      const ids = (url.searchParams.get("ids") ?? "")
+        .split(",")
+        .filter(Boolean);
+      return Response.json(createWorkbenchNodesResponse(ids));
+    }
+    return Response.json({ err: "unexpected request" }, { status: 500 });
+  }) as typeof fetch;
+
 afterEach(() => {
   resetWorkbenchSnapshotImportStoreForTests();
 });
@@ -201,7 +276,13 @@ describe("Workbench Snapshot Vault adapter", () => {
       frameCount: 1,
       rateLimit: {
         remaining: 42,
-        figmaPlanTier: "enterprise",
+      },
+      credential: {
+        authMode: "enterprise_service_token",
+      },
+      budget: {
+        remainingRequests: 76,
+        resourceType: "node_batch",
       },
     });
     expect(JSON.stringify(snapshots[0])).not.toContain("figma.com");
@@ -241,8 +322,27 @@ describe("Workbench Snapshot Vault adapter", () => {
       }),
     ).rejects.toMatchObject({
       code: "SNAPSHOT_IMPORT_FIGMA_TOKEN_MISSING",
+      failureClass: "missing_credential",
       status: 503,
     });
+
+    const response = await snapshotsRoute(
+      new Request("http://localhost/api/workbench/snapshots", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "import",
+          figmaUrl:
+            "https://www.figma.com/design/ABC/CustomerBoard?node-id=1-2",
+        }),
+      }) as Parameters<typeof snapshotsRoute>[0],
+    );
+    const payload = (await response.json()) as {
+      error?: { failureClass?: string; message?: string };
+    };
+    expect(response.status).toBe(503);
+    expect(payload.error?.failureClass).toBe("missing_credential");
+    expect(payload.error?.message).not.toContain("figma.com");
 
     await startWorkbenchSnapshotImport({
       body: {
@@ -258,11 +358,11 @@ describe("Workbench Snapshot Vault adapter", () => {
 
   it("keeps active import queues isolated by tenant scope", async () => {
     const repoRoot = await tempRepo();
-    const pendingFetch = (() => new Promise<Response>(() => undefined)) as typeof fetch;
+    const pendingFetch = (() =>
+      new Promise<Response>(() => undefined)) as typeof fetch;
     const base = {
       action: "import",
-      figmaUrl:
-        "https://www.figma.com/design/ABC/CustomerBoard?node-id=1-2",
+      figmaUrl: "https://www.figma.com/design/ABC/CustomerBoard?node-id=1-2",
     };
     const tenantA = {
       ...envFor(repoRoot),
@@ -307,6 +407,157 @@ describe("Workbench Snapshot Vault adapter", () => {
       code: "SNAPSHOT_IMPORT_ALREADY_ACTIVE",
       status: 409,
     });
+  });
+
+  it("projects bootstrap 429 metadata into sanitized Workbench guidance", async () => {
+    const repoRoot = await tempRepo();
+    const env = {
+      ...envFor(repoRoot),
+      TEST_INTELLIGENCE_FIGMA_ACCESS_TOKEN:
+        "figd_workbench_low_limit_token_1234567890_padded",
+    };
+    const fetchImpl = (async () =>
+      Response.json(
+        { err: "rate limited" },
+        {
+          status: 429,
+          headers: {
+            "Retry-After": "90",
+            "X-Figma-Plan-Tier": "starter",
+            "X-Figma-Rate-Limit-Type": "low_limit",
+            "X-Figma-Upgrade-Link":
+              "https://www.figma.com/pricing?token=figd_header_secret_value_1234567890",
+          },
+        },
+      )) as typeof fetch;
+
+    const queued = await startWorkbenchSnapshotImport({
+      body: {
+        action: "import",
+        figmaUrl:
+          "https://www.figma.com/design/ABC/CustomerBoard?node-id=1-2&access_token=private",
+      },
+      env,
+      fetchImpl,
+    });
+    await getWorkbenchSnapshotImportCompletionForTests(queued.jobId);
+
+    const job = getWorkbenchSnapshotImportJob(queued.jobId, env);
+    expect(job).toMatchObject({
+      status: "failed",
+      failureClass: "throttled",
+      rateLimit: {
+        retryAfterSeconds: 90,
+        figmaPlanTier: "starter",
+        figmaRateLimitType: "low_limit",
+        remediation: {
+          scenario: "low_limit",
+        },
+      },
+    });
+    const serialized = JSON.stringify(job);
+    expect(serialized).not.toContain("figd_workbench_low_limit");
+    expect(serialized).not.toContain("figd_header_secret");
+    expect(serialized).not.toContain("https://www.figma.com");
+    expect(serialized).not.toContain("access_token=private");
+
+    const cleanQueued = await startWorkbenchSnapshotImport({
+      body: {
+        action: "import",
+        figmaUrl: "https://www.figma.com/design/ABC/CustomerBoard?node-id=1-2",
+      },
+      env,
+      fetchImpl,
+    });
+    await getWorkbenchSnapshotImportCompletionForTests(cleanQueued.jobId);
+    expect(cleanQueued.sourceUrlHash).toBe(queued.sourceUrlHash);
+  });
+
+  it("surfaces invalid and unsupported credential modes as deterministic Workbench failures", async () => {
+    const baseBody = {
+      action: "import",
+      figmaUrl: "https://www.figma.com/design/ABC/CustomerBoard?node-id=1-2",
+    };
+    const invalidEnv = {
+      ...envFor(await tempRepo()),
+      TEST_INTELLIGENCE_FIGMA_ACCESS_TOKEN:
+        "Authorization: Bearer figd_invalid_workbench_token_1234567890",
+    };
+    const invalid = await startWorkbenchSnapshotImport({
+      body: baseBody,
+      env: invalidEnv,
+      fetchImpl: createWorkbenchFigmaFetch(["1:1"]),
+    });
+    await getWorkbenchSnapshotImportCompletionForTests(invalid.jobId);
+    const invalidJob = getWorkbenchSnapshotImportJob(invalid.jobId, invalidEnv);
+    expect(invalidJob).toMatchObject({
+      status: "failed",
+      failureClass: "invalid_credential",
+    });
+    expect(JSON.stringify(invalidJob)).not.toContain("figd_invalid_workbench");
+
+    const unsupportedEnv = {
+      ...envFor(await tempRepo()),
+      TEST_INTELLIGENCE_FIGMA_ACCESS_TOKEN:
+        "figd_unsupported_workbench_token_1234567890",
+      TEST_INTELLIGENCE_FIGMA_CREDENTIAL_MODE: "oauth_access_token",
+    };
+    const unsupported = await startWorkbenchSnapshotImport({
+      body: baseBody,
+      env: unsupportedEnv,
+      fetchImpl: createWorkbenchFigmaFetch(["1:1"]),
+    });
+    await getWorkbenchSnapshotImportCompletionForTests(unsupported.jobId);
+    const unsupportedJob = getWorkbenchSnapshotImportJob(
+      unsupported.jobId,
+      unsupportedEnv,
+    );
+    expect(unsupportedJob).toMatchObject({
+      status: "failed",
+      failureClass: "unsupported_auth_mode",
+    });
+    expect(JSON.stringify(unsupportedJob)).not.toContain(
+      "figd_unsupported_workbench",
+    );
+  });
+
+  it("surfaces local budget exhaustion in Workbench without token-derived witnesses", async () => {
+    const repoRoot = await tempRepo();
+    const env = {
+      ...envFor(repoRoot),
+      TEST_INTELLIGENCE_FIGMA_ACCESS_TOKEN:
+        "figd_budget_workbench_token_1234567890",
+      TEST_INTELLIGENCE_FIGMA_IMPORT_MAX_REQUESTS_PER_WINDOW: "1",
+    };
+    const queued = await startWorkbenchSnapshotImport({
+      body: {
+        action: "import",
+        figmaUrl: "https://www.figma.com/design/ABC/CustomerBoard?node-id=1-2",
+      },
+      env,
+      fetchImpl: createWorkbenchFigmaFetch(
+        Array.from({ length: 9 }, (_, index) => `1:${index + 1}`),
+      ),
+    });
+    await getWorkbenchSnapshotImportCompletionForTests(queued.jobId);
+
+    const job = getWorkbenchSnapshotImportJob(queued.jobId, env);
+    expect(job).toMatchObject({
+      status: "failed",
+      failureClass: "budget_exhausted",
+      credential: {
+        authMode: "personal_access_token",
+      },
+      budget: {
+        maxRequestsPerWindow: 1,
+        remainingRequests: 0,
+      },
+    });
+    const serialized = JSON.stringify(job);
+    expect(serialized).not.toContain("figd_budget_workbench");
+    expect(serialized).not.toContain("tokenHash");
+    expect(serialized).not.toContain("tokenResourceKeyHash");
+    expect(serialized).not.toContain("https://www.figma.com");
   });
 
   it("fails closed when optional preview evidence is corrupted", async () => {
@@ -356,9 +607,7 @@ describe("Workbench Snapshot Vault adapter", () => {
       };
 
       expect(response.status).toBe(404);
-      expect(payload.error?.code).toBe(
-        "SNAPSHOT_SELECTION_MISSING_SNAPSHOT",
-      );
+      expect(payload.error?.code).toBe("SNAPSHOT_SELECTION_MISSING_SNAPSHOT");
       expect(payload.error?.message).toMatch(/snapshot/u);
     } finally {
       if (previousRepoRoot === undefined) {

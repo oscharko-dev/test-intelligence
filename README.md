@@ -95,13 +95,21 @@ Runtime state, PID files, and logs are written under
 
 The Workbench provides Runs, Snapshot Vault, Model Settings, and Run History
 for local operator workflows. Snapshot Vault can import or refresh a Figma board
-when a Figma access token is configured, then browse validated repo-local
-snapshot artifacts under `.test-intelligence/figma-snapshots/`. Import/refresh
-is the live Figma path; catalog browsing, search, node inspection, preview-plan
-rendering, scope preflight, and run-from-snapshot launch use only local cached
-snapshot artifacts. The browser receives snapshot IDs, hashed source identity,
-tenant scope, status metadata, and selected page/frame/node IDs; it does not
-need raw Figma URLs, tokens, or private vault paths for run-from-snapshot.
+when a Figma credential is configured through local/self-hosted settings or
+process environment. The import path records the credential mode, enforces
+per-token and per-resource request budgets before each Figma REST request, and
+keeps Figma plan-tier or rate-limit-type diagnostics transient in the active
+Workbench import job. Persisted snapshot artifacts only carry resumability-safe
+queue counts, budget counters, and retry timing; they do not store raw tokens,
+token-derived digests, authorization headers, private Figma URLs, private
+request logs, plan-tier telemetry, or remediation text. Import/refresh is the
+live Figma path; catalog browsing, search, node inspection, preview-plan
+rendering, scope preflight, and run-from-snapshot launch use only validated
+repo-local snapshot artifacts under `.test-intelligence/figma-snapshots/`. The
+browser receives snapshot IDs, hashed source identity, tenant scope, selected
+page/frame/node IDs, queue status, retry timing, and active-job remediation
+guidance; it does not need raw Figma URLs, authorization headers, tokens,
+private request logs, or private vault paths for run-from-snapshot.
 
 Run History is read-only sample data until persisted history loading is
 implemented.

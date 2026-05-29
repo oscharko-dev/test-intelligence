@@ -74,8 +74,7 @@ const createNodeDocument = (nodeId: string): unknown => ({
       name: "Customer URI should not persist",
       type: "TEXT",
       visible: true,
-      characters:
-        `Visit https://customer.example/private-board or mailto:claims@customer.example with ${FIGMA_TOKEN_PREFIX}payload_secret_value_1234567890 for details`,
+      characters: `Visit https://customer.example/private-board or mailto:claims@customer.example with ${FIGMA_TOKEN_PREFIX}payload_secret_value_1234567890 for details`,
     },
   ],
 });
@@ -124,7 +123,9 @@ interface MockFigmaFetch {
   readonly maxConcurrency: () => number;
 }
 
-const createMockFigmaFetch = (options: MockFigmaFetchOptions): MockFigmaFetch => {
+const createMockFigmaFetch = (
+  options: MockFigmaFetchOptions,
+): MockFigmaFetch => {
   const requestedUrls: string[] = [];
   const sleeps: number[] = [];
   let inFlight = 0;
@@ -150,8 +151,7 @@ const createMockFigmaFetch = (options: MockFigmaFetchOptions): MockFigmaFetch =>
               "Retry-After": "2",
               "X-Figma-Plan-Tier": "enterprise",
               "X-Figma-Rate-Limit-Type": "file_content",
-              "X-Figma-Upgrade-Link":
-                `https://www.figma.com/pricing?token=${FIGMA_TOKEN_PREFIX}header_secret_value_1234567890`,
+              "X-Figma-Upgrade-Link": `https://www.figma.com/pricing?token=${FIGMA_TOKEN_PREFIX}header_secret_value_1234567890`,
             },
           );
         }
@@ -253,15 +253,33 @@ void test("staged import completes large boards through bounded REST batches and
   );
   assert.equal(result.previewManifest.previewStatus, "complete");
   assert.ok(result.previewManifest.assets.length > 0);
-  assert.equal(result.previewManifest.assets.length, result.previewManifest.tiles.length);
+  assert.equal(
+    result.previewManifest.assets.length,
+    result.previewManifest.tiles.length,
+  );
   assert.equal(result.nodeIndex.nodes.length, nodeIds.length * 2);
+  assert.equal(
+    result.importStatus.credential?.authMode,
+    "personal_access_token",
+  );
+  assert.equal("tokenHash" in (result.importStatus.credential ?? {}), false);
+  assert.equal(
+    result.importStatus.budget?.policyVersion,
+    "figma-import-budget/v1",
+  );
+  assert.equal(result.importStatus.budget?.resourceType, "image_metadata");
+  assert.equal("tokenResourceKeyHash" in (result.importStatus.budget ?? {}), false);
+  assert.ok((result.importStatus.budget?.remainingRequests ?? 0) > 0);
   assert.equal(mock.maxConcurrency(), 1);
   assert.equal(
     countRequests(mock, (url) => url.pathname === `/v1/files/${FILE_KEY}`),
     1,
   );
   assert.equal(
-    countRequests(mock, (url) => url.pathname === `/v1/files/${FILE_KEY}/nodes`),
+    countRequests(
+      mock,
+      (url) => url.pathname === `/v1/files/${FILE_KEY}/nodes`,
+    ),
     3,
   );
   assert.equal(
@@ -275,6 +293,32 @@ void test("staged import completes large boards through bounded REST batches and
   assert.doesNotMatch(persisted, /customer\.example/u);
   assert.doesNotMatch(persisted, /figd_payload_secret/u);
   assert.match(persisted, /\[URI_REDACTED\]/u);
+});
+
+void test("staged import source identity ignores sensitive Figma URL query material", async () => {
+  const nodeIds = ["1:1"];
+  const cleanWorkspaceRoot = await createWorkspaceRoot();
+  const sensitiveWorkspaceRoot = await createWorkspaceRoot();
+  const cleanMock = createMockFigmaFetch({ nodeIds });
+  const sensitiveMock = createMockFigmaFetch({ nodeIds });
+
+  const clean = await importWithMock(cleanWorkspaceRoot, cleanMock, {
+    figmaUrl: `https://www.figma.com/design/${FILE_KEY}/Customer-Board?node-id=1-1`,
+  });
+  const sensitive = await importWithMock(sensitiveWorkspaceRoot, sensitiveMock, {
+    figmaUrl: `https://www.figma.com/design/${FILE_KEY}/Customer-Board?node-id=1-1&access_token=private-token&private_share=tenant-secret`,
+  });
+
+  assert.equal(sensitive.snapshotId, clean.snapshotId);
+  assert.equal(
+    sensitive.importStatus.source.sourceUrlHash,
+    clean.importStatus.source.sourceUrlHash,
+  );
+  const persisted = await readAllPersistedText(sensitive.vaultPath);
+  assert.doesNotMatch(persisted, /access_token=/u);
+  assert.doesNotMatch(persisted, /private_share=/u);
+  assert.doesNotMatch(persisted, /private-token/u);
+  assert.doesNotMatch(persisted, /tenant-secret/u);
 });
 
 void test("staged import honors Retry-After and records sanitized rate-limit metadata", async () => {
@@ -291,19 +335,86 @@ void test("staged import honors Retry-After and records sanitized rate-limit met
 
   assert.deepEqual(mock.sleeps, [2000]);
   assert.equal(result.importStatus.rateLimit.retryAfterSeconds, 2);
-  assert.equal(result.importStatus.rateLimit.figmaPlanTier, "enterprise");
-  assert.equal(result.importStatus.rateLimit.figmaRateLimitType, "file_content");
+  assert.equal("figmaPlanTier" in result.importStatus.rateLimit, false);
+  assert.equal("figmaRateLimitType" in result.importStatus.rateLimit, false);
+  assert.equal("remediation" in result.importStatus.rateLimit, false);
+  assert.equal(result.rateLimitDiagnostics?.figmaPlanTier, "enterprise");
+  assert.equal(
+    result.rateLimitDiagnostics?.figmaRateLimitType,
+    "file_content",
+  );
+  assert.equal(
+    result.rateLimitDiagnostics?.remediation?.scenario,
+    "high_limit",
+  );
   assert.match(
-    result.importStatus.rateLimit.figmaUpgradeLinkDigest ?? "",
+    result.rateLimitDiagnostics?.remediation?.guidance ?? "",
+    /Stagger imports/u,
+  );
+  assert.match(
+    result.rateLimitDiagnostics?.figmaUpgradeLinkDigest ?? "",
     /^[a-f0-9]{64}$/u,
   );
   const persisted = await readAllPersistedText(result.vaultPath);
   assert.doesNotMatch(persisted, /https:\/\/www\.figma\.com\/pricing/u);
   assert.doesNotMatch(persisted, /figd_header_secret/u);
+  assert.doesNotMatch(persisted, /enterprise/u);
+  assert.doesNotMatch(persisted, /file_content/u);
   assert.equal(
-    countRequests(mock, (url) => url.pathname === `/v1/files/${FILE_KEY}/nodes`),
+    countRequests(
+      mock,
+      (url) => url.pathname === `/v1/files/${FILE_KEY}/nodes`,
+    ),
     2,
   );
+});
+
+void test("staged import refuses locally when per-resource request budget is exhausted", async () => {
+  const nodeIds = ["1:1", "1:2", "1:3"];
+  const workspaceRoot = await createWorkspaceRoot();
+  const mock = createMockFigmaFetch({ nodeIds });
+
+  await assert.rejects(
+    () =>
+      importWithMock(workspaceRoot, mock, {
+        figmaUrl: `https://www.figma.com/design/${FILE_KEY}/Customer-Board`,
+        nodeBatchSize: 1,
+        imageBatchSize: 1,
+        budgetPolicy: {
+          maxRequestsPerWindow: 10,
+          resourceMaxRequestsPerWindow: {
+            file_bootstrap: 1,
+            node_batch: 1,
+            image_metadata: 10,
+          },
+        },
+      }),
+    (err: unknown): boolean => {
+      assert.ok(err instanceof FigmaStagedImportError);
+      assert.equal(err.errorCode, "budget_exhausted");
+      assert.equal(err.failureClass, "budget_exhausted");
+      assert.equal(err.checkpoint?.failureClass, "budget_exhausted");
+      assert.equal(err.checkpoint?.budget?.resourceType, "node_batch");
+      assert.equal(err.checkpoint?.budget?.remainingRequests, 0);
+      assert.equal(
+        "tokenResourceKeyHash" in (err.checkpoint?.budget ?? {}),
+        false,
+      );
+      return true;
+    },
+  );
+
+  assert.equal(
+    countRequests(
+      mock,
+      (url) => url.pathname === `/v1/files/${FILE_KEY}/nodes`,
+    ),
+    1,
+  );
+  const persisted = await readAllPersistedText(workspaceRoot);
+  assert.doesNotMatch(persisted, new RegExp(ACCESS_TOKEN, "u"));
+  assert.doesNotMatch(persisted, /https:\/\/www\.figma\.com/u);
+  assert.match(persisted, /"failureClass":"budget_exhausted"/u);
 });
 
 void test("staged import adaptively splits oversized node and image batches", async () => {
@@ -335,7 +446,8 @@ void test("staged import adaptively splits oversized node and image batches", as
   assert.equal(
     countRequests(
       mock,
-      (url) => url.pathname === `/v1/images/${FILE_KEY}` && parseIds(url).length > 1,
+      (url) =>
+        url.pathname === `/v1/images/${FILE_KEY}` && parseIds(url).length > 1,
     ),
     3,
   );
@@ -351,7 +463,8 @@ void test("staged import adaptively splits oversized node and image batches", as
   assert.equal(
     countRequests(
       mock,
-      (url) => url.pathname === `/v1/images/${FILE_KEY}` && parseIds(url).length === 1,
+      (url) =>
+        url.pathname === `/v1/images/${FILE_KEY}` && parseIds(url).length === 1,
     ),
     4,
   );
@@ -391,7 +504,9 @@ void test("staged import flattens deep node trees without recursive stack overfl
 
   assert.equal(result.importStatus.lifecycleState, "completed");
   assert.equal(result.nodeIndex.nodes.length, 3_001);
-  const nodeById = new Map(result.nodeIndex.nodes.map((node) => [node.nodeId, node]));
+  const nodeById = new Map(
+    result.nodeIndex.nodes.map((node) => [node.nodeId, node]),
+  );
   const deepLeaf = nodeById.get("deep:leaf");
   assert.ok(deepLeaf);
   assert.equal(deepLeaf.parentNodeId, "deep:3000");
@@ -439,7 +554,9 @@ void test("staged import resumes a safe checkpoint after interruption", async ()
   });
 
   assert.equal(resumed.importStatus.lifecycleState, "completed");
-  assert.ok(resumed.reusedChunkIds.some((chunkId) => chunkId.startsWith("node-")));
+  assert.ok(
+    resumed.reusedChunkIds.some((chunkId) => chunkId.startsWith("node-")),
+  );
   const requestedNodeIds = secondMock.requestedUrls
     .map((rawUrl) => new URL(rawUrl))
     .filter((url) => url.pathname === `/v1/files/${FILE_KEY}/nodes`)
@@ -464,11 +581,17 @@ void test("staged import reuses unchanged cached chunks on repeated imports", as
   assert.deepEqual(second.previewManifest, first.previewManifest);
   assert.equal(second.reusedChunkIds.length, first.importStatus.chunks.length);
   assert.equal(
-    countRequests(secondMock, (url) => url.pathname === `/v1/files/${FILE_KEY}/nodes`),
+    countRequests(
+      secondMock,
+      (url) => url.pathname === `/v1/files/${FILE_KEY}/nodes`,
+    ),
     0,
   );
   assert.equal(
-    countRequests(secondMock, (url) => url.pathname === `/v1/images/${FILE_KEY}`),
+    countRequests(
+      secondMock,
+      (url) => url.pathname === `/v1/images/${FILE_KEY}`,
+    ),
     0,
   );
 });
@@ -544,8 +667,7 @@ void test("staged import rejects unsafe checkpoints with sanitized diagnostics",
 void test("staged import rejects token-shaped explicit nodeId before checkpoint persistence", async () => {
   const workspaceRoot = await createWorkspaceRoot();
   const mock = createMockFigmaFetch({ nodeIds: ["1:1"] });
-  const secretLikeNodeId =
-    `${FIGMA_TOKEN_PREFIX}supersecret_source_node_value_1234567890`;
+  const secretLikeNodeId = `${FIGMA_TOKEN_PREFIX}supersecret_source_node_value_1234567890`;
 
   await assert.rejects(
     () =>

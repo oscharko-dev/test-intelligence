@@ -9,13 +9,19 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 import {
+  FigmaImportGovernanceError,
+  FigmaRestFetchError,
+  FigmaStagedImportError,
+  classifyFigmaRateLimitRemediation,
   importStagedFigmaSnapshot,
+  parseFigmaUrl,
   queryFigmaSnapshotNodeIndex,
+  type FigmaImportBudgetPolicyInput,
+  type FigmaImportRateLimitDiagnostics,
   validateFigmaSnapshotImportStatus,
   validateFigmaSnapshotManifest,
   validateFigmaSnapshotNodeIndex,
   validateFigmaSnapshotPreviewManifest,
-  type FigmaStagedImportError,
 } from "@oscharko-dev/ti-core-engine";
 import { resolveFigmaSnapshotRunSource } from "@oscharko-dev/ti-production-runner";
 import type {
@@ -30,7 +36,10 @@ import { looksLikeFigmaDesignUrl } from "@/lib/runs-form";
 import type {
   SnapshotImportAction,
   WorkbenchSnapshotCatalogRow,
+  WorkbenchSnapshotBudgetSummary,
+  WorkbenchSnapshotCredentialSummary,
   WorkbenchSnapshotDetail,
+  WorkbenchSnapshotFailureClass,
   WorkbenchSnapshotImportJob,
   WorkbenchSnapshotNodeSummary,
   WorkbenchSnapshotPreviewTileSummary,
@@ -42,7 +51,6 @@ import type { SnapshotRunSelection } from "@/lib/types";
 import { readPersistedWorkbenchSettingsOverrides } from "./workbench-settings-store";
 import {
   mergeWorkbenchEnvWithSettings,
-  readWorkbenchRequestSettings,
   resolveRepoRoot,
 } from "./workbench-run-validation";
 import {
@@ -82,12 +90,21 @@ type WorkbenchSnapshotImportRecord = {
 export class WorkbenchSnapshotVaultError extends Error {
   readonly status: number;
   readonly code: string;
+  readonly failureClass?: WorkbenchSnapshotFailureClass;
 
-  constructor(input: { status: number; code: string; message: string }) {
+  constructor(input: {
+    status: number;
+    code: string;
+    message: string;
+    failureClass?: WorkbenchSnapshotFailureClass;
+  }) {
     super(sanitizeDiagnostic(input.message));
     this.name = "WorkbenchSnapshotVaultError";
     this.status = input.status;
     this.code = input.code;
+    if (input.failureClass !== undefined) {
+      this.failureClass = input.failureClass;
+    }
   }
 }
 
@@ -263,7 +280,7 @@ export const startWorkbenchSnapshotImport = async ({
       action: input.action,
       status: "queued",
       queueState: "queued",
-      sourceUrlHash: sha256Hex(input.figmaUrl),
+      sourceUrlHash: input.sourceUrlHash,
       tenantScope: tenantScopeKey,
       queuedAt,
     },
@@ -303,23 +320,51 @@ const executeSnapshotImport = async ({
     const result = await importStagedFigmaSnapshot({
       workspaceRoot: input.repoRoot,
       tenantScope: input.tenantScope,
-      accessToken: input.accessToken,
+      credential: {
+        authMode: input.credentialMode,
+        accessToken: input.accessToken,
+      },
       figmaUrl: input.figmaUrl,
       reuseCache: input.action !== "refresh",
-      ...(input.caCertPath !== undefined ? { caCertPath: input.caCertPath } : {}),
+      ...(input.caCertPath !== undefined
+        ? { caCertPath: input.caCertPath }
+        : {}),
       ...(fetchImpl !== undefined ? { fetchImpl } : {}),
+      ...(input.budgetPolicy !== undefined
+        ? { budgetPolicy: input.budgetPolicy }
+        : {}),
     });
+    const credential = toCredentialSummary(result.importStatus);
+    const budget = toBudgetSummary(result.importStatus);
+    const rateLimit =
+      toRateLimitSummaryFromDiagnostics(result.rateLimitDiagnostics) ??
+      toRateLimitSummary(result.importStatus);
     record.job = {
       ...record.job,
       status: "completed",
       queueState: "idle",
       completedAt: new Date().toISOString(),
       snapshotId: result.snapshotId,
-      rateLimit: toRateLimitSummary(result.importStatus),
+      rateLimit,
+      ...(credential !== undefined ? { credential } : {}),
+      ...(budget !== undefined ? { budget } : {}),
+      ...(result.importStatus.failureClass !== undefined
+        ? { failureClass: result.importStatus.failureClass }
+        : {}),
       message: `Snapshot ${result.snapshotId} is available in the local vault.`,
     };
   } catch (error) {
-    const importError = error as Partial<FigmaStagedImportError>;
+    const importError =
+      error instanceof FigmaStagedImportError ? error : undefined;
+    const checkpoint = importError?.checkpoint;
+    const rateLimit =
+      toRateLimitSummaryFromDiagnostics(importError?.rateLimitDiagnostics) ??
+      toRateLimitSummaryFromError(error) ??
+      (checkpoint === undefined ? undefined : toRateLimitSummary(checkpoint));
+    const credential =
+      checkpoint === undefined ? undefined : toCredentialSummary(checkpoint);
+    const budget =
+      checkpoint === undefined ? undefined : toBudgetSummary(checkpoint);
     record.job = {
       ...record.job,
       status: "failed",
@@ -328,9 +373,10 @@ const executeSnapshotImport = async ({
       message: sanitizeDiagnostic(
         error instanceof Error ? error.message : "Snapshot import failed.",
       ),
-      ...(importError.checkpoint !== undefined
-        ? { rateLimit: toRateLimitSummary(importError.checkpoint) }
-        : {}),
+      failureClass: classifyWorkbenchImportFailure(error),
+      ...(rateLimit !== undefined ? { rateLimit } : {}),
+      ...(credential !== undefined ? { credential } : {}),
+      ...(budget !== undefined ? { budget } : {}),
     };
   } finally {
     const tenantScopeKey = formatWorkbenchTenantScope(input.tenantScope);
@@ -343,8 +389,11 @@ const executeSnapshotImport = async ({
 interface ResolvedSnapshotImportRequest {
   action: SnapshotImportAction;
   figmaUrl: string;
+  sourceUrlHash: string;
   repoRoot: string;
   accessToken: string;
+  credentialMode: string;
+  budgetPolicy?: FigmaImportBudgetPolicyInput;
   tenantScope: ReturnType<typeof resolveWorkbenchTenantScope>;
   caCertPath?: string;
 }
@@ -372,13 +421,9 @@ const parseImportRequest = async (
   }
   const action: SnapshotImportAction =
     raw.action === "refresh" ? "refresh" : "import";
-  const requestedSettings =
-    "settings" in raw ? readWorkbenchRequestSettings(raw.settings) : {};
+  const parsedFigmaUrl = parseFigmaUrl(figmaUrl);
   const persistedSettings = await readPersistedWorkbenchSettingsOverrides(env);
-  const merged = mergeWorkbenchEnvWithSettings(
-    mergeWorkbenchEnvWithSettings(env, persistedSettings),
-    requestedSettings,
-  );
+  const merged = mergeWorkbenchEnvWithSettings(env, persistedSettings);
   const accessToken =
     merged.TEST_INTELLIGENCE_FIGMA_ACCESS_TOKEN?.trim() ||
     merged.FIGMA_ACCESS_TOKEN?.trim();
@@ -386,23 +431,108 @@ const parseImportRequest = async (
     throw new WorkbenchSnapshotVaultError({
       status: 503,
       code: "SNAPSHOT_IMPORT_FIGMA_TOKEN_MISSING",
+      failureClass: "missing_credential",
       message:
         "Snapshot import requires TEST_INTELLIGENCE_FIGMA_ACCESS_TOKEN or FIGMA_ACCESS_TOKEN.",
     });
   }
+  const credentialMode =
+    merged.TEST_INTELLIGENCE_FIGMA_CREDENTIAL_MODE?.trim() ||
+    "personal_access_token";
   const repoRoot = resolveRepoRoot(merged);
+  const budgetPolicy = resolveImportBudgetPolicy(merged);
   return {
     action,
     figmaUrl,
+    sourceUrlHash: sha256Hex({
+      kind: "figma_source",
+      fileKey: parsedFigmaUrl.fileKey,
+      ...(parsedFigmaUrl.nodeId !== undefined
+        ? { nodeId: parsedFigmaUrl.nodeId }
+        : {}),
+    }),
     repoRoot,
     accessToken,
+    credentialMode,
+    ...(budgetPolicy !== undefined ? { budgetPolicy } : {}),
     tenantScope: resolveWorkbenchTenantScope(merged),
-    ...(await resolveOptionalWorkspacePath({
+    ...((await resolveOptionalWorkspacePath({
       repoRoot,
       value: merged.NODE_EXTRA_CA_CERTS?.trim(),
       label: "NODE_EXTRA_CA_CERTS",
-    }) ?? {}),
+    })) ?? {}),
   };
+};
+
+const resolveImportBudgetPolicy = (
+  env: NodeJS.ProcessEnv,
+): FigmaImportBudgetPolicyInput | undefined => {
+  const windowSeconds = readPositiveIntegerEnv(
+    env,
+    "TEST_INTELLIGENCE_FIGMA_IMPORT_WINDOW_SECONDS",
+  );
+  const maxRequestsPerWindow = readPositiveIntegerEnv(
+    env,
+    "TEST_INTELLIGENCE_FIGMA_IMPORT_MAX_REQUESTS_PER_WINDOW",
+  );
+  const fileBootstrap = readPositiveIntegerEnv(
+    env,
+    "TEST_INTELLIGENCE_FIGMA_IMPORT_FILE_BOOTSTRAP_REQUESTS_PER_WINDOW",
+  );
+  const nodeBatch = readPositiveIntegerEnv(
+    env,
+    "TEST_INTELLIGENCE_FIGMA_IMPORT_NODE_BATCH_REQUESTS_PER_WINDOW",
+  );
+  const imageMetadata = readPositiveIntegerEnv(
+    env,
+    "TEST_INTELLIGENCE_FIGMA_IMPORT_IMAGE_METADATA_REQUESTS_PER_WINDOW",
+  );
+  const minimumDelayMs = readNonNegativeIntegerEnv(
+    env,
+    "TEST_INTELLIGENCE_FIGMA_IMPORT_MINIMUM_DELAY_MS",
+  );
+  const resourceMaxRequestsPerWindow = {
+    ...(fileBootstrap !== undefined ? { file_bootstrap: fileBootstrap } : {}),
+    ...(nodeBatch !== undefined ? { node_batch: nodeBatch } : {}),
+    ...(imageMetadata !== undefined ? { image_metadata: imageMetadata } : {}),
+  };
+  const policy: FigmaImportBudgetPolicyInput = {
+    ...(windowSeconds !== undefined ? { windowSeconds } : {}),
+    ...(maxRequestsPerWindow !== undefined ? { maxRequestsPerWindow } : {}),
+    ...(Object.keys(resourceMaxRequestsPerWindow).length > 0
+      ? { resourceMaxRequestsPerWindow }
+      : {}),
+    ...(minimumDelayMs !== undefined ? { minimumDelayMs } : {}),
+  };
+  return Object.keys(policy).length === 0 ? undefined : policy;
+};
+
+const readPositiveIntegerEnv = (
+  env: NodeJS.ProcessEnv,
+  key: string,
+): number | undefined => readIntegerEnv(env, key, 1);
+
+const readNonNegativeIntegerEnv = (
+  env: NodeJS.ProcessEnv,
+  key: string,
+): number | undefined => readIntegerEnv(env, key, 0);
+
+const readIntegerEnv = (
+  env: NodeJS.ProcessEnv,
+  key: string,
+  minimum: number,
+): number | undefined => {
+  const raw = env[key]?.trim();
+  if (raw === undefined || raw.length === 0) return undefined;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < minimum) {
+    throw new WorkbenchSnapshotVaultError({
+      status: 400,
+      code: "SNAPSHOT_IMPORT_BUDGET_INVALID",
+      message: `${key} must be an integer greater than or equal to ${minimum}.`,
+    });
+  }
+  return value;
 };
 
 const resolveOptionalWorkspacePath = async ({
@@ -471,12 +601,14 @@ const discoverSnapshotArtifacts = async (
   const realTenantRoot = await realpath(tenantRoot);
   if (!isPathInside(realTenantRoot, realRepoRoot)) return [];
   const artifacts: SnapshotArtifacts[] = [];
-  for (const fileKeyEntry of await readdir(realTenantRoot, { withFileTypes: true })) {
+  for (const fileKeyEntry of await readdir(realTenantRoot, {
+    withFileTypes: true,
+  })) {
     if (!fileKeyEntry.isDirectory()) continue;
     const fileKeyPath = path.join(realTenantRoot, fileKeyEntry.name);
-    for (const snapshotEntry of await readdir(fileKeyPath, { withFileTypes: true }).catch(
-      () => [],
-    )) {
+    for (const snapshotEntry of await readdir(fileKeyPath, {
+      withFileTypes: true,
+    }).catch(() => [])) {
       if (!snapshotEntry.isDirectory()) continue;
       const vaultPath = path.join(fileKeyPath, snapshotEntry.name);
       const snapshot = await readArtifactsAtVaultPath(vaultPath).catch(
@@ -492,7 +624,11 @@ const readSnapshotArtifacts = async (
   snapshotId: string,
   env: NodeJS.ProcessEnv,
 ): Promise<SnapshotArtifacts> => {
-  if (!/^[A-Za-z0-9._-]+$/u.test(snapshotId) || snapshotId === "." || snapshotId === "..") {
+  if (
+    !/^[A-Za-z0-9._-]+$/u.test(snapshotId) ||
+    snapshotId === "." ||
+    snapshotId === ".."
+  ) {
     throw new WorkbenchSnapshotVaultError({
       status: 400,
       code: "SNAPSHOT_ID_INVALID",
@@ -523,28 +659,29 @@ const readArtifactsAtVaultPath = async (
   vaultPath: string,
 ): Promise<SnapshotArtifacts> => {
   const realVaultPath = await realpath(vaultPath);
-  const [manifest, nodeIndex, importStatus, previewManifest] = await Promise.all([
-    readSnapshotJson(
-      realVaultPath,
-      MANIFEST_FILENAME,
-      validateFigmaSnapshotManifest,
-    ),
-    readSnapshotJson(
-      realVaultPath,
-      NODE_INDEX_FILENAME,
-      validateFigmaSnapshotNodeIndex,
-    ),
-    readSnapshotJson(
-      realVaultPath,
-      IMPORT_STATUS_FILENAME,
-      validateFigmaSnapshotImportStatus,
-    ),
-    readOptionalSnapshotJson(
-      realVaultPath,
-      PREVIEW_MANIFEST_FILENAME,
-      validateFigmaSnapshotPreviewManifest,
-    ),
-  ]);
+  const [manifest, nodeIndex, importStatus, previewManifest] =
+    await Promise.all([
+      readSnapshotJson(
+        realVaultPath,
+        MANIFEST_FILENAME,
+        validateFigmaSnapshotManifest,
+      ),
+      readSnapshotJson(
+        realVaultPath,
+        NODE_INDEX_FILENAME,
+        validateFigmaSnapshotNodeIndex,
+      ),
+      readSnapshotJson(
+        realVaultPath,
+        IMPORT_STATUS_FILENAME,
+        validateFigmaSnapshotImportStatus,
+      ),
+      readOptionalSnapshotJson(
+        realVaultPath,
+        PREVIEW_MANIFEST_FILENAME,
+        validateFigmaSnapshotPreviewManifest,
+      ),
+    ]);
   if (
     manifest.snapshotId !== nodeIndex.snapshotId ||
     manifest.snapshotId !== importStatus.snapshotId ||
@@ -568,7 +705,8 @@ const readArtifactsAtVaultPath = async (
     throw new WorkbenchSnapshotVaultError({
       status: 422,
       code: "SNAPSHOT_PREVIEW_MISMATCH",
-      message: "Snapshot preview manifest does not match the snapshot manifest.",
+      message:
+        "Snapshot preview manifest does not match the snapshot manifest.",
     });
   }
   return {
@@ -667,6 +805,8 @@ const toCatalogRow = ({
   const hiddenCount = nodeIndex.nodes.filter((node) => !node.visible).length;
   const lifecycleState = importStatus.lifecycleState;
   const previewStatus = previewManifest?.previewStatus ?? "not_requested";
+  const credential = toCredentialSummary(importStatus);
+  const budget = toBudgetSummary(importStatus);
   return {
     snapshotId: manifest.snapshotId,
     tenantScope: formatWorkbenchTenantScope(manifest.tenantScope),
@@ -694,6 +834,11 @@ const toCatalogRow = ({
           ? "failed"
           : "partial",
     rateLimit: toRateLimitSummary(importStatus),
+    ...(credential !== undefined ? { credential } : {}),
+    ...(budget !== undefined ? { budget } : {}),
+    ...(importStatus.failureClass !== undefined
+      ? { failureClass: importStatus.failureClass }
+      : {}),
   };
 };
 
@@ -796,19 +941,124 @@ const toRateLimitSummary = (
   ...(status.rateLimit.resetAt !== undefined
     ? { resetAt: status.rateLimit.resetAt }
     : {}),
-  ...(status.rateLimit.figmaPlanTier !== undefined
-    ? { figmaPlanTier: status.rateLimit.figmaPlanTier }
-    : {}),
-  ...(status.rateLimit.figmaRateLimitType !== undefined
-    ? { figmaRateLimitType: status.rateLimit.figmaRateLimitType }
-    : {}),
-  ...(status.rateLimit.figmaUpgradeLinkDigest !== undefined
-    ? { figmaUpgradeLinkDigest: status.rateLimit.figmaUpgradeLinkDigest }
-    : {}),
 });
 
-const sha256Hex = (value: string): string =>
-  createHash("sha256").update(value).digest("hex");
+const toRateLimitSummaryFromDiagnostics = (
+  diagnostics: FigmaImportRateLimitDiagnostics | undefined,
+): WorkbenchSnapshotRateLimitSummary | undefined =>
+  diagnostics === undefined
+    ? undefined
+    : {
+        ...(diagnostics.retryAfterSeconds !== undefined
+          ? { retryAfterSeconds: diagnostics.retryAfterSeconds }
+          : {}),
+        ...(diagnostics.remaining !== undefined
+          ? { remaining: diagnostics.remaining }
+          : {}),
+        ...(diagnostics.resetAt !== undefined
+          ? { resetAt: diagnostics.resetAt }
+          : {}),
+        ...(diagnostics.figmaPlanTier !== undefined
+          ? { figmaPlanTier: diagnostics.figmaPlanTier }
+          : {}),
+        ...(diagnostics.figmaRateLimitType !== undefined
+          ? { figmaRateLimitType: diagnostics.figmaRateLimitType }
+          : {}),
+        ...(diagnostics.figmaUpgradeLinkDigest !== undefined
+          ? { figmaUpgradeLinkDigest: diagnostics.figmaUpgradeLinkDigest }
+          : {}),
+        ...(diagnostics.remediation !== undefined
+          ? { remediation: diagnostics.remediation }
+          : {}),
+      };
+
+const toCredentialSummary = (
+  status: FigmaSnapshotImportStatus,
+): WorkbenchSnapshotCredentialSummary | undefined =>
+  status.credential === undefined ? undefined : { ...status.credential };
+
+const toBudgetSummary = (
+  status: FigmaSnapshotImportStatus,
+): WorkbenchSnapshotBudgetSummary | undefined =>
+  status.budget === undefined ? undefined : { ...status.budget };
+
+const toRateLimitSummaryFromError = (
+  error: unknown,
+): WorkbenchSnapshotRateLimitSummary | undefined => {
+  const restError = findFigmaRestError(error);
+  if (restError === undefined) return undefined;
+  const summary: WorkbenchSnapshotRateLimitSummary = {
+    ...(restError.retryAfterSeconds !== undefined
+      ? { retryAfterSeconds: restError.retryAfterSeconds }
+      : {}),
+    ...(restError.figmaPlanTier !== undefined
+      ? { figmaPlanTier: restError.figmaPlanTier }
+      : {}),
+    ...(restError.figmaRateLimitType !== undefined
+      ? { figmaRateLimitType: restError.figmaRateLimitType }
+      : {}),
+    ...(restError.figmaUpgradeLinkDigest !== undefined
+      ? { figmaUpgradeLinkDigest: restError.figmaUpgradeLinkDigest }
+      : {}),
+  };
+  if (
+    summary.retryAfterSeconds !== undefined ||
+    summary.figmaPlanTier !== undefined ||
+    summary.figmaRateLimitType !== undefined
+  ) {
+    summary.remediation = classifyFigmaRateLimitRemediation({
+      ...(summary.retryAfterSeconds !== undefined
+        ? { retryAfterSeconds: summary.retryAfterSeconds }
+        : {}),
+      ...(summary.figmaPlanTier !== undefined
+        ? { figmaPlanTier: summary.figmaPlanTier }
+        : {}),
+      ...(summary.figmaRateLimitType !== undefined
+        ? { figmaRateLimitType: summary.figmaRateLimitType }
+        : {}),
+    });
+  }
+  return Object.keys(summary).length === 0 ? undefined : summary;
+};
+
+const classifyWorkbenchImportFailure = (
+  error: unknown,
+): WorkbenchSnapshotFailureClass => {
+  if (error instanceof FigmaStagedImportError) return error.failureClass;
+  if (error instanceof FigmaImportGovernanceError) return error.failureClass;
+  const restError = findFigmaRestError(error);
+  if (restError !== undefined) {
+    switch (restError.errorClass) {
+      case "rate_limited":
+        return "throttled";
+      case "auth_failed":
+        return "invalid_credential";
+      case "not_found":
+        return "not_found";
+      case "request_invalid":
+      case "parse_error":
+      case "ssrf_refused":
+        return "invalid_request";
+      case "timeout":
+      case "transport":
+        return "transport";
+    }
+  }
+  return "transport";
+};
+
+const findFigmaRestError = (
+  error: unknown,
+): FigmaRestFetchError | undefined => {
+  if (error instanceof FigmaRestFetchError) return error;
+  if (error instanceof Error) return findFigmaRestError(error.cause);
+  return undefined;
+};
+
+const sha256Hex = (value: unknown): string =>
+  createHash("sha256")
+    .update(typeof value === "string" ? value : JSON.stringify(value))
+    .digest("hex");
 
 const sanitizeDiagnostic = (value: string): string =>
   value

@@ -75,7 +75,9 @@ const emptySelection = (): SnapshotRunSelection => ({
 });
 
 const countSelection = (selection: SnapshotRunSelection): number =>
-  selection.nodeIds.length + selection.pageIds.length + selection.frameIds.length;
+  selection.nodeIds.length +
+  selection.pageIds.length +
+  selection.frameIds.length;
 
 const messageFrom = (payload: ApiError, fallback: string): string =>
   payload.error?.message ?? fallback;
@@ -86,12 +88,46 @@ const readJson = async <T,>(response: Response): Promise<T> =>
 const shortHash = (value: string): string =>
   value.length <= 14 ? value : `${value.slice(0, 8)}…${value.slice(-6)}`;
 
+const formatAuthMode = (value: string): string => value.replaceAll("_", " ");
+
+const formatBudgetSummary = (
+  job: WorkbenchSnapshotImportJob | WorkbenchSnapshotCatalogRow,
+): string | null => {
+  if (job.budget === undefined) return null;
+  const resource =
+    job.budget.resourceType === undefined
+      ? "aggregate"
+      : job.budget.resourceType.replaceAll("_", " ");
+  return `${resource} budget ${job.budget.usedRequests}/${job.budget.maxRequestsPerWindow} used · ${job.budget.remainingRequests} remaining`;
+};
+
+const formatRateLimitSummary = (
+  rateLimit: WorkbenchSnapshotCatalogRow["rateLimit"] | undefined,
+): string | null => {
+  if (rateLimit === undefined) return null;
+  const parts = [
+    rateLimit.figmaRateLimitType !== undefined
+      ? `limit type ${rateLimit.figmaRateLimitType}`
+      : null,
+    rateLimit.figmaPlanTier !== undefined
+      ? `plan ${rateLimit.figmaPlanTier}`
+      : null,
+    rateLimit.remaining !== undefined
+      ? `${rateLimit.remaining} remaining`
+      : null,
+    rateLimit.retryAfterSeconds !== undefined
+      ? `retry after ${rateLimit.retryAfterSeconds}s`
+      : null,
+  ].filter((part): part is string => part !== null);
+  return parts.length === 0 ? null : parts.join(" · ");
+};
+
 const safeJobSuffix = (snapshotId: string): string =>
   snapshotId.replaceAll(/[^A-Za-z0-9._-]/gu, "-").slice(0, 42);
 
 export function SnapshotVaultScreen(): ReactNode {
   const router = useRouter();
-  const { settings, startRun, runBusy, runError } = useWorkbench();
+  const { startRun, runBusy, runError } = useWorkbench();
   const [snapshots, setSnapshots] = useState<WorkbenchSnapshotCatalogRow[]>([]);
   const [selectedSnapshotId, setSelectedSnapshotId] = useState<string | null>(
     null,
@@ -248,7 +284,12 @@ export function SnapshotVaultScreen(): ReactNode {
       controller.abort();
       window.clearTimeout(timer);
     };
-  }, [deferredSearchQuery, detail?.sampleNodes, includeHidden, selectedSnapshotId]);
+  }, [
+    deferredSearchQuery,
+    detail?.sampleNodes,
+    includeHidden,
+    selectedSnapshotId,
+  ]);
 
   useEffect(() => {
     if (selectedSnapshotId === null || countSelection(selection) === 0) {
@@ -341,11 +382,13 @@ export function SnapshotVaultScreen(): ReactNode {
       const response = await fetch("/api/workbench/snapshots", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ action, figmaUrl: importUrl, settings }),
+        body: JSON.stringify({ action, figmaUrl: importUrl }),
       });
       const payload = await readJson<ImportResponse>(response);
       if (!response.ok || payload.job === undefined) {
-        setImportError(messageFrom(payload, "Snapshot import could not start."));
+        setImportError(
+          messageFrom(payload, "Snapshot import could not start."),
+        );
         return;
       }
       setImportJob(payload.job);
@@ -359,10 +402,7 @@ export function SnapshotVaultScreen(): ReactNode {
     }
   };
 
-  const addSelection = (
-    kind: keyof SnapshotRunSelection,
-    id: string,
-  ): void => {
+  const addSelection = (kind: keyof SnapshotRunSelection, id: string): void => {
     setSelection((current) => {
       if (current[kind].includes(id)) return current;
       return { ...current, [kind]: [...current[kind], id] };
@@ -528,7 +568,8 @@ function ImportPanel({
   onImport: () => void;
   onRefresh: () => void;
 }): ReactNode {
-  const busy = importJob?.status === "queued" || importJob?.status === "running";
+  const busy =
+    importJob?.status === "queued" || importJob?.status === "running";
   return (
     <Panel
       title="Import / refresh"
@@ -556,7 +597,11 @@ function ImportPanel({
             onClick={onImport}
             disabled={busy || importUrl.trim().length === 0}
           >
-            {busy ? <Loader2 size={14} aria-hidden focusable={false} /> : <Archive size={14} aria-hidden focusable={false} />}
+            {busy ? (
+              <Loader2 size={14} aria-hidden focusable={false} />
+            ) : (
+              <Archive size={14} aria-hidden focusable={false} />
+            )}
             Import snapshot
           </button>
           <button
@@ -587,18 +632,35 @@ function ImportPanel({
               </span>
               <span>
                 tenant {importJob.tenantScope} · queue {importJob.queueState}
-                {importJob.snapshotId ? ` · snapshot ${importJob.snapshotId}` : ""}
+                {importJob.snapshotId
+                  ? ` · snapshot ${importJob.snapshotId}`
+                  : ""}
               </span>
-              {importJob.rateLimit !== undefined && (
+              {importJob.failureClass !== undefined && (
+                <span>failure class {importJob.failureClass}</span>
+              )}
+              {importJob.credential !== undefined && (
                 <span>
-                  rate-limit{" "}
-                  {importJob.rateLimit.remaining ?? "n/a"} remaining
-                  {importJob.rateLimit.retryAfterSeconds !== undefined
-                    ? ` · retry after ${importJob.rateLimit.retryAfterSeconds}s`
-                    : ""}
+                  credential {formatAuthMode(importJob.credential.authMode)}
                 </span>
               )}
-              {importJob.message !== undefined && <span>{importJob.message}</span>}
+              {formatBudgetSummary(importJob) !== null && (
+                <span>{formatBudgetSummary(importJob)}</span>
+              )}
+              {formatRateLimitSummary(importJob.rateLimit) !== null && (
+                <span>
+                  rate-limit {formatRateLimitSummary(importJob.rateLimit)}
+                </span>
+              )}
+              {importJob.rateLimit?.remediation !== undefined && (
+                <span>
+                  remediation {importJob.rateLimit.remediation.scenario} ·{" "}
+                  {importJob.rateLimit.remediation.guidance}
+                </span>
+              )}
+              {importJob.message !== undefined && (
+                <span>{importJob.message}</span>
+              )}
             </>
           )}
           {importError !== null && <span>{importError}</span>}
@@ -627,7 +689,9 @@ function CatalogPanel({
         <div className="grid min-h-[360px] place-items-center rounded-lg border border-dashed border-border-subtle bg-bg-input p-5 text-center">
           <div className="grid gap-2">
             <Boxes className="mx-auto text-fg-subtle" size={30} aria-hidden />
-            <p className="m-0 text-sm text-fg-default">No local snapshots yet.</p>
+            <p className="m-0 text-sm text-fg-default">
+              No local snapshots yet.
+            </p>
             <p className="m-0 max-w-[260px] text-xs text-fg-muted">
               Import a board or point Workbench at a repo-local Snapshot Vault
               produced by the CLI.
@@ -654,9 +718,7 @@ function CatalogPanel({
                   <span className="min-w-0 flex-1 break-all font-mono text-xs text-fg-default">
                     {snapshot.snapshotId}
                   </span>
-              <Badge variant="neutral">
-                {snapshot.cacheState}
-              </Badge>
+                  <Badge variant="neutral">{snapshot.cacheState}</Badge>
                 </div>
                 <div className="grid grid-cols-3 gap-2 font-mono text-[11px] text-fg-muted">
                   <span>{snapshot.pageCount} pages</span>
@@ -666,6 +728,16 @@ function CatalogPanel({
                 <span className="font-mono text-[11px] text-fg-subtle">
                   {snapshot.importedAt} · {snapshot.tenantScope}
                 </span>
+                {formatRateLimitSummary(snapshot.rateLimit) !== null && (
+                  <span className="font-mono text-[11px] text-fg-subtle">
+                    rate-limit {formatRateLimitSummary(snapshot.rateLimit)}
+                  </span>
+                )}
+                {snapshot.failureClass !== undefined && (
+                  <span className="font-mono text-[11px] text-danger">
+                    failure class {snapshot.failureClass}
+                  </span>
+                )}
               </button>
             );
           })}
@@ -726,8 +798,22 @@ function ExplorerPanel({
           <span>cache {selectedSnapshot.cacheState}</span>
           <span>
             rate limit{" "}
-            {selectedSnapshot.rateLimit.remaining ?? "not reported"}
+            {formatRateLimitSummary(selectedSnapshot.rateLimit) ??
+              "not reported"}
           </span>
+          {selectedSnapshot.credential !== undefined && (
+            <span>
+              credential {formatAuthMode(selectedSnapshot.credential.authMode)}
+            </span>
+          )}
+          {formatBudgetSummary(selectedSnapshot) !== null && (
+            <span>{formatBudgetSummary(selectedSnapshot)}</span>
+          )}
+          {selectedSnapshot.rateLimit.remediation !== undefined && (
+            <span>
+              remediation {selectedSnapshot.rateLimit.remediation.scenario}
+            </span>
+          )}
         </div>
       </Panel>
       <PageFrameNavigator
@@ -753,7 +839,9 @@ function ExplorerPanel({
             <input
               type="checkbox"
               checked={includeHidden}
-              onChange={(event) => setIncludeHidden(event.currentTarget.checked)}
+              onChange={(event) =>
+                setIncludeHidden(event.currentTarget.checked)
+              }
             />
             include hidden
           </label>
@@ -787,7 +875,9 @@ function ExplorerPanel({
                 <span className="flex flex-wrap gap-1">
                   {!node.visible && <Badge variant="warn">hidden</Badge>}
                   {node.offCanvas && <Badge variant="warn">off-canvas</Badge>}
-                  {node.missingBounds && <Badge variant="neutral">no bounds</Badge>}
+                  {node.missingBounds && (
+                    <Badge variant="neutral">no bounds</Badge>
+                  )}
                   {node.componentHints.slice(0, 2).map((hint) => (
                     <Badge key={hint} variant="info">
                       {hint}
@@ -820,10 +910,14 @@ function PageFrameNavigator({
   const [focusedPageId, setFocusedPageId] = useState(
     detail.pages[0]?.pageId ?? "",
   );
-  const effectivePageId = detail.pages.some((page) => page.pageId === focusedPageId)
+  const effectivePageId = detail.pages.some(
+    (page) => page.pageId === focusedPageId,
+  )
     ? focusedPageId
     : (detail.pages[0]?.pageId ?? "");
-  const selectedPage = detail.pages.find((page) => page.pageId === effectivePageId);
+  const selectedPage = detail.pages.find(
+    (page) => page.pageId === effectivePageId,
+  );
   const frames = detail.frames.filter((frame) =>
     effectivePageId.length === 0 ? true : frame.pageId === effectivePageId,
   );
@@ -857,7 +951,8 @@ function PageFrameNavigator({
                     {page.pageName}
                   </span>
                   <span className="break-all font-mono text-[11px] text-fg-muted">
-                    {page.pageId} · {page.frameCount} frames · {page.nodeCount} nodes
+                    {page.pageId} · {page.frameCount} frames · {page.nodeCount}{" "}
+                    nodes
                   </span>
                 </button>
                 <button
@@ -1015,7 +1110,8 @@ function PreviewAndInspector({
                     className={ui.button.base}
                     onClick={() => onAddSelection("frameIds", node.frameId!)}
                   >
-                    <Layers3 size={13} aria-hidden focusable={false} /> Add frame
+                    <Layers3 size={13} aria-hidden focusable={false} /> Add
+                    frame
                   </button>
                 )}
                 <button
@@ -1057,7 +1153,11 @@ function BasketPanel({
       title="Scope basket"
       description="The basket is ephemeral and maps directly to runner selection ids."
       className="xl:sticky xl:top-4 xl:max-h-[calc(100vh-96px)] xl:overflow-auto"
-      actions={<Badge variant={count > 0 ? "success" : "neutral"}>{count} selected</Badge>}
+      actions={
+        <Badge variant={count > 0 ? "success" : "neutral"}>
+          {count} selected
+        </Badge>
+      }
     >
       <div className="grid gap-3">
         <ScopeGroup
@@ -1081,10 +1181,10 @@ function BasketPanel({
         <div className="rounded-md border border-border-subtle bg-bg-input p-3 font-mono text-[11px] text-fg-muted">
           {preview !== null ? (
             <div className="grid gap-1">
-                <span className="inline-flex items-center gap-1 text-fg-default">
-                  <ShieldCheck size={13} aria-hidden /> local preflight matched{" "}
-                  {preview.resolvedNodeCount} nodes
-                </span>
+              <span className="inline-flex items-center gap-1 text-fg-default">
+                <ShieldCheck size={13} aria-hidden /> local preflight matched{" "}
+                {preview.resolvedNodeCount} nodes
+              </span>
               <span>payload {preview.payloadBytes} bytes</span>
               <span>scope {shortHash(preview.scopeDigest)}</span>
               <span>anchors {preview.traceAnchors.length}</span>
@@ -1110,7 +1210,11 @@ function BasketPanel({
           }
           onClick={onLaunch}
         >
-          {busy ? <Loader2 size={14} aria-hidden /> : <Play size={14} aria-hidden />}
+          {busy ? (
+            <Loader2 size={14} aria-hidden />
+          ) : (
+            <Play size={14} aria-hidden />
+          )}
           Generate from selection
         </button>
         <p className="m-0 text-xs text-fg-muted">

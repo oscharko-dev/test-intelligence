@@ -11,6 +11,7 @@ export * from "./drift-canary-fixture-snapshot.js";
 export * from "./eingabemasken-fixtures.js";
 export * from "./equivalence-class-fingerprint.js";
 export * from "./field-lifecycle-transition-tier.js";
+export * from "./figma-import-governance.js";
 export * from "./figma-payload-normalizer.js";
 export * from "./figma-rest-adapter.js";
 export * from "./figma-snapshot-explorer.js";
