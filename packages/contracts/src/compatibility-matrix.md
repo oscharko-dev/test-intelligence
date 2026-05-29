@@ -19,6 +19,12 @@ surface. It changes only when the exported contract surface changes.
 `TEST_INTELLIGENCE_CONTRACT_VERSION` (`1.39.0`) versions the Test Intelligence
 sub-contract that engine modules and golden fixtures reference by name.
 
+Issue #35 adds optional sanitized Figma Snapshot Vault provenance fields to
+evidence, FinOps, genealogy, policy, compliance, and run-quality artifacts.
+These fields are additive and omitted by legacy artifact producers, so existing
+`TEST_INTELLIGENCE_CONTRACT_VERSION` and artifact schema-version constants remain
+read-compatible with legacy live-Figma and non-Figma evidence paths.
+
 When a major schema bump is published, the previous major's `CONTRACT_VERSION`
 remains documented in this file and in the package changelog. The package ships
 no runtime migration shim between major schema versions; consumers migrate
@@ -57,9 +63,9 @@ is optional lowercase kebab-case.
 
 The following gates keep this matrix and the contract surface in lockstep.
 
-| Check                                               | Guards                                                                                                          |
-| --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `packages/contracts/src/contract-version.test.ts`   | `CONTRACT_VERSION` value and format, artifact constant values, and the frozen runtime-export set (drift guard). |
-| `pnpm typecheck`                                    | `isolatedDeclarations` and strict type checking of every exported declaration.                                  |
-| `packages/contracts/src/branded-ids.compile-failure.test.ts` | Compile-time misuse: a `RoleStepId` is not assignable where a `JobId` is expected.                    |
-| `packages/contracts/src/submit-mode-parity.test.ts`          | Each `ALLOWED_*` runtime array stays in exact lockstep with its derived union type.                   |
+| Check                                                        | Guards                                                                                                          |
+| ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
+| `packages/contracts/src/contract-version.test.ts`            | `CONTRACT_VERSION` value and format, artifact constant values, and the frozen runtime-export set (drift guard). |
+| `pnpm typecheck`                                             | `isolatedDeclarations` and strict type checking of every exported declaration.                                  |
+| `packages/contracts/src/branded-ids.compile-failure.test.ts` | Compile-time misuse: a `RoleStepId` is not assignable where a `JobId` is expected.                              |
+| `packages/contracts/src/submit-mode-parity.test.ts`          | Each `ALLOWED_*` runtime array stays in exact lockstep with its derived union type.                             |

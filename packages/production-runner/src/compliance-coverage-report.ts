@@ -61,6 +61,8 @@ export interface ComplianceCoverageReport {
   readonly jobId: string;
   readonly generatedAt: string;
   readonly activeFrameworks: readonly ComplianceFrameworkId[];
+  /** Sanitized Figma acquisition and Snapshot Vault provenance summary. */
+  readonly figmaSourceAudit?: ComplianceAnnotationArtifact["figmaSourceAudit"];
   readonly totalTestCases: number;
   readonly annotatedTestCases: number;
   readonly frameworks: readonly ComplianceFrameworkCoverage[];
@@ -77,11 +79,11 @@ const roundRatio = (value: number): number => {
 
 const indexEntriesByRuleId = (
   entries: readonly ComplianceAnnotationEntry[],
-): ReadonlyMap<
-  string,
-  { applicable: number; satisfying: number }
-> => {
-  const counters = new Map<string, { applicable: number; satisfying: number }>();
+): ReadonlyMap<string, { applicable: number; satisfying: number }> => {
+  const counters = new Map<
+    string,
+    { applicable: number; satisfying: number }
+  >();
   for (const entry of entries) {
     for (const match of entry.matches) {
       const existing = counters.get(match.ruleId) ?? {
@@ -175,6 +177,9 @@ export const buildComplianceCoverageReport = (
     jobId: input.annotations.jobId,
     generatedAt: input.annotations.generatedAt,
     activeFrameworks: Object.freeze(sortedFrameworks),
+    ...(input.annotations.figmaSourceAudit !== undefined
+      ? { figmaSourceAudit: input.annotations.figmaSourceAudit }
+      : {}),
     totalTestCases: input.totalTestCases,
     annotatedTestCases,
     frameworks: Object.freeze(frameworks),

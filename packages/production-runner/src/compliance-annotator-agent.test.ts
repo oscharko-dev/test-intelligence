@@ -9,6 +9,7 @@ import {
   VISUAL_SIDECAR_SCHEMA_VERSION,
   type GeneratedTestCase,
 } from "@oscharko-dev/ti-contracts";
+import { sha256Hex } from "@oscharko-dev/ti-security";
 import {
   annotateTestCases,
   COMPLIANCE_ANNOTATION_SCHEMA_VERSION,
@@ -102,8 +103,12 @@ void test("PSD2 SCA case applies and satisfies the mandatory test classes", () =
     activeFrameworks: ["PSD2"],
   });
 
-  const positive = artifact.entries.find((e) => e.testCaseId === "tc-sca-positive");
-  const refusal = artifact.entries.find((e) => e.testCaseId === "tc-sca-refusal");
+  const positive = artifact.entries.find(
+    (e) => e.testCaseId === "tc-sca-positive",
+  );
+  const refusal = artifact.entries.find(
+    (e) => e.testCaseId === "tc-sca-refusal",
+  );
   assert.ok(positive);
   assert.ok(refusal);
   assert.deepEqual([...positive!.appliesTo], ["PSD2-SCA-Art-97"]);
@@ -127,6 +132,55 @@ void test("non-matching cases are emitted with empty appliesTo arrays", () => {
   });
   assert.equal(artifact.entries.length, 1);
   assert.equal(artifact.entries[0]!.appliesTo.length, 0);
+});
+
+void test("annotateTestCases preserves snapshot traceability on compliance entries", () => {
+  const artifact = annotateTestCases({
+    jobId: "job-1",
+    generatedAt: "2026-01-01T00:00:00Z",
+    testCases: [
+      buildCase({
+        id: "tc-snapshot",
+        title: "OTP login",
+        objective: "OTP authentication",
+        figmaTraceRefs: [
+          { screenId: "frame-1", nodeId: "node-b" },
+          { screenId: "frame-1", nodeId: "node-a" },
+        ],
+        audit: {
+          ...buildCase({}).audit,
+          snapshotSource: {
+            snapshotId: "snapshot-1",
+            snapshotDigest: "1".repeat(64),
+            nodeIndexDigest: "2".repeat(64),
+            scopeDigest: "3".repeat(64),
+            selectedNodeIds: ["node-a", "node-b"],
+            selectedPageIds: ["page-1"],
+            selectedFrameIds: ["frame-1"],
+          },
+        },
+      }),
+    ],
+    activeFrameworks: ["PSD2"],
+    figmaSourceAudit: {
+      acquisitionMode: "snapshot_vault",
+      liveFigmaRestCallCount: 0,
+      avoidedLiveFigmaRestCallCount: 1,
+      snapshotReuse: true,
+    },
+  });
+
+  assert.equal(artifact.figmaSourceAudit?.snapshotReuse, true);
+  assert.deepEqual(artifact.entries[0]?.snapshotTraceability, {
+    snapshotIdHash: sha256Hex({
+      kind: "figma_snapshot_snapshot_id",
+      value: "snapshot-1",
+    }),
+    scopeDigest: "3".repeat(64),
+    traceNodeRefHashes: ["node-a", "node-b"].map((value) =>
+      sha256Hex({ kind: "figma_snapshot_node_id", value }),
+    ),
+  });
 });
 
 void test("entries are stably ordered by test case id", () => {

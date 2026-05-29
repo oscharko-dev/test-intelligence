@@ -23,9 +23,11 @@
  */
 
 import type {
+  FigmaSourceAuditSummary,
   GeneratedTestCase,
   SubprocessorRegister,
 } from "@oscharko-dev/ti-contracts";
+import { sha256Hex } from "@oscharko-dev/ti-security";
 import {
   type ComplianceFrameworkId,
   type ComplianceRule,
@@ -78,6 +80,12 @@ export interface ComplianceAnnotationEntry {
    * {@link ComplianceAnnotationArtifact.subprocessorRegisterRef}.
    */
   readonly subprocessorRefs: readonly string[];
+  /** Snapshot Vault traceability for this test case, when available. */
+  readonly snapshotTraceability?: {
+    readonly snapshotIdHash: string;
+    readonly scopeDigest: string;
+    readonly traceNodeRefHashes: readonly string[];
+  };
 }
 
 /**
@@ -101,6 +109,8 @@ export interface ComplianceAnnotationArtifact {
   readonly generatedAt: string;
   readonly activeFrameworks: readonly ComplianceFrameworkId[];
   readonly entries: readonly ComplianceAnnotationEntry[];
+  /** Sanitized Figma acquisition and Snapshot Vault provenance summary. */
+  readonly figmaSourceAudit?: FigmaSourceAuditSummary;
   /**
    * Cross-link to the per-run subprocessor register artifact (Issue
    * #2174). Optional so legacy fixtures that pre-date the register
@@ -115,6 +125,7 @@ export interface AnnotateTestCasesInput {
   readonly generatedAt: string;
   readonly testCases: readonly GeneratedTestCase[];
   readonly activeFrameworks: readonly ComplianceFrameworkId[];
+  readonly figmaSourceAudit?: FigmaSourceAuditSummary;
   /**
    * Subprocessor register cross-link (Issue #2174). When present, the
    * artifact carries a top-level
@@ -126,6 +137,11 @@ export interface AnnotateTestCasesInput {
   /** Filename of the register artifact in the run bundle (defaults to the canonical name). */
   readonly subprocessorRegisterArtifactFilename?: string;
 }
+
+const hashSnapshotRef = (
+  kind: "snapshot_id" | "node_id",
+  value: string,
+): string => sha256Hex({ kind: `figma_snapshot_${kind}`, value });
 
 const collectKeywordCorpus = (testCase: GeneratedTestCase): string => {
   const parts: string[] = [
@@ -145,10 +161,7 @@ const collectKeywordCorpus = (testCase: GeneratedTestCase): string => {
   return parts.join("\n").toLowerCase();
 };
 
-const ruleMatchesCase = (
-  rule: ComplianceRule,
-  corpus: string,
-): boolean => {
+const ruleMatchesCase = (rule: ComplianceRule, corpus: string): boolean => {
   for (const keyword of rule.keywords) {
     if (corpus.includes(keyword.toLowerCase())) return true;
   }
@@ -223,11 +236,35 @@ export const annotateTestCases = (
       orderedMatches.length === 0
         ? []
         : resolveSubprocessorRefsForCorpus(corpus, input.subprocessorRegister);
+    const snapshotSource = testCase.audit.snapshotSource;
+    const snapshotTraceNodeIds = Array.from(
+      new Set(
+        testCase.figmaTraceRefs
+          .map((ref) => ref.nodeId)
+          .filter((nodeId): nodeId is string => nodeId !== undefined),
+      ),
+    ).sort((left, right) => left.localeCompare(right));
     entries.push({
       testCaseId: testCase.id,
       appliesTo: Object.freeze(orderedMatches.map((m) => m.ruleId)),
       matches: Object.freeze(orderedMatches),
       subprocessorRefs: Object.freeze(subprocessorRefs) as readonly string[],
+      ...(snapshotSource !== undefined
+        ? {
+            snapshotTraceability: Object.freeze({
+              snapshotIdHash: hashSnapshotRef(
+                "snapshot_id",
+                snapshotSource.snapshotId,
+              ),
+              scopeDigest: snapshotSource.scopeDigest,
+              traceNodeRefHashes: Object.freeze(
+                snapshotTraceNodeIds.map((nodeId) =>
+                  hashSnapshotRef("node_id", nodeId),
+                ),
+              ),
+            }),
+          }
+        : {}),
     });
   }
 
@@ -251,6 +288,9 @@ export const annotateTestCases = (
     generatedAt: input.generatedAt,
     activeFrameworks: Object.freeze(activeFrameworks),
     entries: Object.freeze(entries),
+    ...(input.figmaSourceAudit !== undefined
+      ? { figmaSourceAudit: input.figmaSourceAudit }
+      : {}),
     ...(subprocessorRegisterRef !== undefined
       ? { subprocessorRegisterRef }
       : {}),

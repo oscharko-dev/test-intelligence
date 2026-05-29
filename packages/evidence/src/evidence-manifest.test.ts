@@ -12,6 +12,7 @@ import {
   WAVE1_VALIDATION_EVIDENCE_MANIFEST_ARTIFACT_FILENAME,
   WAVE1_VALIDATION_EVIDENCE_MANIFEST_DIGEST_FILENAME,
   WAVE1_VALIDATION_EVIDENCE_MANIFEST_SCHEMA_VERSION,
+  type FigmaSourceAuditSummary,
   type Wave1ValidationEvidenceManifest,
 } from "@oscharko-dev/ti-contracts";
 import {
@@ -59,6 +60,32 @@ const baseInput = (
   artifacts,
 });
 
+const snapshotAudit = (): FigmaSourceAuditSummary => ({
+  acquisitionMode: "snapshot_vault",
+  liveFigmaRestCallCount: 0,
+  avoidedLiveFigmaRestCallCount: 1,
+  snapshotReuse: true,
+  snapshotVault: {
+    sourceKind: "figma_snapshot_vault",
+    snapshotIdHash: "0".repeat(64),
+    snapshotDigest: "1".repeat(64),
+    nodeIndexDigest: "2".repeat(64),
+    importStatusDigest: "3".repeat(64),
+    fileKeyHash: "4".repeat(64),
+    sourceUrlHash: "5".repeat(64),
+    importedAt: "2026-05-29T06:15:00.000Z",
+    importStrategy: "rest_nodes",
+    scopeDigestAlgorithm: "sha256_canonical_selection_v1",
+    scopeDigest: "6".repeat(64),
+    selectedNodeCount: 2,
+    selectedPageCount: 1,
+    selectedFrameCount: 1,
+    selectedNodeRefHashes: ["7".repeat(64), "8".repeat(64)],
+    selectedPageRefHashes: ["9".repeat(64)],
+    selectedFrameRefHashes: ["a".repeat(64)],
+  },
+});
+
 void test("evidence-manifest: stamps schema/contract versions and hard invariants", () => {
   const manifest = buildWave1ValidationEvidenceManifest(
     baseInput([
@@ -89,6 +116,107 @@ void test("evidence-manifest: stamps schema/contract versions and hard invariant
   assert.equal(
     manifest.manifestIntegrity.hash,
     manifestIntegrityPayloadDigest(manifest),
+  );
+});
+
+void test("evidence-manifest: stamps sanitized snapshot provenance and REST savings", () => {
+  const manifest = buildWave1ValidationEvidenceManifest({
+    ...baseInput([
+      {
+        filename: "generated-testcases.json",
+        bytes: utf8('{"testCases":[]}'),
+        category: "validation",
+      },
+    ]),
+    figmaSourceAudit: snapshotAudit(),
+  });
+
+  assert.equal(manifest.figmaSourceAudit?.snapshotReuse, true);
+  assert.equal(
+    manifest.figmaSourceAudit?.snapshotVault?.scopeDigest,
+    "6".repeat(64),
+  );
+  assert.deepEqual(
+    validateWave1ValidationEvidenceManifestMetadata(manifest),
+    [],
+  );
+});
+
+void test("evidence-manifest: rejects unsafe snapshot provenance shapes", () => {
+  const input = baseInput([
+    {
+      filename: "generated-testcases.json",
+      bytes: utf8('{"testCases":[]}'),
+      category: "validation",
+    },
+  ]);
+  const audit = snapshotAudit();
+
+  assert.throws(
+    () =>
+      buildWave1ValidationEvidenceManifest({
+        ...input,
+        figmaSourceAudit: { ...audit, snapshotReuse: false },
+      }),
+    /snapshot_vault acquisition requires snapshot reuse provenance/u,
+  );
+  assert.throws(
+    () =>
+      buildWave1ValidationEvidenceManifest({
+        ...input,
+        figmaSourceAudit: {
+          ...audit,
+          acquisitionMode: "offline_figma_payload",
+        },
+      }),
+    /non-snapshot acquisition must not carry snapshotVault provenance/u,
+  );
+  assert.throws(
+    () =>
+      buildWave1ValidationEvidenceManifest({
+        ...input,
+        figmaSourceAudit: {
+          ...audit,
+          snapshotVault: {
+            ...audit.snapshotVault!,
+            selectedNodeCount: 1,
+            selectedNodeRefHashes: ["node-a"],
+          },
+        },
+      }),
+    /selectedNodeRefHashes must be an array of sha256 hex strings/u,
+  );
+  assert.throws(
+    () =>
+      buildWave1ValidationEvidenceManifest({
+        ...input,
+        figmaSourceAudit: {
+          ...audit,
+          snapshotVault: {
+            ...audit.snapshotVault!,
+            selectedNodeCount: 1,
+          },
+        },
+      }),
+    /selected reference counts must match hash arrays/u,
+  );
+});
+
+void test("evidence-manifest: legacy evidence paths remain valid without snapshot provenance", () => {
+  const manifest = buildWave1ValidationEvidenceManifest(
+    baseInput([
+      {
+        filename: "generated-testcases.json",
+        bytes: utf8('{"testCases":[]}'),
+        category: "validation",
+      },
+    ]),
+  );
+
+  assert.equal(manifest.figmaSourceAudit, undefined);
+  assert.deepEqual(
+    validateWave1ValidationEvidenceManifestMetadata(manifest),
+    [],
   );
 });
 

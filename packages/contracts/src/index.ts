@@ -4,7 +4,7 @@
  * These types define the public API surface for Test Intelligence consumers.
  * They must not import from internal services.
  *
- * Contract version: 4.64.0
+ * Contract version: 4.66.0
  * See CONTRACT_CHANGELOG.md for contract change history and VERSIONING.md for
  * package-versus-contract versioning policy.
  */
@@ -1311,6 +1311,11 @@ export interface TestCasePolicyReport {
    * provenance bundle without embedding the full graph here.
    */
   provenance?: TestCasePolicyProvenanceSummary;
+  /**
+   * Sanitized Figma acquisition and Snapshot Vault provenance summary. Omitted
+   * for legacy reports that pre-date snapshot-backed generation.
+   */
+  figmaSourceAudit?: FigmaSourceAuditSummary;
   /**
    * Optional structured quality-gate evaluations carried alongside the
    * decision records (Issue #2053). Today this surfaces the
@@ -5027,6 +5032,8 @@ export interface RunQualityArtifact {
   readonly activeFindingCount: number;
   readonly attemptSummaries: readonly RunQualityAttemptSummary[];
   readonly degradedReasons: readonly string[];
+  /** Sanitized Figma acquisition and Snapshot Vault provenance summary. */
+  readonly figmaSourceAudit?: FigmaSourceAuditSummary;
   /** Aggregate self-consistency agreement ratio in [0,1], when sampled. */
   readonly selfConsistencyAgreement?: number;
 }
@@ -7027,6 +7034,63 @@ export interface GeneratedTestCaseSnapshotSourceRef {
   selectedFrameIds: string[];
 }
 
+/** Sanitized run-level Snapshot Vault provenance summary. */
+export interface SnapshotVaultProvenanceSummary {
+  /** Discriminant for downstream artifact consumers. */
+  readonly sourceKind: "figma_snapshot_vault";
+  /** SHA-256 of the Snapshot Vault identifier selected by the run source. */
+  readonly snapshotIdHash: string;
+  /** SHA-256 digest of the validated snapshot manifest. */
+  readonly snapshotDigest: string;
+  /** SHA-256 digest of the validated local node index. */
+  readonly nodeIndexDigest: string;
+  /** SHA-256 digest of the validated import-status artifact. */
+  readonly importStatusDigest: string;
+  /** SHA-256 digest of the preview manifest, when the import emitted one. */
+  readonly previewManifestDigest?: string;
+  /** SHA-256 of the canonical file-key identifier. Never the raw key. */
+  readonly fileKeyHash: string;
+  /** SHA-256 of the canonical source locator. Never a raw customer URL. */
+  readonly sourceUrlHash: string;
+  /** Canonical import timestamp from the Snapshot Vault manifest. */
+  readonly importedAt: string;
+  /** Snapshot import strategy used to populate the vault. */
+  readonly importStrategy: FigmaSnapshotImportStrategy;
+  /** Stable digest algorithm for the selected run scope. */
+  readonly scopeDigestAlgorithm: "sha256_canonical_selection_v1";
+  /** SHA-256 digest of the normalized selected scope for this run. */
+  readonly scopeDigest: string;
+  /** Number of selected local nodes represented by this run-level summary. */
+  readonly selectedNodeCount: number;
+  /** Number of selected pages explicitly requested for this run. */
+  readonly selectedPageCount: number;
+  /** Number of selected frames explicitly requested for this run. */
+  readonly selectedFrameCount: number;
+  /** Stable SHA-256 references for selected local nodes, sorted and de-duplicated. */
+  readonly selectedNodeRefHashes: readonly string[];
+  /** Stable SHA-256 references for selected pages, sorted and de-duplicated. */
+  readonly selectedPageRefHashes: readonly string[];
+  /** Stable SHA-256 references for selected frames, sorted and de-duplicated. */
+  readonly selectedFrameRefHashes: readonly string[];
+}
+
+/** Sanitized run-level Figma acquisition and REST-savings audit summary. */
+export interface FigmaSourceAuditSummary {
+  /** How Figma evidence entered the run. */
+  readonly acquisitionMode:
+    | "live_figma_url"
+    | "snapshot_vault"
+    | "offline_figma_payload";
+  /** Live Figma REST calls performed by this generation run. */
+  readonly liveFigmaRestCallCount: number;
+  /** Live Figma REST calls avoided by reusing local immutable evidence. */
+  readonly avoidedLiveFigmaRestCallCount: number;
+  /** True when the run reused a local Snapshot Vault import. */
+  readonly snapshotReuse: boolean;
+  /** Snapshot Vault provenance, present only for `snapshot_vault` acquisition. */
+  readonly snapshotVault?: SnapshotVaultProvenanceSummary;
+}
+
 /** QC/ALM mapping preview emitted alongside the test case. */
 export interface GeneratedTestCaseQcMapping {
   /** Canonical test-case folder hint inside QC/ALM. */
@@ -8067,6 +8131,8 @@ export interface GenealogyArtifactNode {
 export interface GenealogyArtifact {
   readonly schemaVersion: typeof GENEALOGY_SCHEMA_VERSION;
   readonly generatedAt: string;
+  /** Sanitized Figma acquisition and Snapshot Vault provenance summary. */
+  readonly figmaSourceAudit?: FigmaSourceAuditSummary;
   readonly nodes: readonly GenealogyArtifactNode[];
 }
 
@@ -8682,6 +8748,13 @@ export interface Wave1ValidationEvidenceManifest {
    * raw paste bytes, or PII.
    */
   sourceProvenanceRecords?: MultiSourceSourceProvenanceRecord[];
+  /**
+   * Sanitized Figma acquisition and Snapshot Vault provenance summary. Carries
+   * only hashes, hashed Snapshot Vault identifiers, selected-scope references,
+   * and REST-call counters; never raw URLs, tokens, screenshots, request logs,
+   * or raw selector identifiers.
+   */
+  figmaSourceAudit?: FigmaSourceAuditSummary;
   /** `true` when the Wave 4 multi-source pipeline produced this manifest. */
   multiSourceEnabled?: boolean;
   /** Hard invariant: no raw screenshot bytes leak into export artifacts. */
@@ -10380,6 +10453,12 @@ export interface FinOpsBudgetReport {
     /** True when the operator passed `--max-figma-payload-bytes`. */
     overrideApplied: boolean;
   };
+  /**
+   * Sanitized Figma acquisition and Snapshot Vault provenance summary. This is
+   * the FinOps-side source of truth for live Figma REST calls avoided by local
+   * snapshot reuse.
+   */
+  figmaSourceAudit?: FigmaSourceAuditSummary;
   /** Aggregate counters across every role. */
   totals: {
     inputTokens: number;

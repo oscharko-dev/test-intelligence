@@ -45,6 +45,12 @@ void test("empty annotations produce a 0% report with no covered rules", () => {
 void test("a satisfying annotation marks the rule as covered", () => {
   const annotations = buildAnnotations({
     activeFrameworks: ["PSD2"],
+    figmaSourceAudit: {
+      acquisitionMode: "snapshot_vault",
+      liveFigmaRestCallCount: 0,
+      avoidedLiveFigmaRestCallCount: 1,
+      snapshotReuse: true,
+    },
     entries: [
       Object.freeze({
         testCaseId: "tc-1",
@@ -71,6 +77,7 @@ void test("a satisfying annotation marks the rule as covered", () => {
   assert.equal(sca!.applicableCases, 1);
   assert.equal(sca!.satisfyingCases, 1);
   assert.equal(report.annotatedTestCases, 1);
+  assert.equal(report.figmaSourceAudit?.snapshotReuse, true);
 });
 
 void test("non-satisfying applicable matches do not flip coverage", () => {

@@ -103,6 +103,7 @@ import {
   type CoveragePlan,
   type FinOpsBudgetEnvelope,
   type FinOpsBudgetReport,
+  type FigmaSourceAuditSummary,
   type GeneratedTestCase,
   type GeneratedTestCaseAuditMetadata,
   type GeneratedTestCaseFigmaTrace,
@@ -269,6 +270,7 @@ import {
   parseFigmaUrl,
   type FigmaRestFileSnapshot,
   type FigmaRestNode,
+  type FigmaRestRequestObserver,
 } from "@oscharko-dev/ti-core-engine";
 import { readDriftCanaryFixtureIntentOverride } from "@oscharko-dev/ti-core-engine";
 import { normalizeFigmaFileToIntentInput } from "@oscharko-dev/ti-core-engine";
@@ -372,6 +374,21 @@ import {
   serializeSubprocessorRegister,
   SUBPROCESSOR_REGISTER_ARTIFACT_FILENAME,
 } from "./subprocessor-register.js";
+import {
+  annotateTestCases,
+  COMPLIANCE_ANNOTATION_ARTIFACT_FILENAME,
+  COMPLIANCE_ANNOTATOR_ROLE_ID,
+  type ComplianceAnnotationArtifact,
+} from "./compliance-annotator-agent.js";
+import {
+  buildComplianceCoverageReport,
+  COMPLIANCE_COVERAGE_REPORT_ARTIFACT_FILENAME,
+  type ComplianceCoverageReport,
+} from "./compliance-coverage-report.js";
+import {
+  resolveActiveFrameworks,
+  type ComplianceFrameworkId,
+} from "./compliance-rules.js";
 import {
   normalizeUntrustedContent,
   writeUntrustedContentNormalizationReport,
@@ -505,6 +522,7 @@ export const PRODUCTION_RUNNER_TEST_GENERATION_DEPLOYMENT =
 const VISUAL_CAPTURE_ARTIFACT_DIRECTORY = "visual-captures" as const;
 const VISUAL_CAPTURE_MANIFEST_FILENAME = "manifest.json" as const;
 const AUTO_JIRA_STORY_ARTIFACT_FILENAME = "auto-jira-story.md" as const;
+const SHA256_HEX_RE = /^[a-f0-9]{64}$/u;
 const POLICY_BUNDLE_VERSION = "production-runner-eu-banking-default" as const;
 
 /**
@@ -1234,6 +1252,12 @@ export interface RunFigmaToQcTestCasesInput {
    */
   policyProfileId?: string;
   /**
+   * Optional explicit list of compliance frameworks evaluated by the
+   * deterministic compliance annotator. When omitted, the active set is
+   * derived from {@link policyProfileId}.
+   */
+  complianceFrameworks?: readonly ComplianceFrameworkId[];
+  /**
    * Optional resolved model-routing policy (Issue #2099). When omitted the
    * runner derives an active-policy snapshot from the concrete gateway clients
    * it received so replay identity and FinOps can still attest the selected
@@ -1522,6 +1546,8 @@ export interface RunFigmaToQcTestCasesResult {
   jobId: string;
   generatedAt: string;
   fileKey: string;
+  /** Sanitized Figma acquisition and Snapshot Vault provenance summary. */
+  figmaSourceAudit?: FigmaSourceAuditSummary;
   generatedTestCases: GeneratedTestCaseList;
   intent: BusinessTestIntentIr;
   validation: TestCaseValidationReport;
@@ -1565,6 +1591,8 @@ export interface RunFigmaToQcTestCasesResult {
     validationReport: string;
     policyReport: string;
     coverageReport: string;
+    complianceAnnotations?: string;
+    complianceCoverageReport?: string;
     finopsReport: string;
     finopsTimeSeriesStore: string;
     /**
@@ -1615,6 +1643,12 @@ export interface RunFigmaToQcTestCasesResult {
       failureClass: VisualSidecarFailureClass;
       failureMessage: string;
     };
+  };
+  compliance?: {
+    annotations: ComplianceAnnotationArtifact;
+    annotationsPath: string;
+    coverage: ComplianceCoverageReport;
+    coveragePath: string;
   };
   logicJudge?: {
     verdict: JudgeVerdict;
@@ -2579,6 +2613,7 @@ const buildRunQualityArtifact = (input: {
   };
   judgeConsensus: JudgeConsensusVerdict;
   finopsReport: FinOpsBudgetReport;
+  figmaSourceAudit?: FigmaSourceAuditSummary;
   selfConsistencyReport?: SelfConsistencyReport;
   visualSidecarResult?: VisualSidecarResult;
 }): RunQualityArtifact => {
@@ -2727,6 +2762,9 @@ const buildRunQualityArtifact = (input: {
     degradedReasons: [...degradedReasons].sort((left, right) =>
       left.localeCompare(right),
     ),
+    ...(input.figmaSourceAudit !== undefined
+      ? { figmaSourceAudit: input.figmaSourceAudit }
+      : {}),
     ...(input.selfConsistencyReport !== undefined
       ? {
           selfConsistencyAgreement:
@@ -3074,6 +3112,7 @@ export const runFigmaToQcTestCases = async (
       input.customerProfile,
     );
     const tenantScope: TenantScope = __tenantScope;
+    const liveFigmaRestCounter = createLiveFigmaRestCounter();
 
     // 1. Resolve Figma source.
     emit({
@@ -3086,10 +3125,18 @@ export const runFigmaToQcTestCases = async (
       source: input.source,
       maxPayloadBytes: figmaPayloadCap,
       tenantScope,
+      onFigmaRestRequest: liveFigmaRestCounter.observe,
+      getLiveFigmaRestCallCount: liveFigmaRestCounter.count,
     });
     const figmaFile = resolvedSourceEvidence.figmaFile;
     const figmaPayloadActualBytes = resolvedSourceEvidence.payloadBytes;
     const snapshotSourceRef = resolvedSourceEvidence.snapshotSource;
+    let figmaSourceAudit =
+      resolvedSourceEvidence.figmaSourceAudit === undefined
+        ? undefined
+        : sanitizeFigmaSourceAuditSummary(
+            resolvedSourceEvidence.figmaSourceAudit,
+          );
     const snapshotTraceAnchors = resolvedSourceEvidence.snapshotTraceAnchors;
     await cleanArtifactDirForFreshRun(artifactDir);
     const normalizedUntrusted = normalizeUntrustedContent({
@@ -3200,11 +3247,16 @@ export const runFigmaToQcTestCases = async (
         ...(input.source.caCertPath !== undefined
           ? { caCertPath: input.source.caCertPath }
           : {}),
+        onFigmaRestRequest: liveFigmaRestCounter.observe,
         screens: intent.screens.map((screen) => ({
           screenId: screen.screenId,
           screenName: screen.screenName,
         })),
       });
+      figmaSourceAudit = withObservedLiveFigmaRestCallCount(
+        figmaSourceAudit,
+        liveFigmaRestCounter.count(),
+      );
       visualCaptures = captures;
       try {
         visualCaptureArtifacts = await persistVisualCaptureArtifacts({
@@ -6642,6 +6694,7 @@ export const runFigmaToQcTestCases = async (
         ceilingBytes: MAX_FIGMA_PAYLOAD_BYTES_CEILING,
         overrideApplied: input.maxFigmaPayloadBytes !== undefined,
       },
+      ...(figmaSourceAudit !== undefined ? { figmaSourceAudit } : {}),
       ...(finopsOutcomeOverride !== undefined
         ? { outcomeOverride: finopsOutcomeOverride }
         : {}),
@@ -6654,6 +6707,7 @@ export const runFigmaToQcTestCases = async (
       validation,
       judgeConsensus: judgeConsensusResult,
       finopsReport,
+      ...(figmaSourceAudit !== undefined ? { figmaSourceAudit } : {}),
       ...(selfConsistencyReport !== undefined ? { selfConsistencyReport } : {}),
       ...(visualSidecarResult !== undefined ? { visualSidecarResult } : {}),
     });
@@ -6867,6 +6921,41 @@ export const runFigmaToQcTestCases = async (
       compiled.contextBudgetReport === undefined
         ? undefined
         : encodeCanonicalJson(compiled.contextBudgetReport);
+    const subprocessorRegisterArtifact = buildSubprocessorRegister({
+      generatedAt: input.generatedAt,
+    });
+    const activeComplianceFrameworks = resolveActiveFrameworks(
+      input.complianceFrameworks,
+      validation.policy.policyProfileId,
+    );
+    const complianceAnnotations = annotateTestCases({
+      jobId: input.jobId,
+      generatedAt: input.generatedAt,
+      testCases: calibratedGeneratedTestCases.testCases,
+      activeFrameworks: activeComplianceFrameworks,
+      ...(figmaSourceAudit !== undefined ? { figmaSourceAudit } : {}),
+      subprocessorRegister: subprocessorRegisterArtifact,
+      subprocessorRegisterArtifactFilename:
+        SUBPROCESSOR_REGISTER_ARTIFACT_FILENAME,
+    });
+    const complianceCoverageReport = buildComplianceCoverageReport({
+      annotations: complianceAnnotations,
+      totalTestCases: calibratedGeneratedTestCases.testCases.length,
+    });
+    const complianceAnnotationsPath = join(
+      artifactDir,
+      COMPLIANCE_ANNOTATION_ARTIFACT_FILENAME,
+    );
+    const complianceCoverageReportPath = join(
+      artifactDir,
+      COMPLIANCE_COVERAGE_REPORT_ARTIFACT_FILENAME,
+    );
+    const complianceAnnotationBytes = encodeCanonicalJson(
+      complianceAnnotations,
+    );
+    const complianceCoverageBytes = encodeCanonicalJson(
+      complianceCoverageReport,
+    );
     const judgeConsensusWritePromise = writeJudgeConsensusArtifact({
       runDir: artifactDir,
       artifact: judgeConsensusResult,
@@ -6998,6 +7087,8 @@ export const runFigmaToQcTestCases = async (
             ]),
         workflowTopologyWritePromise,
         writeAtomicBytes(coveragePath, coverageBytes),
+        writeAtomicBytes(complianceAnnotationsPath, complianceAnnotationBytes),
+        writeAtomicBytes(complianceCoverageReportPath, complianceCoverageBytes),
         coveragePlanWritePromise,
         riskRankingWritePromise,
       ]);
@@ -7022,11 +7113,18 @@ export const runFigmaToQcTestCases = async (
     const genealogyArtifact = await writeGenealogyArtifact({
       runDir: artifactDir,
       generatedAt: input.generatedAt,
+      ...(figmaSourceAudit !== undefined ? { figmaSourceAudit } : {}),
       nodes: [
         {
           jobId: input.jobId,
           roleStepId: "test_generation",
           artifactFilename: "agent-role-runs/test_generation.json",
+          roleLineageDepth: 0,
+        },
+        {
+          jobId: input.jobId,
+          roleStepId: COMPLIANCE_ANNOTATOR_ROLE_ID,
+          artifactFilename: COMPLIANCE_ANNOTATION_ARTIFACT_FILENAME,
           roleLineageDepth: 0,
         },
         ...generatorPassRunArtifacts.map((artifact) => ({
@@ -7118,7 +7216,6 @@ export const runFigmaToQcTestCases = async (
             headOfChainHash: AGENT_HARNESS_CHECKPOINT_ROOT_PARENT_HASH,
             chainLength: 0,
           };
-
     // 10. Customer Markdown.
     const customerLabel = resolveCustomerLabel(input, figmaFile);
     const sourceLabel = resolveSourceLabel(input.source);
@@ -7134,6 +7231,8 @@ export const runFigmaToQcTestCases = async (
       sourceLabel,
       generatedAt: input.generatedAt,
       workflowTopology,
+      complianceCoverage: complianceCoverageReport,
+      ...(figmaSourceAudit !== undefined ? { figmaSourceAudit } : {}),
       ...(acceptanceCriteria !== undefined ? { acceptanceCriteria } : {}),
       ...(input.showConfidence === true ? { showConfidence: true } : {}),
     });
@@ -7350,11 +7449,8 @@ export const runFigmaToQcTestCases = async (
     // Subprocessor register (Issue #2174). Emitted before provenance so
     // the JSON-LD graph can pin its on-disk SHA-256 in a `prov:Entity`
     // node and stamp the register's internal Merkle root at the bundle
-    // level. The register is static (operator-side document), so building
-    // it here is deterministic and adds no token spend.
-    const subprocessorRegisterArtifact = buildSubprocessorRegister({
-      generatedAt: input.generatedAt,
-    });
+    // level. The register is static (operator-side document); it is
+    // also cross-linked from the deterministic compliance annotations.
     const subprocessorRegisterPath = join(
       artifactDir,
       SUBPROCESSOR_REGISTER_ARTIFACT_FILENAME,
@@ -7396,6 +7492,7 @@ export const runFigmaToQcTestCases = async (
       generatedAt: input.generatedAt,
       sourceKind: input.source.kind,
       finalGeneratedTestCases: calibratedGeneratedTestCases,
+      ...(figmaSourceAudit !== undefined ? { figmaSourceAudit } : {}),
       regionAttestations: regionAttestationObservations,
       subprocessorRegister: {
         artifactFilename: SUBPROCESSOR_REGISTER_ARTIFACT_FILENAME,
@@ -7528,6 +7625,7 @@ export const runFigmaToQcTestCases = async (
         merkleRoot: provenanceDocument["ti:merkleSeal"].root,
         leafCount: provenanceDocument["ti:merkleSeal"].leafCount,
       },
+      ...(figmaSourceAudit !== undefined ? { figmaSourceAudit } : {}),
       // Issue #2053 — surface quality-gate results alongside the policy
       // decisions. Today this carries the single `G-NEG-CASE` entry; the
       // array shape leaves room for additional gates without a contract
@@ -7794,6 +7892,16 @@ export const runFigmaToQcTestCases = async (
         category: "validation" as const,
       },
       {
+        filename: COMPLIANCE_ANNOTATION_ARTIFACT_FILENAME,
+        bytes: complianceAnnotationBytes,
+        category: "validation" as const,
+      },
+      {
+        filename: COMPLIANCE_COVERAGE_REPORT_ARTIFACT_FILENAME,
+        bytes: complianceCoverageBytes,
+        category: "validation" as const,
+      },
+      {
         filename: PROVENANCE_ARTIFACT_FILENAME,
         bytes: Buffer.from(`${canonicalJson(provenanceDocument)}\n`, "utf8"),
         category: "manifest" as const,
@@ -7986,6 +8094,7 @@ export const runFigmaToQcTestCases = async (
       schemaHash: compiled.request.hashes.schemaHash,
       inputHash: compiled.request.hashes.inputHash,
       cacheKeyDigest: compiled.request.hashes.cacheKey,
+      ...(figmaSourceAudit !== undefined ? { figmaSourceAudit } : {}),
       ...(visualSidecarSummary !== undefined
         ? { visualSidecar: visualSidecarSummary }
         : {}),
@@ -8148,12 +8257,19 @@ export const runFigmaToQcTestCases = async (
       jobId: input.jobId,
       generatedAt: input.generatedAt,
       fileKey: figmaFile.fileKey,
+      ...(figmaSourceAudit !== undefined ? { figmaSourceAudit } : {}),
       generatedTestCases: calibratedGeneratedTestCases,
       intent,
       validation: validation.validation,
       policy: policyReport,
       coverage: validation.coverage,
       blocked,
+      compliance: {
+        annotations: complianceAnnotations,
+        annotationsPath: complianceAnnotationsPath,
+        coverage: complianceCoverageReport,
+        coveragePath: complianceCoverageReportPath,
+      },
       logicJudge: {
         verdict: logicJudgeResult.verdict,
         artifactPath: logicJudgeVerdictPath,
@@ -8270,6 +8386,8 @@ export const runFigmaToQcTestCases = async (
           : {}),
         policyReport: policyPath,
         coverageReport: coveragePath,
+        complianceAnnotations: complianceAnnotationsPath,
+        complianceCoverageReport: complianceCoverageReportPath,
         finopsReport: finopsWritten.artifactPath,
         finopsTimeSeriesStore: finopsTimeSeriesStorePath,
         ...(carbonFootprintArtifactPath !== undefined
@@ -8352,14 +8470,30 @@ interface ResolvedProductionRunnerSourceEvidence {
   readonly payloadBytes: number;
   readonly intentInput?: IntentDerivationFigmaInput;
   readonly snapshotSource?: GeneratedTestCaseSnapshotSourceRef;
+  readonly figmaSourceAudit?: FigmaSourceAuditSummary;
   readonly snapshotTraceAnchors?: readonly FigmaSnapshotTraceAnchor[];
   readonly snapshotUntrustedFigmaDocument?: unknown;
 }
+
+const createLiveFigmaRestCounter = (): {
+  observe: FigmaRestRequestObserver;
+  count: () => number;
+} => {
+  let requestCount = 0;
+  return {
+    observe: () => {
+      requestCount += 1;
+    },
+    count: () => requestCount,
+  };
+};
 
 const resolveProductionRunnerSourceEvidence = async (input: {
   readonly source: ProductionRunnerSource;
   readonly maxPayloadBytes: number;
   readonly tenantScope: TenantScope;
+  readonly onFigmaRestRequest?: FigmaRestRequestObserver;
+  readonly getLiveFigmaRestCallCount?: () => number;
 }): Promise<ResolvedProductionRunnerSourceEvidence> => {
   if (input.source.kind === "figma_snapshot") {
     if (
@@ -8411,6 +8545,7 @@ const resolveProductionRunnerSourceEvidence = async (input: {
         payloadBytes: resolved.payloadBytes,
         intentInput: resolved.intentInput,
         snapshotSource: resolved.auditRef,
+        figmaSourceAudit: resolved.figmaSourceAudit,
         snapshotTraceAnchors: resolved.traceAnchors,
         snapshotUntrustedFigmaDocument: resolved.untrustedFigmaDocument,
       };
@@ -8429,19 +8564,231 @@ const resolveProductionRunnerSourceEvidence = async (input: {
       throw err;
     }
   }
-  const figmaFile = await resolveFigmaSource(input.source, input.maxPayloadBytes);
+  const figmaFile = await resolveFigmaSource(
+    input.source,
+    input.maxPayloadBytes,
+    input.onFigmaRestRequest,
+  );
   return {
     figmaFile,
     payloadBytes: assertFigmaPayloadWithinLimit(
       figmaFile,
       input.maxPayloadBytes,
     ),
+    figmaSourceAudit: buildFigmaSourceAuditForNonSnapshotSource(
+      input.source,
+      input.getLiveFigmaRestCallCount?.() ?? 0,
+    ),
+  };
+};
+
+const buildFigmaSourceAuditForNonSnapshotSource = (
+  source: Exclude<ProductionRunnerSource, { kind: "figma_snapshot" }>,
+  liveFigmaRestCallCount: number,
+): FigmaSourceAuditSummary => {
+  if (source.kind === "figma_url") {
+    return {
+      acquisitionMode: "live_figma_url",
+      liveFigmaRestCallCount,
+      avoidedLiveFigmaRestCallCount: 0,
+      snapshotReuse: false,
+    };
+  }
+  return {
+    acquisitionMode: "offline_figma_payload",
+    liveFigmaRestCallCount: 0,
+    avoidedLiveFigmaRestCallCount: 0,
+    snapshotReuse: false,
+  };
+};
+
+const withObservedLiveFigmaRestCallCount = (
+  audit: FigmaSourceAuditSummary | undefined,
+  liveFigmaRestCallCount: number,
+): FigmaSourceAuditSummary | undefined => {
+  if (audit === undefined || audit.acquisitionMode !== "live_figma_url") {
+    return audit;
+  }
+  return sanitizeFigmaSourceAuditSummary({
+    ...audit,
+    liveFigmaRestCallCount,
+  });
+};
+
+const assertFigmaSourceAuditSafeInteger = (
+  field: string,
+  value: number,
+): number => {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new RangeError(
+      `figmaSourceAudit.${field} must be a non-negative safe integer`,
+    );
+  }
+  return value;
+};
+
+const assertFigmaSourceAuditSha256Hex = (
+  field: string,
+  value: string,
+): string => {
+  if (!SHA256_HEX_RE.test(value)) {
+    throw new RangeError(
+      `figmaSourceAudit.${field} must be a sha256 hex string`,
+    );
+  }
+  return value;
+};
+
+const cloneFigmaSourceAuditHashArray = (
+  field: string,
+  values: readonly string[],
+): readonly string[] => {
+  if (
+    !Array.isArray(values) ||
+    !values.every(
+      (value) => typeof value === "string" && SHA256_HEX_RE.test(value),
+    )
+  ) {
+    throw new RangeError(
+      `figmaSourceAudit.${field} must be an array of sha256 hex strings`,
+    );
+  }
+  return Object.freeze([...values]);
+};
+
+const sanitizeFigmaSourceAuditSummary = (
+  input: FigmaSourceAuditSummary,
+): FigmaSourceAuditSummary => {
+  if (
+    input.acquisitionMode !== "live_figma_url" &&
+    input.acquisitionMode !== "snapshot_vault" &&
+    input.acquisitionMode !== "offline_figma_payload"
+  ) {
+    throw new RangeError("figmaSourceAudit.acquisitionMode is invalid");
+  }
+  if (input.acquisitionMode === "snapshot_vault") {
+    if (!input.snapshotReuse || input.snapshotVault === undefined) {
+      throw new RangeError(
+        "figmaSourceAudit snapshot_vault acquisition requires snapshot reuse provenance",
+      );
+    }
+  } else if (input.snapshotReuse || input.snapshotVault !== undefined) {
+    throw new RangeError(
+      "figmaSourceAudit non-snapshot acquisition must not carry snapshotVault provenance",
+    );
+  }
+  if (
+    input.snapshotVault !== undefined &&
+    (input.snapshotVault.sourceKind !== "figma_snapshot_vault" ||
+      input.snapshotVault.scopeDigestAlgorithm !==
+        "sha256_canonical_selection_v1" ||
+      input.snapshotVault.importedAt.length === 0 ||
+      input.snapshotVault.importStrategy.length === 0)
+  ) {
+    throw new RangeError("figmaSourceAudit.snapshotVault metadata is invalid");
+  }
+  if (
+    input.snapshotVault !== undefined &&
+    (input.snapshotVault.selectedNodeCount !==
+      input.snapshotVault.selectedNodeRefHashes.length ||
+      input.snapshotVault.selectedPageCount !==
+        input.snapshotVault.selectedPageRefHashes.length ||
+      input.snapshotVault.selectedFrameCount !==
+        input.snapshotVault.selectedFrameRefHashes.length)
+  ) {
+    throw new RangeError(
+      "figmaSourceAudit.snapshotVault selected reference counts must match hash arrays",
+    );
+  }
+
+  return {
+    acquisitionMode: input.acquisitionMode,
+    liveFigmaRestCallCount: assertFigmaSourceAuditSafeInteger(
+      "liveFigmaRestCallCount",
+      input.liveFigmaRestCallCount,
+    ),
+    avoidedLiveFigmaRestCallCount: assertFigmaSourceAuditSafeInteger(
+      "avoidedLiveFigmaRestCallCount",
+      input.avoidedLiveFigmaRestCallCount,
+    ),
+    snapshotReuse: input.snapshotReuse,
+    ...(input.snapshotVault !== undefined
+      ? {
+          snapshotVault: {
+            sourceKind: input.snapshotVault.sourceKind,
+            snapshotIdHash: assertFigmaSourceAuditSha256Hex(
+              "snapshotVault.snapshotIdHash",
+              input.snapshotVault.snapshotIdHash,
+            ),
+            snapshotDigest: assertFigmaSourceAuditSha256Hex(
+              "snapshotVault.snapshotDigest",
+              input.snapshotVault.snapshotDigest,
+            ),
+            nodeIndexDigest: assertFigmaSourceAuditSha256Hex(
+              "snapshotVault.nodeIndexDigest",
+              input.snapshotVault.nodeIndexDigest,
+            ),
+            importStatusDigest: assertFigmaSourceAuditSha256Hex(
+              "snapshotVault.importStatusDigest",
+              input.snapshotVault.importStatusDigest,
+            ),
+            ...(input.snapshotVault.previewManifestDigest !== undefined
+              ? {
+                  previewManifestDigest: assertFigmaSourceAuditSha256Hex(
+                    "snapshotVault.previewManifestDigest",
+                    input.snapshotVault.previewManifestDigest,
+                  ),
+                }
+              : {}),
+            fileKeyHash: assertFigmaSourceAuditSha256Hex(
+              "snapshotVault.fileKeyHash",
+              input.snapshotVault.fileKeyHash,
+            ),
+            sourceUrlHash: assertFigmaSourceAuditSha256Hex(
+              "snapshotVault.sourceUrlHash",
+              input.snapshotVault.sourceUrlHash,
+            ),
+            importedAt: input.snapshotVault.importedAt,
+            importStrategy: input.snapshotVault.importStrategy,
+            scopeDigestAlgorithm: input.snapshotVault.scopeDigestAlgorithm,
+            scopeDigest: assertFigmaSourceAuditSha256Hex(
+              "snapshotVault.scopeDigest",
+              input.snapshotVault.scopeDigest,
+            ),
+            selectedNodeCount: assertFigmaSourceAuditSafeInteger(
+              "snapshotVault.selectedNodeCount",
+              input.snapshotVault.selectedNodeCount,
+            ),
+            selectedPageCount: assertFigmaSourceAuditSafeInteger(
+              "snapshotVault.selectedPageCount",
+              input.snapshotVault.selectedPageCount,
+            ),
+            selectedFrameCount: assertFigmaSourceAuditSafeInteger(
+              "snapshotVault.selectedFrameCount",
+              input.snapshotVault.selectedFrameCount,
+            ),
+            selectedNodeRefHashes: cloneFigmaSourceAuditHashArray(
+              "snapshotVault.selectedNodeRefHashes",
+              input.snapshotVault.selectedNodeRefHashes,
+            ),
+            selectedPageRefHashes: cloneFigmaSourceAuditHashArray(
+              "snapshotVault.selectedPageRefHashes",
+              input.snapshotVault.selectedPageRefHashes,
+            ),
+            selectedFrameRefHashes: cloneFigmaSourceAuditHashArray(
+              "snapshotVault.selectedFrameRefHashes",
+              input.snapshotVault.selectedFrameRefHashes,
+            ),
+          },
+        }
+      : {}),
   };
 };
 
 const resolveFigmaSource = async (
   source: Exclude<ProductionRunnerSource, { kind: "figma_snapshot" }>,
   maxPayloadBytes: number,
+  onFigmaRestRequest?: FigmaRestRequestObserver,
 ): Promise<FigmaRestFileSnapshot> => {
   if (source.kind === "figma_paste_normalized") {
     return source.file;
@@ -8474,6 +8821,7 @@ const resolveFigmaSource = async (
       ...(source.caCertPath !== undefined
         ? { caCertPath: source.caCertPath }
         : {}),
+      ...(onFigmaRestRequest !== undefined ? { onFigmaRestRequest } : {}),
       maxResponseBytes: maxPayloadBytes,
       ...(parsed.nodeId !== undefined ? { nodeId: parsed.nodeId } : {}),
     });
@@ -8551,17 +8899,23 @@ const resolveCustomerLabel = (
 
 const resolveSourceLabel = (source: ProductionRunnerSource): string => {
   if (source.kind === "figma_url") {
-    // Strip any query string so the label never carries a token-looking
-    // node-id alongside the URL (defence in depth).
     try {
       const url = new URL(source.figmaUrl);
-      return `${url.origin}${url.pathname}`;
+      const sourceUrlHash = sha256Hex({
+        kind: "figma_source_url",
+        value: `${url.origin}${url.pathname}`,
+      });
+      return `(figma_url:${sourceUrlHash.slice(0, 12)})`;
     } catch {
       return "(figma_url)";
     }
   }
   if (source.kind === "figma_snapshot") {
-    return `(figma_snapshot:${source.snapshotId})`;
+    const snapshotIdHash = sha256Hex({
+      kind: "figma_snapshot_snapshot_id",
+      value: source.snapshotId,
+    });
+    return `(figma_snapshot:${snapshotIdHash.slice(0, 12)})`;
   }
   return "(figma_paste)";
 };

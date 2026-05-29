@@ -16,6 +16,7 @@ import {
   PROVENANCE_ARTIFACT_FILENAME,
   type A11yVerdict,
   type FaithfulnessVerdict,
+  type FigmaSourceAuditSummary,
   type GeneratedTestCaseList,
   type JudgeConsensusVerdict,
   type JudgeVerdict,
@@ -52,6 +53,7 @@ export interface BuildRunProvenanceGraphInput {
   readonly generatedAt: string;
   readonly sourceKind: string;
   readonly finalGeneratedTestCases: GeneratedTestCaseList;
+  readonly figmaSourceAudit?: FigmaSourceAuditSummary;
   readonly initialGenerationDeployment: string;
   readonly adversarialCriticRounds?: readonly {
     readonly round: number;
@@ -145,6 +147,8 @@ export interface ProvenanceDocument {
    * with the run.
    */
   readonly "ti:tenantScope"?: TenantScope;
+  /** Sanitized Figma acquisition and Snapshot Vault provenance summary. */
+  readonly "ti:figmaSourceAudit"?: JsonValue;
   readonly "@graph": readonly ProvenanceNode[];
 }
 
@@ -161,6 +165,12 @@ const PROVENANCE_CONTEXT = Object.freeze({
 
 const sha256Hex = (value: Uint8Array | string): string =>
   createHash("sha256").update(value).digest("hex");
+
+const hashSnapshotRef = (
+  kind: "snapshot_id" | "node_id",
+  value: string,
+): string =>
+  sha256Hex(canonicalJson({ kind: `figma_snapshot_${kind}`, value }));
 
 const toUtf8Bytes = (value: string): Uint8Array =>
   new TextEncoder().encode(value);
@@ -239,6 +249,44 @@ const buildRegionAttestationNode = (input: {
   "ti:observedAtUtc": input.observation.observedAtUtc,
   ...(input.observation.severity !== undefined
     ? { "ti:severity": input.observation.severity }
+    : {}),
+});
+
+const figmaSourceAuditToJson = (audit: FigmaSourceAuditSummary): JsonValue => ({
+  acquisitionMode: audit.acquisitionMode,
+  liveFigmaRestCallCount: audit.liveFigmaRestCallCount,
+  avoidedLiveFigmaRestCallCount: audit.avoidedLiveFigmaRestCallCount,
+  snapshotReuse: audit.snapshotReuse,
+  ...(audit.snapshotVault !== undefined
+    ? {
+        snapshotVault: {
+          sourceKind: audit.snapshotVault.sourceKind,
+          snapshotIdHash: audit.snapshotVault.snapshotIdHash,
+          snapshotDigest: audit.snapshotVault.snapshotDigest,
+          nodeIndexDigest: audit.snapshotVault.nodeIndexDigest,
+          importStatusDigest: audit.snapshotVault.importStatusDigest,
+          ...(audit.snapshotVault.previewManifestDigest !== undefined
+            ? {
+                previewManifestDigest:
+                  audit.snapshotVault.previewManifestDigest,
+              }
+            : {}),
+          fileKeyHash: audit.snapshotVault.fileKeyHash,
+          sourceUrlHash: audit.snapshotVault.sourceUrlHash,
+          importedAt: audit.snapshotVault.importedAt,
+          importStrategy: audit.snapshotVault.importStrategy,
+          scopeDigestAlgorithm: audit.snapshotVault.scopeDigestAlgorithm,
+          scopeDigest: audit.snapshotVault.scopeDigest,
+          selectedNodeCount: audit.snapshotVault.selectedNodeCount,
+          selectedPageCount: audit.snapshotVault.selectedPageCount,
+          selectedFrameCount: audit.snapshotVault.selectedFrameCount,
+          selectedNodeRefHashes: [...audit.snapshotVault.selectedNodeRefHashes],
+          selectedPageRefHashes: [...audit.snapshotVault.selectedPageRefHashes],
+          selectedFrameRefHashes: [
+            ...audit.snapshotVault.selectedFrameRefHashes,
+          ],
+        },
+      }
     : {}),
 });
 
@@ -526,6 +574,50 @@ export const buildRunProvenanceGraph = async (
     input.jobId,
     "source_preparation",
   );
+  const snapshotSelectionEntityId =
+    input.figmaSourceAudit?.snapshotVault === undefined
+      ? undefined
+      : makeNodeId(
+          input.jobId,
+          "entity",
+          sanitizeIriToken(
+            `figma-snapshot-selection-${input.figmaSourceAudit.snapshotVault.snapshotIdHash.slice(0, 16)}-${input.figmaSourceAudit.snapshotVault.scopeDigest.slice(0, 16)}`,
+          ),
+        );
+  if (
+    input.figmaSourceAudit?.snapshotVault !== undefined &&
+    snapshotSelectionEntityId !== undefined
+  ) {
+    const snapshotVault = input.figmaSourceAudit.snapshotVault;
+    upsertNode(nodes, {
+      "@id": snapshotSelectionEntityId,
+      "@type": "prov:Entity",
+      label: `Figma Snapshot Vault selection ${snapshotVault.snapshotIdHash.slice(0, 12)}`,
+      "ti:snapshotIdHash": snapshotVault.snapshotIdHash,
+      "ti:snapshotDigest": snapshotVault.snapshotDigest,
+      "ti:nodeIndexDigest": snapshotVault.nodeIndexDigest,
+      "ti:importStatusDigest": snapshotVault.importStatusDigest,
+      ...(snapshotVault.previewManifestDigest !== undefined
+        ? { "ti:previewManifestDigest": snapshotVault.previewManifestDigest }
+        : {}),
+      "ti:fileKeyHash": snapshotVault.fileKeyHash,
+      "ti:sourceUrlHash": snapshotVault.sourceUrlHash,
+      "ti:importedAt": snapshotVault.importedAt,
+      "ti:importStrategy": snapshotVault.importStrategy,
+      "ti:scopeDigestAlgorithm": snapshotVault.scopeDigestAlgorithm,
+      "ti:scopeDigest": snapshotVault.scopeDigest,
+      "ti:selectedNodeCount": snapshotVault.selectedNodeCount,
+      "ti:selectedPageCount": snapshotVault.selectedPageCount,
+      "ti:selectedFrameCount": snapshotVault.selectedFrameCount,
+      "ti:selectedNodeRefHashes": [...snapshotVault.selectedNodeRefHashes],
+      "ti:selectedPageRefHashes": [...snapshotVault.selectedPageRefHashes],
+      "ti:selectedFrameRefHashes": [...snapshotVault.selectedFrameRefHashes],
+      "ti:liveFigmaRestCallCount":
+        input.figmaSourceAudit.liveFigmaRestCallCount,
+      "ti:avoidedLiveFigmaRestCallCount":
+        input.figmaSourceAudit.avoidedLiveFigmaRestCallCount,
+    });
+  }
   upsertNode(
     nodes,
     buildActivityNode({
@@ -534,7 +626,22 @@ export const buildRunProvenanceGraph = async (
       label: "Source preparation",
       role: "source_preparation",
       associatedWith: [workspaceAgent["@id"] as string],
+      ...(snapshotSelectionEntityId !== undefined
+        ? { used: [snapshotSelectionEntityId] }
+        : {}),
       generatedAt: input.generatedAt,
+      ...(input.figmaSourceAudit !== undefined
+        ? {
+            extra: {
+              "ti:figmaAcquisitionMode": input.figmaSourceAudit.acquisitionMode,
+              "ti:figmaSnapshotReuse": input.figmaSourceAudit.snapshotReuse,
+              "ti:liveFigmaRestCallCount":
+                input.figmaSourceAudit.liveFigmaRestCallCount,
+              "ti:avoidedLiveFigmaRestCallCount":
+                input.figmaSourceAudit.avoidedLiveFigmaRestCallCount,
+            },
+          }
+        : {}),
     }),
   );
 
@@ -829,6 +936,23 @@ export const buildRunProvenanceGraph = async (
   }
 
   for (const testCase of input.finalGeneratedTestCases.testCases) {
+    const snapshotSource = testCase.audit.snapshotSource;
+    const snapshotTraceNodeIds = Array.from(
+      new Set(
+        testCase.figmaTraceRefs
+          .map((ref) => ref.nodeId)
+          .filter((nodeId): nodeId is string => nodeId !== undefined),
+      ),
+    ).sort((left, right) => left.localeCompare(right));
+    const snapshotSelectedNodeRefHashes =
+      snapshotSource === undefined
+        ? []
+        : snapshotSource.selectedNodeIds.map((nodeId) =>
+            hashSnapshotRef("node_id", nodeId),
+          );
+    const snapshotTraceNodeRefHashes = snapshotTraceNodeIds.map((nodeId) =>
+      hashSnapshotRef("node_id", nodeId),
+    );
     upsertNode(nodes, {
       "@id": caseEntityId(input.jobId, testCase.id),
       "@type": "prov:Entity",
@@ -839,6 +963,20 @@ export const buildRunProvenanceGraph = async (
       "ti:promptHash": testCase.audit.promptHash,
       "ti:schemaHash": testCase.audit.schemaHash,
       "ti:inputHash": testCase.audit.inputHash,
+      ...(snapshotSource !== undefined
+        ? {
+            "ti:snapshotIdHash": hashSnapshotRef(
+              "snapshot_id",
+              snapshotSource.snapshotId,
+            ),
+            "ti:snapshotDigest": snapshotSource.snapshotDigest,
+            "ti:snapshotScopeDigest": snapshotSource.scopeDigest,
+            "ti:snapshotSelectedNodeRefHashes": snapshotSelectedNodeRefHashes,
+            ...(snapshotTraceNodeRefHashes.length > 0
+              ? { "ti:snapshotTraceNodeRefHashes": snapshotTraceNodeRefHashes }
+              : {}),
+          }
+        : {}),
       "prov:wasGeneratedBy": toIriRef(finalGenerationActivity),
       "prov:hadPrimarySource": toIriRef(previousListId),
     });
@@ -1092,6 +1230,11 @@ export const buildRunProvenanceGraph = async (
           "ti:tenantIsolationAttestationSha256":
             input.tenantIsolationAttestation.attestationSha256,
           "ti:tenantScope": input.tenantIsolationAttestation.tenantScope,
+        }
+      : {}),
+    ...(input.figmaSourceAudit !== undefined
+      ? {
+          "ti:figmaSourceAudit": figmaSourceAuditToJson(input.figmaSourceAudit),
         }
       : {}),
     "@graph": nodesWithLeafHashes,

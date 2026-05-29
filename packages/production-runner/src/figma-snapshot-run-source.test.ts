@@ -18,6 +18,7 @@ import {
   computeFigmaSnapshotArtifactDigest,
   serializeFigmaSnapshotArtifact,
 } from "@oscharko-dev/ti-core-engine";
+import { sha256Hex } from "@oscharko-dev/ti-security";
 import { resolveTenantScopeSegments } from "@oscharko-dev/ti-tenant";
 
 import {
@@ -106,21 +107,19 @@ const writeSnapshotVault = async (input: {
 }> => {
   const tenantScope = input.tenantScope ?? TENANT_SCOPE;
   const artifactScope = input.manifestTenantScope ?? tenantScope;
-  const nodes =
-    input.nodes ??
-    [
-      nodeRecord({}),
-      nodeRecord({
-        frameId: "frame-2",
-        frameName: "Review",
-        nodeId: "node-submit",
-        nodeName: "Submit Claim",
-        nodeType: "BUTTON",
-        labels: ["Submit"],
-        textSnippet: "Submit",
-        componentHints: ["primary-action"],
-      }),
-    ];
+  const nodes = input.nodes ?? [
+    nodeRecord({}),
+    nodeRecord({
+      frameId: "frame-2",
+      frameName: "Review",
+      nodeId: "node-submit",
+      nodeName: "Submit Claim",
+      nodeType: "BUTTON",
+      labels: ["Submit"],
+      textSnippet: "Submit",
+      componentHints: ["primary-action"],
+    }),
+  ];
   const nodeIndex = withDigest({
     schemaVersion: FIGMA_SNAPSHOT_NODE_INDEX_SCHEMA_VERSION,
     snapshotId: SNAPSHOT_ID,
@@ -186,7 +185,9 @@ const writeSnapshotVault = async (input: {
 void test("resolveFigmaSnapshotRunSource: builds local intent and trace anchors for scoped snapshot selection", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "ti-snapshot-run-"));
   try {
-    const { nodeIndex } = await writeSnapshotVault({ root });
+    const { manifest, nodeIndex, importStatus } = await writeSnapshotVault({
+      root,
+    });
 
     const resolved = await resolveFigmaSnapshotRunSource({
       workspaceRoot: root,
@@ -197,12 +198,36 @@ void test("resolveFigmaSnapshotRunSource: builds local intent and trace anchors 
 
     assert.equal(resolved.manifest.snapshotId, SNAPSHOT_ID);
     assert.equal(resolved.nodeIndex.contentDigest, nodeIndex.contentDigest);
+    assert.equal(resolved.figmaSourceAudit.acquisitionMode, "snapshot_vault");
+    assert.equal(resolved.figmaSourceAudit.liveFigmaRestCallCount, 0);
+    assert.equal(resolved.figmaSourceAudit.avoidedLiveFigmaRestCallCount, 1);
+    assert.equal(
+      resolved.figmaSourceAudit.snapshotVault?.snapshotIdHash,
+      sha256Hex({ kind: "figma_snapshot_snapshot_id", value: SNAPSHOT_ID }),
+    );
+    assert.equal(
+      resolved.figmaSourceAudit.snapshotVault?.snapshotDigest,
+      manifest.contentDigest,
+    );
+    assert.equal(
+      resolved.figmaSourceAudit.snapshotVault?.importStatusDigest,
+      importStatus.contentDigest,
+    );
+    assert.deepEqual(
+      resolved.figmaSourceAudit.snapshotVault?.selectedNodeRefHashes,
+      ["node-field"].map((value) =>
+        sha256Hex({ kind: "figma_snapshot_node_id", value }),
+      ),
+    );
     assert.deepEqual(resolved.auditRef.selectedFrameIds, ["frame-1"]);
     assert.deepEqual(resolved.auditRef.selectedNodeIds, ["node-field"]);
     assert.equal(resolved.intentInput.source.kind, "hybrid");
     assert.equal(resolved.intentInput.screens.length, 1);
     assert.equal(resolved.intentInput.screens[0]?.screenId, "frame-1");
-    assert.equal(resolved.intentInput.screens[0]?.nodes[0]?.nodeId, "node-field");
+    assert.equal(
+      resolved.intentInput.screens[0]?.nodes[0]?.nodeId,
+      "node-field",
+    );
     assert.deepEqual(resolved.traceAnchors, [
       {
         screenId: "frame-1",
@@ -312,7 +337,9 @@ void test("resolveFigmaSnapshotRunSource: unsafe, missing, invalid, and cross-te
         err.errorCode === "missing_snapshot",
     );
 
-    const invalidRoot = await mkdtemp(path.join(os.tmpdir(), "ti-snapshot-run-"));
+    const invalidRoot = await mkdtemp(
+      path.join(os.tmpdir(), "ti-snapshot-run-"),
+    );
     try {
       await writeSnapshotVault({
         root: invalidRoot,
@@ -362,7 +389,9 @@ void test("resolveFigmaSnapshotRunSource: unsafe, missing, invalid, and cross-te
 
 void test("resolveFigmaSnapshotRunSource: rejects snapshot artifact symlink escapes", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "ti-snapshot-run-"));
-  const outsideRoot = await mkdtemp(path.join(os.tmpdir(), "ti-snapshot-outside-"));
+  const outsideRoot = await mkdtemp(
+    path.join(os.tmpdir(), "ti-snapshot-outside-"),
+  );
   try {
     const { nodeIndex } = await writeSnapshotVault({ root });
     const externalNodeIndexPath = path.join(outsideRoot, "node-index.json");

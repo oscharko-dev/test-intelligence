@@ -15,6 +15,7 @@
 import type {
   GeneratedTestCase,
   GeneratedTestCaseList,
+  FigmaSourceAuditSummary,
   WorkflowFieldLifecycleTransition,
   WorkflowTopology,
 } from "@oscharko-dev/ti-contracts";
@@ -47,6 +48,8 @@ export interface RenderCustomerMarkdownInput {
    * coverage ratio per active framework and per-rule outcome.
    */
   complianceCoverage?: ComplianceCoverageReport;
+  /** Sanitized Figma acquisition and Snapshot Vault provenance summary. */
+  figmaSourceAudit?: FigmaSourceAuditSummary;
   /** Optional workflow topology for field-lifecycle step rendering. */
   workflowTopology?: WorkflowTopology;
   /**
@@ -484,6 +487,9 @@ const renderCombined = (
   lines.push("");
   lines.push("---");
   lines.push("");
+  if (input.figmaSourceAudit !== undefined) {
+    appendFigmaSourceAuditSection(lines, input.figmaSourceAudit, mode);
+  }
   if (preparedCases.length === 0) {
     lines.push(
       "Keine Testfälle generiert. Prüfen Sie die Eingaben oder konsultieren Sie das Validierungs- und Policy-Reporting im Job-Verzeichnis.",
@@ -825,6 +831,69 @@ const renderMarkdownText = (
   mode: "customer" | "technical",
 ): string =>
   mode === "customer" ? normalizeCustomerMarkdownText(value) : value;
+
+const digestForMode = (
+  value: string,
+  mode: "customer" | "technical",
+): string => (mode === "technical" ? value : `${value.slice(0, 12)}...`);
+
+const appendFigmaSourceAuditSection = (
+  lines: string[],
+  audit: FigmaSourceAuditSummary,
+  mode: "customer" | "technical",
+): void => {
+  lines.push("## Quellen-Nachweis");
+  lines.push("");
+  lines.push(`Figma-Bezugsmodus: ${audit.acquisitionMode}`);
+  lines.push(
+    `Live-Figma-REST-Aufrufe in dieser Generierung: ${audit.liveFigmaRestCallCount}`,
+  );
+  lines.push(
+    `Vermiedene Live-Figma-REST-Aufrufe durch lokale Wiederverwendung: ${audit.avoidedLiveFigmaRestCallCount}`,
+  );
+  lines.push(
+    `Snapshot-Wiederverwendung: ${audit.snapshotReuse ? "ja" : "nein"}`,
+  );
+  if (audit.snapshotVault !== undefined) {
+    const snapshot = audit.snapshotVault;
+    lines.push("");
+    lines.push("| Feld | Wert |");
+    lines.push("| --- | --- |");
+    lines.push(
+      `| Snapshot-ID-Hash | ${digestForMode(snapshot.snapshotIdHash, mode)} |`,
+    );
+    lines.push(
+      `| Snapshot digest | ${digestForMode(snapshot.snapshotDigest, mode)} |`,
+    );
+    lines.push(
+      `| Digest des ausgewählten Umfangs | ${digestForMode(snapshot.scopeDigest, mode)} |`,
+    );
+    lines.push(
+      `| Quell-File-Key-Hash | ${digestForMode(snapshot.fileKeyHash, mode)} |`,
+    );
+    lines.push(
+      `| Quell-URL-Hash | ${digestForMode(snapshot.sourceUrlHash, mode)} |`,
+    );
+    lines.push(
+      `| Ausgewählte lokale Knoten | ${snapshot.selectedNodeCount.toString()} |`,
+    );
+    if (mode === "technical") {
+      lines.push(
+        `| Ausgewählte Knotenreferenz-Hashes | ${escapeTableCell(snapshot.selectedNodeRefHashes.join(", "))} |`,
+      );
+      lines.push(
+        `| Ausgewählte Seitenreferenz-Hashes | ${escapeTableCell(snapshot.selectedPageRefHashes.join(", "))} |`,
+      );
+      lines.push(
+        `| Ausgewählte Frame-Referenz-Hashes | ${escapeTableCell(snapshot.selectedFrameRefHashes.join(", "))} |`,
+      );
+      lines.push(
+        `| Importstatus-Digest | ${digestForMode(snapshot.importStatusDigest, mode)} |`,
+      );
+    }
+  }
+  lines.push("");
+};
 
 const buildClarificationFingerprint = (value: string): string => {
   const sanitized = sanitizeCustomerVisibleText(value);

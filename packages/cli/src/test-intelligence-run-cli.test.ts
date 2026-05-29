@@ -1276,6 +1276,32 @@ void test("runTestIntelligenceCommand: dry_run output includes visual sidecar no
   assert.match(stdout.join(""), /--no-visual-sidecar/u);
 });
 
+void test("runTestIntelligenceCommand: dry_run redacts raw snapshot id", async () => {
+  const { sink, stdout, stderr } = collectingSink();
+  const exitCode = await runTestIntelligenceCommand(
+    {
+      ...baseOptions(),
+      figmaUrl: undefined,
+      figmaToken: undefined,
+      figmaSnapshotId: "snapshot-private-20260529",
+      figmaSnapshotRoot: "/tmp/ti-snapshot-root",
+      figmaSnapshotNodeIds: ["node-private"],
+      tenantScope: {
+        tenantId: "tenant-acme",
+        environmentId: "prod",
+        projectId: "claims",
+      },
+    },
+    sink,
+    { env: GATE_ON, now: () => 1700000000000 },
+  );
+  const output = stdout.join("");
+  assert.equal(exitCode, 0, stderr.join(""));
+  assert.match(output, /snapshot ref\s+:\s+[a-f0-9]{12}/u);
+  assert.doesNotMatch(output, /snapshot-private-20260529/u);
+  assert.doesNotMatch(output, /node-private/u);
+});
+
 void test("runTestIntelligenceCommand: dry_run prints the resolved role matrix for every role (Issue #1996)", async () => {
   const { sink, stdout, stderr } = collectingSink();
   const exitCode = await runTestIntelligenceCommand(

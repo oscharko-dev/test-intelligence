@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   GENEALOGY_ARTIFACT_FILENAME,
   GENEALOGY_SCHEMA_VERSION,
+  type FigmaSourceAuditSummary,
   type GenealogyArtifact,
   type GenealogyArtifactNode,
 } from "@oscharko-dev/ti-contracts";
@@ -22,6 +23,7 @@ export interface GenealogyNodeInput {
 export interface WriteGenealogyArtifactInput {
   runDir: string;
   generatedAt: string;
+  figmaSourceAudit?: FigmaSourceAuditSummary;
   nodes: readonly GenealogyNodeInput[];
 }
 
@@ -45,15 +47,14 @@ const normalizeNode = (node: GenealogyNodeInput): GenealogyArtifactNode => {
       "writeGenealogyArtifact: artifactFilename must be non-empty",
     );
   }
-  assertRoleLineageDepth(
-    node.roleLineageDepth,
-    "writeGenealogyArtifact",
-  );
+  assertRoleLineageDepth(node.roleLineageDepth, "writeGenealogyArtifact");
   return {
     jobId: node.jobId,
     roleStepId: node.roleStepId,
     artifactFilename: node.artifactFilename,
-    ...(node.parentJobId !== undefined ? { parentJobId: node.parentJobId } : {}),
+    ...(node.parentJobId !== undefined
+      ? { parentJobId: node.parentJobId }
+      : {}),
     ...(node.roleLineageDepth !== undefined
       ? { roleLineageDepth: node.roleLineageDepth }
       : {}),
@@ -76,13 +77,20 @@ export const buildGenealogyArtifact = (
   return {
     schemaVersion: GENEALOGY_SCHEMA_VERSION,
     generatedAt: input.generatedAt,
+    ...(input.figmaSourceAudit !== undefined
+      ? { figmaSourceAudit: input.figmaSourceAudit }
+      : {}),
     nodes: Array.from(deduped.values()).sort(compareNodes),
   };
 };
 
 export const writeGenealogyArtifact = async (
   input: WriteGenealogyArtifactInput,
-): Promise<{ artifactPath: string; artifact: GenealogyArtifact; bytes: Uint8Array }> => {
+): Promise<{
+  artifactPath: string;
+  artifact: GenealogyArtifact;
+  bytes: Uint8Array;
+}> => {
   if (input.runDir.trim().length === 0) {
     throw new TypeError("writeGenealogyArtifact: runDir must be non-empty");
   }
