@@ -7741,12 +7741,10 @@ export const FIGMA_SNAPSHOT_MANIFEST_SCHEMA_VERSION = "1.0.0" as const;
 export const FIGMA_SNAPSHOT_NODE_INDEX_SCHEMA_VERSION = "1.0.0" as const;
 
 /** Schema version for persisted Figma Snapshot Vault preview manifests. */
-export const FIGMA_SNAPSHOT_PREVIEW_MANIFEST_SCHEMA_VERSION =
-  "1.0.0" as const;
+export const FIGMA_SNAPSHOT_PREVIEW_MANIFEST_SCHEMA_VERSION = "1.0.0" as const;
 
 /** Schema version for persisted Figma Snapshot Vault import-status artifacts. */
-export const FIGMA_SNAPSHOT_IMPORT_STATUS_SCHEMA_VERSION =
-  "1.0.0" as const;
+export const FIGMA_SNAPSHOT_IMPORT_STATUS_SCHEMA_VERSION = "1.0.0" as const;
 
 /** Supported import strategies for a persisted Figma snapshot. */
 export type FigmaSnapshotImportStrategy = "rest_file" | "rest_nodes" | "hybrid";
@@ -7780,7 +7778,7 @@ export type FigmaSnapshotChunkState = "pending" | "completed" | "failed";
 export interface FigmaSnapshotSourceIdentifier {
   /** SHA-256 of the canonical file-key identifier. */
   readonly fileKeyHash: string;
-  /** SHA-256 of the canonical source URL. Never persist the raw URL. */
+  /** SHA-256 of the canonical file/node source locator. Never hash the raw URL. */
   readonly sourceUrlHash: string;
   /**
    * Optional node-scoped import root. Safe because it is a Figma node id,
@@ -7905,17 +7903,63 @@ export interface FigmaSnapshotImportRetryMetadata {
   readonly lastErrorCode?: string;
 }
 
-/** Placeholder rate-limit metadata carried across resumable imports. */
+/** Credential mode recorded for an import without persisting credential bytes. */
+export type FigmaSnapshotImportCredentialAuthMode =
+  | "personal_access_token"
+  | "oauth_access_token"
+  | "enterprise_service_token";
+
+/** Sanitized credential mode metadata for a Figma snapshot import. */
+export interface FigmaSnapshotImportCredentialMetadata {
+  readonly authMode: FigmaSnapshotImportCredentialAuthMode;
+}
+
+/** Import budget resource bucket governed before each Figma REST request. */
+export type FigmaSnapshotImportBudgetResourceType =
+  | "file_bootstrap"
+  | "node_batch"
+  | "image_metadata";
+
+/** Sanitized request-budget state for one Figma snapshot import. */
+export interface FigmaSnapshotImportBudgetMetadata {
+  readonly policyVersion: string;
+  readonly resourceType?: FigmaSnapshotImportBudgetResourceType;
+  readonly windowSeconds: number;
+  readonly maxRequestsPerWindow: number;
+  readonly usedRequests: number;
+  readonly remainingRequests: number;
+  readonly resetAt?: string;
+}
+
+/** Deterministic failure class suitable for Workbench operator guidance. */
+export type FigmaSnapshotImportFailureClass =
+  | "throttled"
+  | "budget_exhausted"
+  | "missing_credential"
+  | "invalid_credential"
+  | "unsupported_auth_mode"
+  | "transport"
+  | "invalid_request"
+  | "not_found"
+  | "persistence_failed";
+
+/** Enterprise remediation lane inferred from sanitized rate-limit evidence. */
+export type FigmaSnapshotImportRateLimitRemediationScenario =
+  | "low_limit"
+  | "high_limit"
+  | "unknown";
+
+/** Sanitized operator guidance for Figma plan and rate-limit metadata. */
+export interface FigmaSnapshotImportRateLimitRemediation {
+  readonly scenario: FigmaSnapshotImportRateLimitRemediationScenario;
+  readonly guidance: string;
+}
+
+/** Persisted retry metadata carried across resumable imports. */
 export interface FigmaSnapshotImportRateLimitMetadata {
   readonly retryAfterSeconds?: number;
   readonly remaining?: number;
   readonly resetAt?: string;
-  /** Sanitized Figma plan tier returned with a 429 response, when present. */
-  readonly figmaPlanTier?: string;
-  /** Sanitized Figma rate-limit bucket/type returned with a 429 response. */
-  readonly figmaRateLimitType?: string;
-  /** SHA-256 digest of Figma's upgrade link header; raw URLs are never stored. */
-  readonly figmaUpgradeLinkDigest?: string;
 }
 
 /** Progress row for one imported chunk or shard. */
@@ -7942,6 +7986,9 @@ export interface FigmaSnapshotImportStatus {
   readonly lifecycleState: FigmaSnapshotImportLifecycleState;
   readonly retry: FigmaSnapshotImportRetryMetadata;
   readonly rateLimit: FigmaSnapshotImportRateLimitMetadata;
+  readonly credential?: FigmaSnapshotImportCredentialMetadata;
+  readonly budget?: FigmaSnapshotImportBudgetMetadata;
+  readonly failureClass?: FigmaSnapshotImportFailureClass;
   readonly chunks: readonly FigmaSnapshotImportChunkInventoryEntry[];
   readonly checkpoint: FigmaSnapshotImportCheckpoint;
   /** SHA-256 of the canonical import-status bytes with this field stripped. */

@@ -5,6 +5,7 @@ export type SettingsKey =
   | "TEST_INTELLIGENCE_LLM_GATEWAY_API_VERSION"
   | "TEST_INTELLIGENCE_LLM_GATEWAY_API_KEY"
   | "TEST_INTELLIGENCE_FIGMA_ACCESS_TOKEN"
+  | "TEST_INTELLIGENCE_FIGMA_CREDENTIAL_MODE"
   | "TEST_INTELLIGENCE_MODEL_ENDPOINT"
   | "TEST_INTELLIGENCE_VISUAL_MODEL_ENDPOINT"
   | "TEST_INTELLIGENCE_TESTCASE_MODEL_DEPLOYMENT"
@@ -27,6 +28,7 @@ export const SETTINGS_BASELINE: Settings = {
   TEST_INTELLIGENCE_LLM_GATEWAY_API_VERSION: "2024-10-01-preview",
   TEST_INTELLIGENCE_LLM_GATEWAY_API_KEY: "",
   TEST_INTELLIGENCE_FIGMA_ACCESS_TOKEN: "",
+  TEST_INTELLIGENCE_FIGMA_CREDENTIAL_MODE: "personal_access_token",
   TEST_INTELLIGENCE_MODEL_ENDPOINT:
     "https://ws-foundry.eu-north-1.ai.azure.com",
   TEST_INTELLIGENCE_VISUAL_MODEL_ENDPOINT:
@@ -66,6 +68,11 @@ const URL_FIELDS: readonly SettingsKey[] = [
 ];
 
 const PATH_FIELDS: readonly SettingsKey[] = ["NODE_EXTRA_CA_CERTS"];
+const FIGMA_CREDENTIAL_MODES = new Set([
+  "personal_access_token",
+  "oauth_access_token",
+  "enterprise_service_token",
+]);
 const WINDOWS_ABSOLUTE_PATH = /^(?:[A-Za-z]:[\\/]|\\\\)/u;
 const SAFE_WORKSPACE_RELATIVE_PATH = /^[A-Za-z0-9._/-]+$/u;
 
@@ -160,6 +167,18 @@ export function validateSettings(
       });
     }
   }
+  const credentialMode = values.TEST_INTELLIGENCE_FIGMA_CREDENTIAL_MODE;
+  if (
+    typeof credentialMode !== "string" ||
+    !FIGMA_CREDENTIAL_MODES.has(credentialMode)
+  ) {
+    issues.push({
+      field: "TEST_INTELLIGENCE_FIGMA_CREDENTIAL_MODE",
+      label: prettyEnv("TEST_INTELLIGENCE_FIGMA_CREDENTIAL_MODE"),
+      message:
+        "Expected personal_access_token, oauth_access_token, or enterprise_service_token",
+    });
+  }
   return issues;
 }
 
@@ -196,7 +215,7 @@ export function exportEnv(values: Settings): string {
 export function formatDiffValue(key: SettingsKey, v: SettingsValue): string {
   if (v === "") return "<empty>";
   if (typeof v === "boolean") return v ? "1" : "0";
-  if (/API_KEY|SIGNING_KEY/.test(key)) {
+  if (/API_KEY|SIGNING_KEY|ACCESS_TOKEN|FIGMA_ACCESS_TOKEN/u.test(key)) {
     return v.slice(0, 4) + "…" + v.slice(-3);
   }
   return v;
@@ -268,6 +287,17 @@ export const SETTINGS_GROUPS: readonly SettingsGroupSpec[] = [
         kind: "secret",
         required: true,
         placeholder: "figd_…",
+        helper:
+          "Local-development or explicitly configured self-hosted use only. Snapshot artifacts store only the credential mode.",
+      },
+      {
+        env: "TEST_INTELLIGENCE_FIGMA_CREDENTIAL_MODE",
+        label: "Figma credential mode",
+        kind: "text",
+        required: true,
+        placeholder: "personal_access_token",
+        helper:
+          "Supported now: personal_access_token and enterprise_service_token. oauth_access_token is schema-ready and fails closed until an OAuth resolver is added.",
       },
     ],
   },
@@ -283,7 +313,8 @@ export const SETTINGS_GROUPS: readonly SettingsGroupSpec[] = [
         kind: "url",
         required: true,
         placeholder: "https://<account>.services.ai.azure.com/openai/v1",
-        helper: "For Azure Foundry/OpenAI-compatible deployments, use the v1 base URL.",
+        helper:
+          "For Azure Foundry/OpenAI-compatible deployments, use the v1 base URL.",
       },
       {
         env: "TEST_INTELLIGENCE_VISUAL_MODEL_ENDPOINT",
@@ -291,7 +322,8 @@ export const SETTINGS_GROUPS: readonly SettingsGroupSpec[] = [
         kind: "url",
         required: true,
         placeholder: "https://<account>.services.ai.azure.com/openai/v1",
-        helper: "Use the visual model account's matching v1 base URL when it differs from the text endpoint.",
+        helper:
+          "Use the visual model account's matching v1 base URL when it differs from the text endpoint.",
       },
     ],
   },

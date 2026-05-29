@@ -135,16 +135,19 @@ const nodeRecordSchema = z.strictObject({
 
 const previewAssetSchema = z.strictObject({
   assetId: stableSegmentSchema("assets.assetId"),
-  relativePath: z.string().min(1).superRefine((value, ctx) => {
-    try {
-      assertSafeRelativePath("assets.relativePath", value);
-    } catch (error) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: (error as Error).message,
-      });
-    }
-  }),
+  relativePath: z
+    .string()
+    .min(1)
+    .superRefine((value, ctx) => {
+      try {
+        assertSafeRelativePath("assets.relativePath", value);
+      } catch (error) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: (error as Error).message,
+        });
+      }
+    }),
   mediaType: z.string().min(1),
   width: z.number().int().nonnegative(),
   height: z.number().int().nonnegative(),
@@ -174,10 +177,39 @@ const importRateLimitSchema = z.strictObject({
   retryAfterSeconds: z.number().int().nonnegative().optional(),
   remaining: z.number().int().nonnegative().optional(),
   resetAt: isoTimestampSchema.optional(),
-  figmaPlanTier: z.string().min(1).max(120).optional(),
-  figmaRateLimitType: z.string().min(1).max(120).optional(),
-  figmaUpgradeLinkDigest: sha256HexSchema.optional(),
 });
+
+const importCredentialSchema = z.strictObject({
+  authMode: z.enum([
+    "personal_access_token",
+    "oauth_access_token",
+    "enterprise_service_token",
+  ]),
+});
+
+const importBudgetSchema = z.strictObject({
+  policyVersion: z.string().min(1).max(120),
+  resourceType: z
+    .enum(["file_bootstrap", "node_batch", "image_metadata"])
+    .optional(),
+  windowSeconds: z.number().int().positive(),
+  maxRequestsPerWindow: z.number().int().positive(),
+  usedRequests: z.number().int().nonnegative(),
+  remainingRequests: z.number().int().nonnegative(),
+  resetAt: isoTimestampSchema.optional(),
+});
+
+const importFailureClassSchema = z.enum([
+  "throttled",
+  "budget_exhausted",
+  "missing_credential",
+  "invalid_credential",
+  "unsupported_auth_mode",
+  "transport",
+  "invalid_request",
+  "not_found",
+  "persistence_failed",
+]);
 
 const importChunkSchema = z.strictObject({
   chunkId: stableSegmentSchema("chunks.chunkId"),
@@ -188,7 +220,9 @@ const importChunkSchema = z.strictObject({
 
 const importCheckpointSchema = z.strictObject({
   lastSuccessfulPhase: z.enum(LifecycleStates).optional(),
-  resumeFromChunkId: stableSegmentSchema("checkpoint.resumeFromChunkId").optional(),
+  resumeFromChunkId: stableSegmentSchema(
+    "checkpoint.resumeFromChunkId",
+  ).optional(),
   completedChunkIds: z.array(
     stableSegmentSchema("checkpoint.completedChunkIds"),
   ),
@@ -240,6 +274,9 @@ const importStatusSchema = z.strictObject({
   lifecycleState: z.enum(LifecycleStates),
   retry: importRetrySchema,
   rateLimit: importRateLimitSchema,
+  credential: importCredentialSchema.optional(),
+  budget: importBudgetSchema.optional(),
+  failureClass: importFailureClassSchema.optional(),
   chunks: z.array(importChunkSchema),
   checkpoint: importCheckpointSchema,
   contentDigest: sha256HexSchema,
@@ -260,8 +297,9 @@ type ArtifactKind =
   | FigmaSnapshotPreviewManifest
   | FigmaSnapshotImportStatus;
 
-export const serializeFigmaSnapshotArtifact = (artifact: ArtifactKind): string =>
-  canonicalJson(artifact);
+export const serializeFigmaSnapshotArtifact = (
+  artifact: ArtifactKind,
+): string => canonicalJson(artifact);
 
 export const computeFigmaSnapshotArtifactDigest = <
   T extends ArtifactWithDigest,
@@ -321,12 +359,26 @@ export const validateFigmaSnapshotPreviewManifest = (
 
 export const validateFigmaSnapshotImportStatus = (
   input: unknown,
-): FigmaSnapshotImportStatus =>
-  validateArtifact(
-    "figma snapshot import status",
-    input,
-    importStatusSchema,
-  ) as FigmaSnapshotImportStatus;
+): FigmaSnapshotImportStatus => {
+  try {
+    return validateArtifact(
+      "figma snapshot import status",
+      input,
+      importStatusSchema,
+    ) as FigmaSnapshotImportStatus;
+  } catch (error) {
+    const normalized = stripLegacyImportStatusRateLimitFields(input);
+    if (normalized === input) throw error;
+    const parsed = importStatusSchema.parse(normalized) as FigmaSnapshotImportStatus;
+    assertNoSensitiveStrings(parsed);
+    assertNoSensitiveStrings(input);
+    const expectedLegacyDigest = computeFigmaSnapshotArtifactDigest(
+      input as ArtifactWithDigest,
+    );
+    if (parsed.contentDigest !== expectedLegacyDigest) throw error;
+    return parsed;
+  }
+};
 
 const validateArtifact = (
   label: string,
@@ -351,6 +403,31 @@ const stripContentDigest = <T extends ArtifactWithDigest>(
 ): Omit<T, "contentDigest"> => {
   const { contentDigest: _contentDigest, ...rest } = artifact;
   return rest;
+};
+
+const stripLegacyImportStatusRateLimitFields = (input: unknown): unknown => {
+  if (input === null || typeof input !== "object") return input;
+  const record = input as Record<string, unknown>;
+  const rateLimit = record.rateLimit;
+  if (rateLimit === null || typeof rateLimit !== "object") return input;
+  const rateLimitRecord = rateLimit as Record<string, unknown>;
+  const {
+    figmaPlanTier: _figmaPlanTier,
+    figmaRateLimitType: _figmaRateLimitType,
+    figmaUpgradeLinkDigest: _figmaUpgradeLinkDigest,
+    ...safeRateLimit
+  } = rateLimitRecord;
+  if (
+    _figmaPlanTier === undefined &&
+    _figmaRateLimitType === undefined &&
+    _figmaUpgradeLinkDigest === undefined
+  ) {
+    return input;
+  }
+  return {
+    ...record,
+    rateLimit: safeRateLimit,
+  };
 };
 
 const assertSnapshotSegment = (

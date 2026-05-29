@@ -13,6 +13,9 @@ const jsonError = (error: WorkbenchSnapshotVaultError): NextResponse =>
       error: {
         code: error.code,
         message: error.message,
+        ...(error.failureClass !== undefined
+          ? { failureClass: error.failureClass }
+          : {}),
       },
     },
     { status: error.status },
@@ -37,9 +40,8 @@ export async function GET(): Promise<NextResponse> {
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
-    const { startWorkbenchSnapshotImport } = await import(
-      "@/lib/server/workbench-snapshot-vault"
-    );
+    const { startWorkbenchSnapshotImport } =
+      await import("@/lib/server/workbench-snapshot-vault");
     const body = (await request.json().catch(() => undefined)) as unknown;
     const job = await startWorkbenchSnapshotImport({ body });
     return NextResponse.json({ job }, { status: 202 });

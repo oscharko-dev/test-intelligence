@@ -109,6 +109,18 @@ describe("validateSettings", () => {
     expect(issues.some((i) => i.field === "NODE_EXTRA_CA_CERTS")).toBe(true);
   });
 
+  it("flags unsupported Figma credential modes", () => {
+    const broken = settingsReducer(SETTINGS_BASELINE, {
+      type: "set",
+      key: "TEST_INTELLIGENCE_FIGMA_CREDENTIAL_MODE",
+      value: "shared-password",
+    });
+    const issues = validateSettings(broken);
+    expect(
+      issues.some((i) => i.field === "TEST_INTELLIGENCE_FIGMA_CREDENTIAL_MODE"),
+    ).toBe(true);
+  });
+
   it("rejects CA bundle paths that traverse out of the workspace", () => {
     const broken = settingsReducer(SETTINGS_BASELINE, {
       type: "set",
@@ -166,6 +178,15 @@ describe("formatDiffValue", () => {
     expect(out).toContain("…");
   });
 
+  it("masks Figma access tokens", () => {
+    const out = formatDiffValue(
+      "TEST_INTELLIGENCE_FIGMA_ACCESS_TOKEN",
+      "figd-token-secret-value",
+    );
+    expect(out).not.toBe("figd-token-secret-value");
+    expect(out).toContain("…");
+  });
+
   it("coerces booleans", () => {
     expect(
       formatDiffValue("TEST_INTELLIGENCE_ALLOW_POLICY_BLOCKED", true),
@@ -218,6 +239,9 @@ describe("prettyEnv / isSettingsDirty", () => {
     );
     expect(REQUIRED_SETTINGS).toContain(
       "TEST_INTELLIGENCE_REGION_ATTESTATION_SIGNING_KEY",
+    );
+    expect(SETTINGS_BASELINE.TEST_INTELLIGENCE_FIGMA_CREDENTIAL_MODE).toBe(
+      "personal_access_token",
     );
   });
 });

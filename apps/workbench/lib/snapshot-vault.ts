@@ -15,7 +15,41 @@ export interface WorkbenchSnapshotRateLimitSummary {
   figmaPlanTier?: string;
   figmaRateLimitType?: string;
   figmaUpgradeLinkDigest?: string;
+  remediation?: WorkbenchSnapshotRateLimitRemediation;
 }
+
+export interface WorkbenchSnapshotRateLimitRemediation {
+  scenario: "low_limit" | "high_limit" | "unknown";
+  guidance: string;
+}
+
+export interface WorkbenchSnapshotCredentialSummary {
+  authMode:
+    | "personal_access_token"
+    | "oauth_access_token"
+    | "enterprise_service_token";
+}
+
+export interface WorkbenchSnapshotBudgetSummary {
+  policyVersion: string;
+  resourceType?: "file_bootstrap" | "node_batch" | "image_metadata";
+  windowSeconds: number;
+  maxRequestsPerWindow: number;
+  usedRequests: number;
+  remainingRequests: number;
+  resetAt?: string;
+}
+
+export type WorkbenchSnapshotFailureClass =
+  | "throttled"
+  | "budget_exhausted"
+  | "missing_credential"
+  | "invalid_credential"
+  | "unsupported_auth_mode"
+  | "transport"
+  | "invalid_request"
+  | "not_found"
+  | "persistence_failed";
 
 export interface WorkbenchSnapshotCatalogRow {
   snapshotId: string;
@@ -35,6 +69,9 @@ export interface WorkbenchSnapshotCatalogRow {
   launchable: boolean;
   cacheState: "complete" | "partial" | "failed";
   rateLimit: WorkbenchSnapshotRateLimitSummary;
+  credential?: WorkbenchSnapshotCredentialSummary;
+  budget?: WorkbenchSnapshotBudgetSummary;
+  failureClass?: WorkbenchSnapshotFailureClass;
 }
 
 export interface WorkbenchSnapshotPageSummary {
@@ -127,4 +164,7 @@ export interface WorkbenchSnapshotImportJob {
   snapshotId?: string;
   message?: string;
   rateLimit?: WorkbenchSnapshotRateLimitSummary;
+  credential?: WorkbenchSnapshotCredentialSummary;
+  budget?: WorkbenchSnapshotBudgetSummary;
+  failureClass?: WorkbenchSnapshotFailureClass;
 }

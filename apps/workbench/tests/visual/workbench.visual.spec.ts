@@ -25,6 +25,7 @@ const VISUAL_TEST_SETTINGS: Settings = {
   TEST_INTELLIGENCE_LLM_GATEWAY_API_VERSION: "2024-10-01-preview",
   TEST_INTELLIGENCE_LLM_GATEWAY_API_KEY: "visual-test-api-key",
   TEST_INTELLIGENCE_FIGMA_ACCESS_TOKEN: "visual-test-figma-token",
+  TEST_INTELLIGENCE_FIGMA_CREDENTIAL_MODE: "personal_access_token",
   TEST_INTELLIGENCE_MODEL_ENDPOINT:
     "https://visual-test-foundry.example.test/openai",
   TEST_INTELLIGENCE_VISUAL_MODEL_ENDPOINT:
@@ -106,8 +107,7 @@ function buildBrowserSnapshotRecords(): FigmaSnapshotNodeRecord[] {
         sourceChunkRefs: [{ chunkId: `chunk-${pageIndex}-${frameIndex}` }],
       });
       for (let nodeIndex = 1; nodeIndex <= 5; nodeIndex += 1) {
-        const target =
-          pageIndex === 1 && frameIndex === 1 && nodeIndex === 1;
+        const target = pageIndex === 1 && frameIndex === 1 && nodeIndex === 1;
         records.push({
           pageId,
           pageName,
@@ -166,8 +166,6 @@ async function seedBrowserSnapshotVaultFixture(): Promise<void> {
     retry: { attempt: 1, maxAttempts: 3 },
     rateLimit: {
       remaining: 77,
-      figmaPlanTier: "enterprise",
-      figmaRateLimitType: "file",
     },
     chunks: [
       {
@@ -265,7 +263,10 @@ async function openWorkbench(page: Page, path: string): Promise<void> {
   });
 }
 
-async function mockWorkbenchSettings(page: Page, settings: Settings): Promise<void> {
+async function mockWorkbenchSettings(
+  page: Page,
+  settings: Settings,
+): Promise<void> {
   await page.route("**/api/workbench/settings", async (route, request) => {
     if (request.method() !== "GET") {
       await route.fallback();
@@ -298,8 +299,6 @@ async function mockSnapshotVault(page: Page): Promise<void> {
     cacheState: "complete",
     rateLimit: {
       remaining: 42,
-      figmaPlanTier: "enterprise",
-      figmaRateLimitType: "file",
     },
   };
   const node = {
@@ -342,31 +341,34 @@ async function mockSnapshotVault(page: Page): Promise<void> {
       }),
     });
   });
-  await page.route("**/api/workbench/snapshots/*/selection-preview", async (route) => {
-    await route.fulfill({
-      contentType: "application/json",
-      body: JSON.stringify({
-        preview: {
-          snapshotId: snapshot.snapshotId,
-          scopeDigest: "b".repeat(64),
-          payloadBytes: 2048,
-          resolvedNodeCount: 1,
-          requestedSelection: {
-            nodeIds: ["mask-iban"],
-            pageIds: [],
-            frameIds: [],
-          },
-          traceAnchors: [
-            {
-              screenId: "Retail Accounts",
-              nodeId: "mask-iban",
-              nodeName: "IBAN input mask",
+  await page.route(
+    "**/api/workbench/snapshots/*/selection-preview",
+    async (route) => {
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          preview: {
+            snapshotId: snapshot.snapshotId,
+            scopeDigest: "b".repeat(64),
+            payloadBytes: 2048,
+            resolvedNodeCount: 1,
+            requestedSelection: {
+              nodeIds: ["mask-iban"],
+              pageIds: [],
+              frameIds: [],
             },
-          ],
-        },
-      }),
-    });
-  });
+            traceAnchors: [
+              {
+                screenId: "Retail Accounts",
+                nodeId: "mask-iban",
+                nodeName: "IBAN input mask",
+              },
+            ],
+          },
+        }),
+      });
+    },
+  );
   await page.route("**/api/workbench/snapshots/*/search?**", async (route) => {
     await route.fulfill({
       contentType: "application/json",
@@ -509,7 +511,9 @@ test("captures the Snapshot Vault desktop workflow", async ({ page }) => {
   ).toBeVisible();
   await page.getByLabel("Search local node index").fill("iban");
   await page.getByRole("button", { name: "Add node" }).click();
-  await expect(page.getByText(/local preflight matched 1 nodes/u)).toBeVisible();
+  await expect(
+    page.getByText(/local preflight matched 1 nodes/u),
+  ).toBeVisible();
   await expect(page).toHaveScreenshot("workbench-snapshot-vault-desktop.png");
 });
 
@@ -543,12 +547,20 @@ test("runs the Snapshot Vault browser flow from a real local vault", async ({
   await expect(
     page.getByText(/Showing frames for Retail Accounts/u),
   ).toBeVisible();
-  await page.getByRole("button", { name: /Add page/u }).first().click();
-  await page.getByRole("button", { name: /Add frame/u }).first().click();
+  await page
+    .getByRole("button", { name: /Add page/u })
+    .first()
+    .click();
+  await page
+    .getByRole("button", { name: /Add frame/u })
+    .first()
+    .click();
   await page.getByLabel("Search local node index").fill("IBAN");
   await expect(page.getByText("IBAN input mask")).toBeVisible();
   await page.getByRole("button", { name: "Add node" }).click();
-  await expect(page.getByText(/local preflight matched \d+ nodes/u)).toBeVisible();
+  await expect(
+    page.getByText(/local preflight matched \d+ nodes/u),
+  ).toBeVisible();
 
   const startResponsePromise = page.waitForResponse((response) => {
     return (

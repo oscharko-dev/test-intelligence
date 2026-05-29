@@ -34,6 +34,11 @@ TEST_INTELLIGENCE_LLM_API_KEY=
 # Required: Figma access token for Figma URL ingestion.
 TEST_INTELLIGENCE_FIGMA_ACCESS_TOKEN=
 
+# Required: Figma credential mode for import governance.
+# Supported now: personal_access_token and enterprise_service_token.
+# oauth_access_token is schema-ready and fails closed until OAuth resolution is added.
+TEST_INTELLIGENCE_FIGMA_CREDENTIAL_MODE=personal_access_token
+
 # Required when visual sidecar is enabled. Prefer the matching v1 base URL.
 TEST_INTELLIGENCE_VISUAL_MODEL_ENDPOINT=
 
@@ -212,6 +217,10 @@ const settingsFromEnv = (
   setString("TEST_INTELLIGENCE_FIGMA_ACCESS_TOKEN", [
     "TEST_INTELLIGENCE_FIGMA_ACCESS_TOKEN",
     "FIGMA_ACCESS_TOKEN",
+  ]);
+  setString("TEST_INTELLIGENCE_FIGMA_CREDENTIAL_MODE", [
+    "TEST_INTELLIGENCE_FIGMA_CREDENTIAL_MODE",
+    "FIGMA_CREDENTIAL_MODE",
   ]);
   setString("TEST_INTELLIGENCE_MODEL_ENDPOINT", [
     "TEST_INTELLIGENCE_MODEL_ENDPOINT",

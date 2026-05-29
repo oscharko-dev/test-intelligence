@@ -197,6 +197,25 @@ void test("figma snapshot vault: validates each artifact kind", () => {
   assert.equal(status.schemaVersion, FIGMA_SNAPSHOT_IMPORT_STATUS_SCHEMA_VERSION);
 });
 
+void test("figma snapshot vault: tolerates and strips legacy import rate-limit fields", () => {
+  const legacy = withDigest({
+    ...IMPORT_STATUS_BASE,
+    rateLimit: {
+      ...IMPORT_STATUS_BASE.rateLimit,
+      figmaPlanTier: "enterprise",
+      figmaRateLimitType: "file_content",
+      figmaUpgradeLinkDigest: "2".repeat(64),
+    },
+  });
+
+  const status = validateFigmaSnapshotImportStatus(legacy);
+
+  assert.equal(status.contentDigest, legacy.contentDigest);
+  assert.equal("figmaPlanTier" in status.rateLimit, false);
+  assert.equal("figmaRateLimitType" in status.rateLimit, false);
+  assert.equal("figmaUpgradeLinkDigest" in status.rateLimit, false);
+});
+
 void test("figma snapshot vault: rejects missing digests and digest mismatches", () => {
   assert.throws(
     () => validateFigmaSnapshotManifest(MANIFEST_BASE),
