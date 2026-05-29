@@ -247,6 +247,13 @@ void test("staged import completes large boards through bounded REST batches and
 
   assert.equal(result.manifest.importStrategy, "hybrid");
   assert.equal(result.importStatus.lifecycleState, "completed");
+  assert.equal(
+    result.manifest.artifactDigests.previewManifestDigest,
+    result.previewManifest.contentDigest,
+  );
+  assert.equal(result.previewManifest.previewStatus, "complete");
+  assert.ok(result.previewManifest.assets.length > 0);
+  assert.equal(result.previewManifest.assets.length, result.previewManifest.tiles.length);
   assert.equal(result.nodeIndex.nodes.length, nodeIds.length * 2);
   assert.equal(mock.maxConcurrency(), 1);
   assert.equal(
@@ -384,6 +391,23 @@ void test("staged import flattens deep node trees without recursive stack overfl
 
   assert.equal(result.importStatus.lifecycleState, "completed");
   assert.equal(result.nodeIndex.nodes.length, 3_001);
+  const nodeById = new Map(result.nodeIndex.nodes.map((node) => [node.nodeId, node]));
+  const deepLeaf = nodeById.get("deep:leaf");
+  assert.ok(deepLeaf);
+  assert.equal(deepLeaf.parentNodeId, "deep:3000");
+  assert.equal(deepLeaf.ancestorNodeIds.length, 128);
+  assert.equal(deepLeaf.ancestorNodeIds[0], "deep:2873");
+  assert.equal(deepLeaf.ancestorNodeIds.at(-1), "deep:3000");
+  assert.ok(deepLeaf.labels.includes("deeply-nested"));
+
+  const reconstructedParentChain: string[] = [];
+  let parentNodeId = deepLeaf.parentNodeId;
+  while (parentNodeId !== undefined) {
+    reconstructedParentChain.push(parentNodeId);
+    parentNodeId = nodeById.get(parentNodeId)?.parentNodeId;
+  }
+  assert.equal(reconstructedParentChain.length, 3_000);
+  assert.equal(reconstructedParentChain.at(-1), "deep:1");
 });
 
 void test("staged import resumes a safe checkpoint after interruption", async () => {
@@ -437,6 +461,7 @@ void test("staged import reuses unchanged cached chunks on repeated imports", as
   });
 
   assert.equal(second.snapshotId, first.snapshotId);
+  assert.deepEqual(second.previewManifest, first.previewManifest);
   assert.equal(second.reusedChunkIds.length, first.importStatus.chunks.length);
   assert.equal(
     countRequests(secondMock, (url) => url.pathname === `/v1/files/${FILE_KEY}/nodes`),

@@ -5,13 +5,13 @@ import { basename, dirname, join } from "node:path";
 import {
   FIGMA_SNAPSHOT_IMPORT_STATUS_SCHEMA_VERSION,
   FIGMA_SNAPSHOT_MANIFEST_SCHEMA_VERSION,
-  FIGMA_SNAPSHOT_NODE_INDEX_SCHEMA_VERSION,
   type FigmaSnapshotImportChunkInventoryEntry,
   type FigmaSnapshotImportLifecycleState,
   type FigmaSnapshotImportStatus,
   type FigmaSnapshotManifest,
   type FigmaSnapshotNodeRecord,
   type FigmaSnapshotNodeIndex,
+  type FigmaSnapshotPreviewManifest,
   type FigmaSnapshotSourceIdentifier,
   type TenantScope,
 } from "@oscharko-dev/ti-contracts";
@@ -33,12 +33,16 @@ import {
   type FigmaRestRateLimitMetadata,
 } from "./figma-rest-adapter.js";
 import {
+  buildFigmaSnapshotLocalNodeIndex,
+  planFigmaSnapshotPreviewCache,
+  writeFigmaSnapshotPreviewCacheAssets,
+} from "./figma-snapshot-explorer.js";
+import {
   buildFigmaSnapshotVaultPath,
   computeFigmaSnapshotArtifactDigest,
   serializeFigmaSnapshotArtifact,
   validateFigmaSnapshotImportStatus,
   validateFigmaSnapshotManifest,
-  validateFigmaSnapshotNodeIndex,
 } from "./figma-snapshot-vault.js";
 
 const PLANNER_VERSION = "figma-staged-import/v1" as const;
@@ -48,6 +52,7 @@ const ZERO_DIGEST =
 const DEFAULT_BOOTSTRAP_DEPTH = 2;
 const DEFAULT_NODE_BATCH_SIZE = 8;
 const DEFAULT_IMAGE_BATCH_SIZE = 16;
+const MAX_PERSISTED_ANCESTOR_NODE_IDS = 128;
 const MAX_TEXT_LENGTH = 240;
 const FIGMA_NODE_ID_RE = /^[A-Za-z0-9_.:;-]+$/u;
 const URI_LIKE_RE =
@@ -58,10 +63,17 @@ const FIGMA_TOKEN_LIKE_RE = /\bfigd_[A-Za-z0-9_-]{8,}\b/iu;
 const FIGMA_TOKEN_LIKE_GLOBAL_RE = /\bfigd_[A-Za-z0-9_-]{8,}\b/giu;
 const MANIFEST_FILENAME = "manifest.json";
 const NODE_INDEX_FILENAME = "node-index.json";
+const PREVIEW_MANIFEST_FILENAME = "preview-manifest.json";
 const IMPORT_STATUS_FILENAME = "import-status.json";
 const STAGING_CHUNKS_DIRECTORY = ".staging/chunks";
 
 type StagedChunkKind = "node" | "image_metadata";
+
+type AncestorTrailFrame = {
+  readonly nodeId: string;
+  readonly previous?: AncestorTrailFrame;
+  readonly depth: number;
+};
 
 type MutableRateLimitMetadata = {
   retryAfterSeconds?: number;
@@ -130,6 +142,7 @@ export interface ImportStagedFigmaSnapshotResult {
   readonly vaultPath: string;
   readonly manifest: FigmaSnapshotManifest;
   readonly nodeIndex: FigmaSnapshotNodeIndex;
+  readonly previewManifest: FigmaSnapshotPreviewManifest;
   readonly importStatus: FigmaSnapshotImportStatus;
   readonly fetchedChunkIds: readonly string[];
   readonly reusedChunkIds: readonly string[];
@@ -318,17 +331,22 @@ export const importStagedFigmaSnapshot = async (
     rootPlans,
     figmaRevisionDigest,
   });
-  const nodeIndex = withArtifactDigest<FigmaSnapshotNodeIndex>({
-    schemaVersion: FIGMA_SNAPSHOT_NODE_INDEX_SCHEMA_VERSION,
+  const nodeIndex = buildFigmaSnapshotLocalNodeIndex({
     snapshotId,
     tenantScope: input.tenantScope,
     source: source.source,
-    nodes: nodeRecords,
+    records: nodeRecords,
   });
-  validateFigmaSnapshotNodeIndex(nodeIndex);
   await writeJsonAtomically(
     join(vaultPath, NODE_INDEX_FILENAME),
     serializeFigmaSnapshotArtifact(nodeIndex),
+  );
+  await persistImportStatus(state, "previewing");
+  const previewManifest = planFigmaSnapshotPreviewCache({ nodeIndex });
+  await writeFigmaSnapshotPreviewCacheAssets(vaultPath, previewManifest);
+  await writeJsonAtomically(
+    join(vaultPath, PREVIEW_MANIFEST_FILENAME),
+    serializeFigmaSnapshotArtifact(previewManifest),
   );
   const completedStatus = await persistImportStatus(state, "completed");
   const manifest = withArtifactDigest<FigmaSnapshotManifest>({
@@ -345,6 +363,7 @@ export const importStagedFigmaSnapshot = async (
     artifactDigests: {
       nodeIndexDigest: nodeIndex.contentDigest,
       importStatusDigest: completedStatus.contentDigest,
+      previewManifestDigest: previewManifest.contentDigest,
     },
   });
   validateFigmaSnapshotManifest(manifest);
@@ -357,6 +376,7 @@ export const importStagedFigmaSnapshot = async (
     vaultPath,
     manifest,
     nodeIndex,
+    previewManifest,
     importStatus: completedStatus,
     fetchedChunkIds: state.fetchedChunkIds,
     reusedChunkIds: state.reusedChunkIds,
@@ -757,20 +777,22 @@ const flattenNodeRecords = (input: {
   const records: FigmaSnapshotNodeRecord[] = [];
   const stack: Array<{
     node: FigmaRestNode;
-    ancestorNodeIds: readonly string[];
+    ancestorTrail?: AncestorTrailFrame;
     parentNodeId?: string;
     nearestFrameId?: string;
     nearestFrameName?: string;
-  }> = [{ node: input.node, ancestorNodeIds: [] }];
+  }> = [{ node: input.node }];
   while (stack.length > 0) {
     const current = stack.pop();
     if (current === undefined) break;
-    const { node, ancestorNodeIds, parentNodeId } = current;
+    const { node, parentNodeId } = current;
     const nodeName = sanitizePersistedText(node.name ?? node.id, node.id);
     const isFrame = node.type === "FRAME" || node.type === "COMPONENT";
     const nearestFrameId = isFrame ? node.id : current.nearestFrameId;
     const nearestFrameName = isFrame ? nodeName : current.nearestFrameName;
     const bbox = buildSafeBoundingBox(node);
+    const ancestorNodeIds = materializeAncestorNodeIds(current.ancestorTrail);
+    const ancestorDepth = current.ancestorTrail?.depth ?? 0;
     records.push({
       pageId: input.root.pageId,
       pageName: input.root.pageName,
@@ -790,7 +812,10 @@ const flattenNodeRecords = (input: {
       ...(parentNodeId !== undefined ? { parentNodeId } : {}),
       ancestorNodeIds,
       ...(bbox !== undefined ? { bbox } : {}),
-      labels: node.visible === false ? ["hidden"] : [],
+      labels: [
+        ...(node.visible === false ? ["hidden"] : []),
+        ...(ancestorDepth > MAX_PERSISTED_ANCESTOR_NODE_IDS ? ["deeply-nested"] : []),
+      ],
       ...(node.characters !== undefined
         ? { textSnippet: sanitizePersistedText(node.characters, "text") }
         : {}),
@@ -801,12 +826,13 @@ const flattenNodeRecords = (input: {
       sourceChunkRefs: [{ chunkId: input.chunkId }],
     });
     const children = node.children ?? [];
+    const childAncestorTrail = appendAncestorTrail(current.ancestorTrail, node.id);
     for (let index = children.length - 1; index >= 0; index -= 1) {
       const child = children[index];
       if (child === undefined) continue;
       stack.push({
         node: child,
-        ancestorNodeIds: [...ancestorNodeIds, node.id],
+        ancestorTrail: childAncestorTrail,
         parentNodeId: node.id,
         ...(nearestFrameId !== undefined ? { nearestFrameId } : {}),
         ...(nearestFrameName !== undefined ? { nearestFrameName } : {}),
@@ -814,6 +840,32 @@ const flattenNodeRecords = (input: {
     }
   }
   return records;
+};
+
+const appendAncestorTrail = (
+  previous: AncestorTrailFrame | undefined,
+  nodeId: string,
+): AncestorTrailFrame => ({
+  nodeId,
+  ...(previous !== undefined ? { previous } : {}),
+  depth: (previous?.depth ?? 0) + 1,
+});
+
+const materializeAncestorNodeIds = (
+  trail: AncestorTrailFrame | undefined,
+): readonly string[] => {
+  if (trail === undefined) return [];
+  const nodeIds: string[] = [];
+  let current: AncestorTrailFrame | undefined = trail;
+  while (
+    current !== undefined &&
+    nodeIds.length < MAX_PERSISTED_ANCESTOR_NODE_IDS
+  ) {
+    nodeIds.push(current.nodeId);
+    current = current.previous;
+  }
+  nodeIds.reverse();
+  return nodeIds;
 };
 
 const buildSafeBoundingBox = (
