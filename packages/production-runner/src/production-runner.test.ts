@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -10,6 +17,10 @@ import type { Meter, Span, Tracer } from "@opentelemetry/api";
 import type {
   A11yVerdict,
   FaithfulnessVerdict,
+  FigmaSnapshotImportStatus,
+  FigmaSnapshotManifest,
+  FigmaSnapshotNodeIndex,
+  FigmaSnapshotNodeRecord,
   FinOpsBudgetReport,
   JudgeConsensusVerdict,
   JudgeVerdict,
@@ -18,6 +29,7 @@ import type {
   LlmGenerationResult,
   ReviewEvent,
   RunQualityArtifact,
+  TenantScope,
   VisualScreenDescription,
 } from "@oscharko-dev/ti-contracts";
 import {
@@ -62,13 +74,18 @@ import {
   type ProductionRunnerLlmDraftCase,
   type ProductionRunnerSource,
 } from "./production-runner.js";
-import type {
-  FigmaRestFileSnapshot,
-  FigmaRestNode,
+import {
+  computeFigmaSnapshotArtifactDigest,
+  serializeFigmaSnapshotArtifact,
+  type FigmaRestFileSnapshot,
+  type FigmaRestNode,
 } from "@oscharko-dev/ti-core-engine";
 import {
   A11Y_JUDGE_VERDICT_ARTIFACT_FILENAME,
   BUSINESS_TEST_INTENT_IR_SCHEMA_VERSION,
+  FIGMA_SNAPSHOT_IMPORT_STATUS_SCHEMA_VERSION,
+  FIGMA_SNAPSHOT_MANIFEST_SCHEMA_VERSION,
+  FIGMA_SNAPSHOT_NODE_INDEX_SCHEMA_VERSION,
   HUMAN_REVIEW_LOG_ARTIFACT_FILENAME,
   HUMAN_REVIEW_LOG_SCHEMA_VERSION,
   HUMAN_REVIEW_QUEUE_ITEM_SCHEMA_VERSION,
@@ -94,6 +111,7 @@ import {
   computeHumanReviewItemId,
   enqueueHumanReview,
 } from "@oscharko-dev/ti-review";
+import { resolveTenantScopeSegments } from "@oscharko-dev/ti-tenant";
 import type { CarbonFootprintReport } from "./carbon-footprint.js";
 
 process.env[REGION_ATTESTATION_PINNED_REGION_ENV] ??= "eu-central-1";
@@ -150,6 +168,141 @@ const SAMPLE_FILE = {
       }),
     ],
   }),
+};
+
+const SNAPSHOT_TENANT_SCOPE = {
+  tenantId: "tenant-acme",
+  environmentId: "prod",
+  projectId: "claims-modernization",
+} as const satisfies TenantScope;
+
+const SNAPSHOT_ID = "snapshot-20260529";
+
+const SNAPSHOT_SOURCE = {
+  fileKeyHash: "a".repeat(64),
+  sourceUrlHash: "b".repeat(64),
+} as const;
+
+const snapshotVaultPath = (root: string): string => {
+  const [tenantId, environmentId, projectId] = resolveTenantScopeSegments(
+    SNAPSHOT_TENANT_SCOPE,
+  );
+  return path.join(
+    root,
+    ".test-intelligence",
+    "figma-snapshots",
+    tenantId,
+    environmentId,
+    projectId,
+    SNAPSHOT_SOURCE.fileKeyHash,
+    SNAPSHOT_ID,
+  );
+};
+
+const snapshotNodeRecord = (
+  overrides: Partial<FigmaSnapshotNodeRecord>,
+): FigmaSnapshotNodeRecord => ({
+  pageId: "page-1",
+  pageName: "Claims Intake",
+  frameId: "frame-1",
+  frameName: "FNOL",
+  nodeId: "node-field",
+  nodeName: "Claim Number",
+  nodeType: "TEXT_FIELD",
+  parentNodeId: "frame-1",
+  ancestorNodeIds: ["page-1", "frame-1"],
+  bbox: { x: 10, y: 20, width: 180, height: 36 },
+  labels: ["Claim Number"],
+  textSnippet: "Claim Number",
+  componentHints: ["control:text-entry"],
+  visible: true,
+  sourceChunkRefs: [{ chunkId: "chunk-01" }],
+  ...overrides,
+});
+
+const withSnapshotDigest = <T extends Record<string, unknown>>(
+  value: T,
+): T & { contentDigest: string } => ({
+  ...value,
+  contentDigest: computeFigmaSnapshotArtifactDigest({
+    ...value,
+    contentDigest: "0".repeat(64),
+  }),
+});
+
+const writeProductionRunnerSnapshotVault = async (
+  root: string,
+): Promise<FigmaSnapshotManifest> => {
+  const nodes = [
+    snapshotNodeRecord({}),
+    snapshotNodeRecord({
+      nodeId: "node-submit",
+      nodeName: "Submit Claim",
+      nodeType: "BUTTON",
+      labels: ["Submit"],
+      textSnippet: "Submit",
+      componentHints: ["primary-action"],
+    }),
+  ];
+  const nodeIndex = withSnapshotDigest({
+    schemaVersion: FIGMA_SNAPSHOT_NODE_INDEX_SCHEMA_VERSION,
+    snapshotId: SNAPSHOT_ID,
+    tenantScope: SNAPSHOT_TENANT_SCOPE,
+    source: SNAPSHOT_SOURCE,
+    nodes,
+  }) satisfies FigmaSnapshotNodeIndex;
+  const importStatus = withSnapshotDigest({
+    schemaVersion: FIGMA_SNAPSHOT_IMPORT_STATUS_SCHEMA_VERSION,
+    snapshotId: SNAPSHOT_ID,
+    tenantScope: SNAPSHOT_TENANT_SCOPE,
+    source: SNAPSHOT_SOURCE,
+    lifecycleState: "completed" as const,
+    retry: { attempt: 1, maxAttempts: 3 },
+    rateLimit: {},
+    chunks: [
+      {
+        chunkId: "chunk-01",
+        state: "completed" as const,
+        nodeCount: nodes.length,
+        contentDigest: "c".repeat(64),
+      },
+    ],
+    checkpoint: {
+      lastSuccessfulPhase: "completed" as const,
+      completedChunkIds: ["chunk-01"],
+    },
+  }) satisfies FigmaSnapshotImportStatus;
+  const manifest = withSnapshotDigest({
+    schemaVersion: FIGMA_SNAPSHOT_MANIFEST_SCHEMA_VERSION,
+    snapshotId: SNAPSHOT_ID,
+    tenantScope: SNAPSHOT_TENANT_SCOPE,
+    source: SNAPSHOT_SOURCE,
+    importStrategy: "rest_nodes" as const,
+    importedAt: "2026-05-29T06:15:00.000Z",
+    artifactDigests: {
+      nodeIndexDigest: nodeIndex.contentDigest,
+      importStatusDigest: importStatus.contentDigest,
+    },
+  }) satisfies FigmaSnapshotManifest;
+
+  const vaultPath = snapshotVaultPath(root);
+  await mkdir(vaultPath, { recursive: true });
+  await writeFile(
+    path.join(vaultPath, "manifest.json"),
+    serializeFigmaSnapshotArtifact(manifest),
+    "utf8",
+  );
+  await writeFile(
+    path.join(vaultPath, "node-index.json"),
+    serializeFigmaSnapshotArtifact(nodeIndex),
+    "utf8",
+  );
+  await writeFile(
+    path.join(vaultPath, "import-status.json"),
+    serializeFigmaSnapshotArtifact(importStatus),
+    "utf8",
+  );
+  return manifest;
 };
 
 const SAMPLE_DRAFT: ProductionRunnerLlmDraftCase = {
@@ -716,6 +869,173 @@ void test("runFigmaToQcTestCases happy path persists artifacts and renders custo
     assert.doesNotMatch(txt, /\*\*/u);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+void test("runFigmaToQcTestCases resolves local snapshot source without live Figma REST and stamps snapshot trace metadata", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "ti-runner-"));
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "ti-snapshot-ws-"));
+  const originalFetch = globalThis.fetch;
+  let fetchCalled = false;
+  try {
+    const manifest = await writeProductionRunnerSnapshotVault(workspaceRoot);
+    const client = createMockLlmGatewayClient({
+      role: "test_generation",
+      deployment: "gpt-oss-120b-mock",
+      modelRevision: "mock-1",
+      gatewayRelease: "mock",
+      responder: okResponder([
+        {
+          ...SAMPLE_DRAFT,
+          figmaTraceRefs: [{ screenId: "frame-1" }],
+          qualitySignals: {
+            coveredFieldIds: ["frame-1::field::node-field"],
+            coveredActionIds: ["frame-1::action::node-submit"],
+            coveredValidationIds: [],
+            coveredNavigationIds: [],
+            confidence: 0.9,
+          },
+        },
+      ]),
+    });
+    globalThis.fetch = (async () => {
+      fetchCalled = true;
+      throw new Error("unexpected live Figma REST call for snapshot source");
+    }) as typeof fetch;
+
+    const result = await runFigmaToQcTestCases({
+      jobId: "job-snapshot-source",
+      generatedAt: "2026-05-29T10:00:00Z",
+      source: {
+        kind: "figma_snapshot",
+        workspaceRoot,
+        snapshotId: SNAPSHOT_ID,
+        tenantScope: SNAPSHOT_TENANT_SCOPE,
+        selectedFrameIds: ["frame-1"],
+      },
+      replayCacheTenantScope: SNAPSHOT_TENANT_SCOPE,
+      outputRoot: tempRoot,
+      llm: { client },
+      generation: { diversityPasses: 1 },
+    });
+
+    assert.equal(fetchCalled, false);
+    const generated = result.generatedTestCases.testCases[0]!;
+    assert.equal(generated.audit.snapshotSource?.snapshotId, SNAPSHOT_ID);
+    assert.equal(
+      generated.audit.snapshotSource?.snapshotDigest,
+      manifest.contentDigest,
+    );
+    assert.equal(generated.figmaTraceRefs[0]?.screenId, "frame-1");
+    assert.equal(generated.figmaTraceRefs[0]?.nodeId, "node-field");
+    assert.equal(generated.figmaTraceRefs[0]?.nodeName, "Claim Number");
+
+    const artifact = JSON.parse(
+      await readFile(result.artifactPaths.generatedTestCases, "utf8"),
+    ) as GeneratedTestCaseList;
+    assert.equal(
+      artifact.testCases[0]?.audit.snapshotSource?.snapshotId,
+      SNAPSHOT_ID,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(tempRoot, { recursive: true, force: true });
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
+void test("runFigmaToQcTestCases preserves explicit snapshot trace node refs when anchor details belong to another node", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "ti-runner-"));
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "ti-snapshot-ws-"));
+  try {
+    await writeProductionRunnerSnapshotVault(workspaceRoot);
+    const client = createMockLlmGatewayClient({
+      role: "test_generation",
+      deployment: "gpt-oss-120b-mock",
+      modelRevision: "mock-1",
+      gatewayRelease: "mock",
+      responder: okResponder([
+        {
+          ...SAMPLE_DRAFT,
+          figmaTraceRefs: [{ screenId: "frame-1", nodeId: "node-submit" }],
+          qualitySignals: {
+            coveredFieldIds: [],
+            coveredActionIds: ["frame-1::action::node-submit"],
+            coveredValidationIds: [],
+            coveredNavigationIds: [],
+            confidence: 0.9,
+          },
+        },
+      ]),
+    });
+
+    const result = await runFigmaToQcTestCases({
+      jobId: "job-snapshot-trace-anchor-mismatch",
+      generatedAt: "2026-05-29T10:00:00Z",
+      source: {
+        kind: "figma_snapshot",
+        workspaceRoot,
+        snapshotId: SNAPSHOT_ID,
+        tenantScope: SNAPSHOT_TENANT_SCOPE,
+        selectedFrameIds: ["frame-1"],
+      },
+      replayCacheTenantScope: SNAPSHOT_TENANT_SCOPE,
+      outputRoot: tempRoot,
+      llm: { client },
+      generation: { diversityPasses: 1 },
+    });
+
+    const generated = result.generatedTestCases.testCases.find(
+      (testCase) => testCase.title === SAMPLE_DRAFT.title,
+    );
+    assert.ok(generated);
+    assert.equal(generated.figmaTraceRefs[0]?.nodeId, "node-submit");
+    assert.equal(generated.figmaTraceRefs[0]?.nodeName, undefined);
+    assert.equal(generated.figmaTraceRefs[0]?.nodePath, undefined);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+    await rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
+void test("runFigmaToQcTestCases enforces snapshot payload cap against derived intent input", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "ti-runner-"));
+  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "ti-snapshot-ws-"));
+  try {
+    await writeProductionRunnerSnapshotVault(workspaceRoot);
+    const client = createMockLlmGatewayClient({
+      role: "test_generation",
+      deployment: "gpt-oss-120b-mock",
+      modelRevision: "mock-1",
+      gatewayRelease: "mock",
+      responder: okResponder([SAMPLE_DRAFT]),
+    });
+
+    await assert.rejects(
+      () =>
+        runFigmaToQcTestCases({
+          jobId: "job-snapshot-payload-cap",
+          generatedAt: "2026-05-29T10:00:00Z",
+          source: {
+            kind: "figma_snapshot",
+            workspaceRoot,
+            snapshotId: SNAPSHOT_ID,
+            tenantScope: SNAPSHOT_TENANT_SCOPE,
+            selectedFrameIds: ["frame-1"],
+          },
+          replayCacheTenantScope: SNAPSHOT_TENANT_SCOPE,
+          outputRoot: tempRoot,
+          llm: { client },
+          generation: { diversityPasses: 1 },
+          maxFigmaPayloadBytes: 10,
+        }),
+      (err: unknown) =>
+        err instanceof ProductionRunnerError &&
+        err.failureClass === "FIGMA_PAYLOAD_TOO_LARGE",
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+    await rm(workspaceRoot, { recursive: true, force: true });
   }
 });
 

@@ -7009,6 +7009,24 @@ export interface GeneratedTestCaseFigmaTrace {
   nodePath?: string;
 }
 
+/** Local Figma Snapshot Vault evidence stamped on generated test-case audit metadata. */
+export interface GeneratedTestCaseSnapshotSourceRef {
+  /** Snapshot Vault identifier selected by the run source. */
+  snapshotId: string;
+  /** SHA-256 digest of the validated snapshot manifest. */
+  snapshotDigest: string;
+  /** SHA-256 digest of the validated local node index. */
+  nodeIndexDigest: string;
+  /** SHA-256 digest of the normalized selected scope for this run. */
+  scopeDigest: string;
+  /** Selected local node ids, sorted and de-duplicated. Empty means all nodes. */
+  selectedNodeIds: string[];
+  /** Selected page ids, sorted and de-duplicated. Empty means all pages. */
+  selectedPageIds: string[];
+  /** Selected frame ids, sorted and de-duplicated. Empty means all frames. */
+  selectedFrameIds: string[];
+}
+
 /** QC/ALM mapping preview emitted alongside the test case. */
 export interface GeneratedTestCaseQcMapping {
   /** Canonical test-case folder hint inside QC/ALM. */
@@ -7250,6 +7268,8 @@ export interface GeneratedTestCaseAuditMetadata {
   schemaHash: string;
   /** Number of upstream repair instructions clipped before regeneration. */
   truncatedInstructionCount?: number;
+  /** Snapshot Vault source identity when generation used local immutable Figma evidence. */
+  snapshotSource?: GeneratedTestCaseSnapshotSourceRef;
 }
 
 /** Single generated test case. */
@@ -7964,6 +7984,12 @@ export interface ReplayCacheKey {
   constrainedDecodingAdapterId?: LlmConstrainedDecodingAdapterId;
   constrainedDecodingAdapterVersion?: string;
   constrainedDecodingFallbackReason?: string;
+  /** Local snapshot id when generation used a Figma Snapshot Vault source. */
+  snapshotId?: string;
+  /** Validated snapshot manifest digest for local snapshot-backed generation. */
+  snapshotDigest?: string;
+  /** Digest of the selected local snapshot scope for replay identity. */
+  snapshotScopeDigest?: string;
 }
 
 /** Minimal persisted metadata for one compiled role-step prompt run. */

@@ -35,6 +35,7 @@ import {
   QC_MAPPING_KEYS,
   QUALITY_SIGNAL_KEYS,
   REGULATORY_RELEVANCE_KEYS,
+  SNAPSHOT_SOURCE_KEYS,
   STEP_KEYS,
 } from "./generated-test-case-validator-tables.js";
 
@@ -319,6 +320,44 @@ export const expectAudit = (
       message: "expected non-negative integer when present",
     });
   }
+  if (value["snapshotSource"] !== undefined) {
+    expectSnapshotSource(
+      value["snapshotSource"],
+      `${path}.snapshotSource`,
+      errors,
+    );
+  }
+};
+
+const expectSnapshotSource = (
+  value: unknown,
+  path: string,
+  errors: GeneratedTestCaseValidationError[],
+): void => {
+  if (!isObject(value)) {
+    errors.push({ path, message: "expected object" });
+    return;
+  }
+  expectExactKeys(value, SNAPSHOT_SOURCE_KEYS, path, errors);
+  expectString(value["snapshotId"], `${path}.snapshotId`, errors);
+  expectHash(value["snapshotDigest"], `${path}.snapshotDigest`, errors);
+  expectHash(value["nodeIndexDigest"], `${path}.nodeIndexDigest`, errors);
+  expectHash(value["scopeDigest"], `${path}.scopeDigest`, errors);
+  expectStringArray(
+    value["selectedNodeIds"],
+    `${path}.selectedNodeIds`,
+    errors,
+  );
+  expectStringArray(
+    value["selectedPageIds"],
+    `${path}.selectedPageIds`,
+    errors,
+  );
+  expectStringArray(
+    value["selectedFrameIds"],
+    `${path}.selectedFrameIds`,
+    errors,
+  );
 };
 
 const expectAmbiguity = (

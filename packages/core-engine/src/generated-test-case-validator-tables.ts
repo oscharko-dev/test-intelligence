@@ -189,4 +189,16 @@ export const AUDIT_KEYS = [
   "promptHash",
   "schemaHash",
   "truncatedInstructionCount",
+  "snapshotSource",
+] as const;
+
+/** Exact keys permitted on local Figma Snapshot Vault source audit metadata. */
+export const SNAPSHOT_SOURCE_KEYS = [
+  "snapshotId",
+  "snapshotDigest",
+  "nodeIndexDigest",
+  "scopeDigest",
+  "selectedNodeIds",
+  "selectedPageIds",
+  "selectedFrameIds",
 ] as const;

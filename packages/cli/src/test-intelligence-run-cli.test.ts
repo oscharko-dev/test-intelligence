@@ -310,6 +310,63 @@ void test("parseTestIntelligenceRunArgs: requires exactly one source", () => {
       ),
     TestIntelligenceRunOperatorError,
   );
+  assert.throws(
+    () =>
+      parseTestIntelligenceRunArgs(
+        [
+          "--figma-url",
+          "https://x",
+          "--figma-snapshot-id",
+          "snapshot-1",
+          "--output",
+          "/tmp/x",
+        ],
+        {},
+      ),
+    TestIntelligenceRunOperatorError,
+  );
+});
+
+void test("parseTestIntelligenceRunArgs: accepts local Figma snapshot source and scoped tenant flags without a Figma token", () => {
+  const opts = parseTestIntelligenceRunArgs(
+    [
+      "--figma-snapshot-id",
+      "snapshot-20260529",
+      "--figma-snapshot-root",
+      "/workspace/acme",
+      "--figma-snapshot-node-id",
+      "node-1",
+      "--figma-snapshot-node-id",
+      "node-2",
+      "--figma-snapshot-page-id",
+      "page-1",
+      "--figma-snapshot-frame-id",
+      "frame-1",
+      "--tenant-id",
+      "tenant-acme",
+      "--environment-id",
+      "prod",
+      "--project-id",
+      "claims-modernization",
+      "--output",
+      "/tmp/x",
+    ],
+    {},
+  );
+
+  assert.equal(opts.figmaUrl, undefined);
+  assert.equal(opts.figmaJsonFile, undefined);
+  assert.equal(opts.figmaToken, undefined);
+  assert.equal(opts.figmaSnapshotId, "snapshot-20260529");
+  assert.equal(opts.figmaSnapshotRoot, "/workspace/acme");
+  assert.deepEqual(opts.figmaSnapshotNodeIds, ["node-1", "node-2"]);
+  assert.deepEqual(opts.figmaSnapshotPageIds, ["page-1"]);
+  assert.deepEqual(opts.figmaSnapshotFrameIds, ["frame-1"]);
+  assert.deepEqual(opts.tenantScope, {
+    tenantId: "tenant-acme",
+    environmentId: "prod",
+    projectId: "claims-modernization",
+  });
 });
 
 void test("parseTestIntelligenceRunArgs: output is optional — no error when absent", () => {
@@ -1395,6 +1452,63 @@ void test("runTestIntelligenceCommand: finops-budget file read error → exit 1"
 // ---------------------------------------------------------------------------
 // runTestIntelligenceCommand — deterministic_llm with injected runner
 // ---------------------------------------------------------------------------
+
+void test("runTestIntelligenceCommand: snapshot source routes to runner without Figma token", async () => {
+  const { sink, stderr } = collectingSink();
+  const options: TestIntelligenceRunOptions = {
+    ...baseOptions(),
+    figmaUrl: undefined,
+    figmaJsonFile: undefined,
+    figmaSnapshotId: "snapshot-20260529",
+    figmaSnapshotRoot: "/workspace/acme",
+    figmaSnapshotNodeIds: ["node-1"],
+    tenantScope: {
+      tenantId: "tenant-acme",
+      environmentId: "prod",
+      projectId: "claims-modernization",
+    },
+    figmaToken: undefined,
+    mode: "deterministic_llm",
+    output: "/tmp/snapshot-output",
+    modelApiKey: "k-key",
+  };
+
+  let capturedInput: RunFigmaToQcTestCasesInput | undefined;
+  const runner = async (
+    input: RunFigmaToQcTestCasesInput,
+  ): Promise<RunFigmaToQcTestCasesResult> => {
+    capturedInput = input;
+    return emptyRunnerResult({
+      jobId: input.jobId,
+      outputRoot: input.outputRoot,
+      ...(input.artifactDir !== undefined
+        ? { artifactDir: input.artifactDir }
+        : {}),
+    });
+  };
+
+  const exitCode = await runTestIntelligenceCommand(options, sink, {
+    env: GATE_ON,
+    runner,
+    buildLlmClient: () =>
+      ({}) as unknown as ReturnType<
+        Required<TestIntelligenceRunRuntime>["buildLlmClient"]
+      >,
+    loadJsonFile: async () => ({}),
+    now: () => 1700000000000,
+  });
+
+  assert.equal(exitCode, 0, stderr.join(""));
+  assert.equal(capturedInput?.source.kind, "figma_snapshot");
+  assert.deepEqual(capturedInput?.replayCacheTenantScope, options.tenantScope);
+  if (capturedInput?.source.kind !== "figma_snapshot") {
+    assert.fail("expected snapshot source");
+  }
+  assert.equal(capturedInput.source.snapshotId, "snapshot-20260529");
+  assert.equal(capturedInput.source.workspaceRoot, "/workspace/acme");
+  assert.deepEqual(capturedInput.source.selectedNodeIds, ["node-1"]);
+  assert.deepEqual(capturedInput.source.tenantScope, options.tenantScope);
+});
 
 void test("runTestIntelligenceCommand: deterministic_llm with injected runner returns 0 and reports runner Markdown path", async () => {
   const { sink, stdout, stderr } = collectingSink();

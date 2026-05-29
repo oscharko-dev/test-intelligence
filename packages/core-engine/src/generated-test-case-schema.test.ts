@@ -148,6 +148,46 @@ void test("valid fixture returns { valid: true, errors: [] }", () => {
   assert.deepEqual(result.errors, []);
 });
 
+void test("valid fixture accepts local snapshot source audit metadata", () => {
+  const fixture = makeValid();
+  firstCase(fixture).audit.snapshotSource = {
+    snapshotId: "snapshot-20260529",
+    snapshotDigest: VALID_HASH,
+    nodeIndexDigest: VALID_HASH_2,
+    scopeDigest: VALID_HASH_3,
+    selectedNodeIds: ["node-1"],
+    selectedPageIds: ["page-1"],
+    selectedFrameIds: ["frame-1"],
+  };
+
+  const result = validateGeneratedTestCaseList(fixture);
+
+  assert.equal(result.valid, true);
+  assert.deepEqual(result.errors, []);
+});
+
+void test("invalid snapshot source digest is rejected by structural validator", () => {
+  const fixture = makeValid();
+  firstCase(fixture).audit.snapshotSource = {
+    snapshotId: "snapshot-20260529",
+    snapshotDigest: "not-a-digest",
+    nodeIndexDigest: VALID_HASH_2,
+    scopeDigest: VALID_HASH_3,
+    selectedNodeIds: ["node-1"],
+    selectedPageIds: [],
+    selectedFrameIds: [],
+  };
+
+  const result = validateGeneratedTestCaseList(fixture);
+
+  assert.equal(result.valid, false);
+  assert.ok(
+    errorPaths(result).includes(
+      "$.testCases[0].audit.snapshotSource.snapshotDigest",
+    ),
+  );
+});
+
 // ---------------------------------------------------------------------------
 // Root-level structural checks
 // ---------------------------------------------------------------------------
