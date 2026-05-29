@@ -48,7 +48,7 @@ void test("contract surface matches the frozen ADR-0011 baseline", () => {
 void test("frozen baseline has the expected ADR-0011 cardinality", () => {
   assert.equal(
     EXPECTED_CONTRACT_RUNTIME_EXPORTS.length,
-    423,
-    "ADR-0011 reduced the runtime surface to 423 exports (426 minus the 3 Workspace runtime constants).",
+    427,
+    "ADR-0011 reduced the runtime surface to 423 exports, and Issue #29 adds four Figma Snapshot Vault schema-version constants.",
   );
 });

@@ -7714,6 +7714,214 @@ export interface TenantScope {
   readonly projectId?: string;
 }
 
+/** Schema version for persisted Figma Snapshot Vault manifest artifacts. */
+export const FIGMA_SNAPSHOT_MANIFEST_SCHEMA_VERSION = "1.0.0" as const;
+
+/** Schema version for persisted Figma Snapshot Vault node-index artifacts. */
+export const FIGMA_SNAPSHOT_NODE_INDEX_SCHEMA_VERSION = "1.0.0" as const;
+
+/** Schema version for persisted Figma Snapshot Vault preview manifests. */
+export const FIGMA_SNAPSHOT_PREVIEW_MANIFEST_SCHEMA_VERSION =
+  "1.0.0" as const;
+
+/** Schema version for persisted Figma Snapshot Vault import-status artifacts. */
+export const FIGMA_SNAPSHOT_IMPORT_STATUS_SCHEMA_VERSION =
+  "1.0.0" as const;
+
+/** Supported import strategies for a persisted Figma snapshot. */
+export type FigmaSnapshotImportStrategy = "rest_file" | "rest_nodes" | "hybrid";
+
+/** Bounded preview generation state for a persisted Figma snapshot. */
+export type FigmaSnapshotPreviewStatus =
+  | "not_requested"
+  | "pending"
+  | "complete"
+  | "failed";
+
+/** Lifecycle state of a resumable Figma snapshot import. */
+export type FigmaSnapshotImportLifecycleState =
+  | "queued"
+  | "fetching"
+  | "normalizing"
+  | "indexing"
+  | "previewing"
+  | "completed"
+  | "failed";
+
+/** Per-chunk progress state for a resumable Figma snapshot import. */
+export type FigmaSnapshotChunkState = "pending" | "completed" | "failed";
+
+/**
+ * Safe source identity for a Figma snapshot.
+ *
+ * The contract persists only hashed identifiers derived from customer input.
+ * Raw Figma URLs, API tokens, and request headers are intentionally excluded.
+ */
+export interface FigmaSnapshotSourceIdentifier {
+  /** SHA-256 of the canonical file-key identifier. */
+  readonly fileKeyHash: string;
+  /** SHA-256 of the canonical source URL. Never persist the raw URL. */
+  readonly sourceUrlHash: string;
+  /**
+   * Optional node-scoped import root. Safe because it is a Figma node id,
+   * not a URL or auth-bearing request field.
+   */
+  readonly nodeId?: string;
+}
+
+/** Cross-artifact digests pinned by the snapshot manifest. */
+export interface FigmaSnapshotManifestDigests {
+  /** SHA-256 of the canonical node-index artifact bytes. */
+  readonly nodeIndexDigest: string;
+  /** SHA-256 of the canonical import-status artifact bytes. */
+  readonly importStatusDigest: string;
+  /** SHA-256 of the canonical preview-manifest artifact bytes, when emitted. */
+  readonly previewManifestDigest?: string;
+}
+
+/** Versioned top-level manifest for one persisted Figma Snapshot Vault import. */
+export interface FigmaSnapshotManifest {
+  readonly schemaVersion: typeof FIGMA_SNAPSHOT_MANIFEST_SCHEMA_VERSION;
+  readonly snapshotId: string;
+  readonly tenantScope: TenantScope;
+  readonly source: FigmaSnapshotSourceIdentifier;
+  readonly importStrategy: FigmaSnapshotImportStrategy;
+  /** Upstream Figma version string when the API returned it. */
+  readonly figmaVersion?: string;
+  /** Upstream Figma lastModified timestamp when the API returned it. */
+  readonly figmaLastModified?: string;
+  /** Canonical import timestamp for audit and replay lineage. */
+  readonly importedAt: string;
+  /** Digest witnesses for the sibling artifacts in the same snapshot directory. */
+  readonly artifactDigests: FigmaSnapshotManifestDigests;
+  /** SHA-256 of the canonical manifest bytes with this field stripped. */
+  readonly contentDigest: string;
+}
+
+/** Reference to a source chunk that contributed nodes to the index. */
+export interface FigmaSnapshotNodeChunkRef {
+  readonly chunkId: string;
+  readonly startNodePath?: string;
+  readonly endNodePath?: string;
+}
+
+/** One flattened node entry in the persisted Figma Snapshot Vault index. */
+export interface FigmaSnapshotNodeRecord {
+  readonly pageId: string;
+  readonly pageName: string;
+  readonly frameId?: string;
+  readonly frameName?: string;
+  readonly nodeId: string;
+  readonly nodeName: string;
+  readonly nodeType: string;
+  readonly parentNodeId?: string;
+  readonly ancestorNodeIds: readonly string[];
+  readonly bbox?: Readonly<{
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly height: number;
+  }>;
+  readonly labels: readonly string[];
+  readonly textSnippet?: string;
+  readonly componentHints: readonly string[];
+  readonly visible: boolean;
+  readonly sourceChunkRefs: readonly FigmaSnapshotNodeChunkRef[];
+}
+
+/** Persisted index of page/frame/node evidence for one Figma snapshot. */
+export interface FigmaSnapshotNodeIndex {
+  readonly schemaVersion: typeof FIGMA_SNAPSHOT_NODE_INDEX_SCHEMA_VERSION;
+  readonly snapshotId: string;
+  readonly tenantScope: TenantScope;
+  readonly source: FigmaSnapshotSourceIdentifier;
+  readonly nodes: readonly FigmaSnapshotNodeRecord[];
+  /** SHA-256 of the canonical node-index bytes with this field stripped. */
+  readonly contentDigest: string;
+}
+
+/** Metadata for one generated preview asset. */
+export interface FigmaSnapshotPreviewAsset {
+  readonly assetId: string;
+  readonly relativePath: string;
+  readonly mediaType: string;
+  readonly width: number;
+  readonly height: number;
+  readonly byteLength: number;
+  readonly sha256: string;
+}
+
+/** Tile-level metadata for bounded preview generation. */
+export interface FigmaSnapshotPreviewTile {
+  readonly tileId: string;
+  readonly assetId: string;
+  readonly pageId?: string;
+  readonly frameId?: string;
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+
+/** Persisted preview-manifest for one Figma snapshot. */
+export interface FigmaSnapshotPreviewManifest {
+  readonly schemaVersion: typeof FIGMA_SNAPSHOT_PREVIEW_MANIFEST_SCHEMA_VERSION;
+  readonly snapshotId: string;
+  readonly tenantScope: TenantScope;
+  readonly source: FigmaSnapshotSourceIdentifier;
+  readonly previewStatus: FigmaSnapshotPreviewStatus;
+  readonly boundedPreview: boolean;
+  readonly assets: readonly FigmaSnapshotPreviewAsset[];
+  readonly tiles: readonly FigmaSnapshotPreviewTile[];
+  /** SHA-256 of the canonical preview-manifest bytes with this field stripped. */
+  readonly contentDigest: string;
+}
+
+/** Retry metadata for a resumable Figma snapshot import. */
+export interface FigmaSnapshotImportRetryMetadata {
+  readonly attempt: number;
+  readonly maxAttempts: number;
+  readonly nextRetryAt?: string;
+  readonly lastErrorCode?: string;
+}
+
+/** Placeholder rate-limit metadata carried across resumable imports. */
+export interface FigmaSnapshotImportRateLimitMetadata {
+  readonly retryAfterSeconds?: number;
+  readonly remaining?: number;
+  readonly resetAt?: string;
+}
+
+/** Progress row for one imported chunk or shard. */
+export interface FigmaSnapshotImportChunkInventoryEntry {
+  readonly chunkId: string;
+  readonly state: FigmaSnapshotChunkState;
+  readonly nodeCount: number;
+  readonly contentDigest?: string;
+}
+
+/** Resumability checkpoint for a persisted Figma snapshot import. */
+export interface FigmaSnapshotImportCheckpoint {
+  readonly lastSuccessfulPhase?: FigmaSnapshotImportLifecycleState;
+  readonly resumeFromChunkId?: string;
+  readonly completedChunkIds: readonly string[];
+}
+
+/** Persisted lifecycle status for a resumable Figma snapshot import. */
+export interface FigmaSnapshotImportStatus {
+  readonly schemaVersion: typeof FIGMA_SNAPSHOT_IMPORT_STATUS_SCHEMA_VERSION;
+  readonly snapshotId: string;
+  readonly tenantScope: TenantScope;
+  readonly source: FigmaSnapshotSourceIdentifier;
+  readonly lifecycleState: FigmaSnapshotImportLifecycleState;
+  readonly retry: FigmaSnapshotImportRetryMetadata;
+  readonly rateLimit: FigmaSnapshotImportRateLimitMetadata;
+  readonly chunks: readonly FigmaSnapshotImportChunkInventoryEntry[];
+  readonly checkpoint: FigmaSnapshotImportCheckpoint;
+  /** SHA-256 of the canonical import-status bytes with this field stripped. */
+  readonly contentDigest: string;
+}
+
 /**
  * Sentinel `TenantScope` used by single-tenant callers that have not yet
  * adopted the structured scope (Issue #1944). Keeps the on-disk layout
