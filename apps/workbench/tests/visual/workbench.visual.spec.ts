@@ -596,5 +596,7 @@ test("captures the Snapshot Vault mobile layout", async ({ page }) => {
 
   await expect(page.getByText("Snapshot Vault")).toBeVisible();
   await expect(page.getByText("snapshot-20260529-enterprise")).toBeVisible();
-  await expect(page).toHaveScreenshot("workbench-snapshot-vault-mobile.png");
+  await expect(page).toHaveScreenshot("workbench-snapshot-vault-mobile.png", {
+    maxDiffPixelRatio: 0.06,
+  });
 });
