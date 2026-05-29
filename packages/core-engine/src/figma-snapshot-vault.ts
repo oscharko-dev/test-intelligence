@@ -1,4 +1,5 @@
-import { join } from "node:path";
+import { lstat, mkdir, readdir, realpath, rm, unlink } from "node:fs/promises";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 import {
   FIGMA_SNAPSHOT_IMPORT_STATUS_SCHEMA_VERSION,
@@ -46,6 +47,28 @@ const LifecycleStates = [
   "failed",
 ] as const;
 const ChunkStates = ["pending", "completed", "failed"] as const;
+
+export type FigmaSnapshotVaultErrorCode =
+  | "invalid_snapshot"
+  | "unsafe_path"
+  | "persistence_failed";
+
+export class FigmaSnapshotVaultError extends Error {
+  readonly errorCode: FigmaSnapshotVaultErrorCode;
+
+  constructor(input: {
+    errorCode: FigmaSnapshotVaultErrorCode;
+    message: string;
+    cause?: unknown;
+  }) {
+    super(
+      input.message,
+      input.cause === undefined ? undefined : { cause: input.cause },
+    );
+    this.name = "FigmaSnapshotVaultError";
+    this.errorCode = input.errorCode;
+  }
+}
 
 const sha256HexSchema = z
   .string()
@@ -199,9 +222,24 @@ const importBudgetSchema = z.strictObject({
   resetAt: isoTimestampSchema.optional(),
 });
 
+const previewBudgetSchema = z.strictObject({
+  maxTiles: z.number().int().positive(),
+  tileWidth: z.number().int().positive(),
+  tileHeight: z.number().int().positive(),
+  candidateTileCount: z.number().int().nonnegative(),
+  selectedTileCount: z.number().int().nonnegative(),
+  skippedTileCount: z.number().int().nonnegative(),
+});
+
 const importFailureClassSchema = z.enum([
   "throttled",
   "budget_exhausted",
+  "oversized_board",
+  "corrupted_checkpoint",
+  "missing_chunk",
+  "invalid_snapshot",
+  "unsafe_path",
+  "non_resumable_partial_state",
   "missing_credential",
   "invalid_credential",
   "unsupported_auth_mode",
@@ -210,6 +248,34 @@ const importFailureClassSchema = z.enum([
   "not_found",
   "persistence_failed",
 ]);
+
+const importLimitSchema = z.strictObject({
+  maxNodeCount: z.number().int().positive().optional(),
+  maxPayloadBytes: z.number().int().positive().optional(),
+  maxPreviewTiles: z.number().int().positive().optional(),
+  maxPreviewBytes: z.number().int().positive().optional(),
+  maxElapsedMs: z.number().int().positive().optional(),
+  maxWorkingSetBytes: z.number().int().positive().optional(),
+  maxChunkCount: z.number().int().positive().optional(),
+});
+
+const importMetricsSchema = z.strictObject({
+  elapsedMs: z.number().int().nonnegative(),
+  nodeCount: z.number().int().nonnegative(),
+  payloadBytes: z.number().int().nonnegative(),
+  previewBytes: z.number().int().nonnegative(),
+  chunkCount: z.number().int().nonnegative(),
+  previewCount: z.number().int().nonnegative(),
+  skippedPreviewCount: z.number().int().nonnegative(),
+  fetchedChunkCount: z.number().int().nonnegative(),
+  reusedChunkCount: z.number().int().nonnegative(),
+  cacheHitCount: z.number().int().nonnegative(),
+  liveRestCallCount: z.number().int().nonnegative(),
+  liveRestCallsAvoided: z.number().int().nonnegative(),
+  resumedChunkCount: z.number().int().nonnegative(),
+  peakWorkingSetBytes: z.number().int().nonnegative(),
+  peakHeapUsedBytes: z.number().int().nonnegative().optional(),
+});
 
 const importChunkSchema = z.strictObject({
   chunkId: stableSegmentSchema("chunks.chunkId"),
@@ -261,6 +327,7 @@ const previewManifestSchema = z.strictObject({
   source: sourceIdentifierSchema,
   previewStatus: z.enum(PreviewStatuses),
   boundedPreview: z.boolean(),
+  budget: previewBudgetSchema.optional(),
   assets: z.array(previewAssetSchema),
   tiles: z.array(previewTileSchema),
   contentDigest: sha256HexSchema,
@@ -277,6 +344,8 @@ const importStatusSchema = z.strictObject({
   credential: importCredentialSchema.optional(),
   budget: importBudgetSchema.optional(),
   failureClass: importFailureClassSchema.optional(),
+  limits: importLimitSchema.optional(),
+  metrics: importMetricsSchema.optional(),
   chunks: z.array(importChunkSchema),
   checkpoint: importCheckpointSchema,
   contentDigest: sha256HexSchema,
@@ -287,6 +356,33 @@ export interface FigmaSnapshotVaultPathInput {
   readonly tenantScope: TenantScope;
   readonly fileKeyHash: string;
   readonly snapshotId: string;
+}
+
+export interface FigmaSnapshotVaultContainmentInput {
+  readonly workspaceRoot: string;
+  readonly targetPath: string;
+  readonly label: string;
+}
+
+export interface EnsureFigmaSnapshotVaultDirectoryInput {
+  readonly workspaceRoot: string;
+  readonly directoryPath: string;
+  readonly label: string;
+}
+
+export interface CollectFigmaSnapshotVaultGarbageInput {
+  readonly workspaceRoot: string;
+  readonly tenantScope: TenantScope;
+  readonly fileKeyHash: string;
+  readonly retainSnapshotIds: readonly string[];
+  readonly maxDeletedSnapshots?: number;
+}
+
+export interface FigmaSnapshotVaultGarbageCollectionResult {
+  readonly rootPath: string;
+  readonly deletedSnapshotIds: readonly string[];
+  readonly deletedTempFiles: readonly string[];
+  readonly retainedSnapshotIds: readonly string[];
 }
 
 type ArtifactWithDigest = { readonly contentDigest: string };
@@ -330,6 +426,144 @@ export const buildFigmaSnapshotVaultPath = (
   );
 };
 
+export const assertFigmaSnapshotVaultPathContained = async (
+  input: FigmaSnapshotVaultContainmentInput,
+): Promise<void> => {
+  try {
+    await assertNoSymlinkPathSegments({
+      workspaceRoot: input.workspaceRoot,
+      targetPath: input.targetPath,
+      label: input.label,
+    });
+  } catch (err) {
+    if (err instanceof FigmaSnapshotVaultError) throw err;
+    throw new FigmaSnapshotVaultError({
+      errorCode: "unsafe_path",
+      message: `${input.label} failed Snapshot Vault path containment checks`,
+      cause: err,
+    });
+  }
+};
+
+export const ensureFigmaSnapshotVaultDirectory = async (
+  input: EnsureFigmaSnapshotVaultDirectoryInput,
+): Promise<void> => {
+  await assertFigmaSnapshotVaultPathContained({
+    workspaceRoot: input.workspaceRoot,
+    targetPath: input.directoryPath,
+    label: input.label,
+  });
+  try {
+    await mkdir(input.directoryPath, { recursive: true });
+  } catch (err) {
+    throw new FigmaSnapshotVaultError({
+      errorCode: "persistence_failed",
+      message: `${input.label} directory creation failed`,
+      cause: err,
+    });
+  }
+  await assertFigmaSnapshotVaultPathContained({
+    workspaceRoot: input.workspaceRoot,
+    targetPath: input.directoryPath,
+    label: input.label,
+  });
+  await assertRealPathContained({
+    workspaceRoot: input.workspaceRoot,
+    targetPath: input.directoryPath,
+    label: input.label,
+  });
+};
+
+export const collectFigmaSnapshotVaultGarbage = async (
+  input: CollectFigmaSnapshotVaultGarbageInput,
+): Promise<FigmaSnapshotVaultGarbageCollectionResult> => {
+  assertSnapshotSegment("fileKeyHash", input.fileKeyHash, SHA256_HEX_RE);
+  for (const snapshotId of input.retainSnapshotIds) {
+    assertSnapshotSegment("retainSnapshotIds", snapshotId, SNAPSHOT_SEGMENT_RE);
+  }
+  if (
+    input.maxDeletedSnapshots !== undefined &&
+    (!Number.isInteger(input.maxDeletedSnapshots) ||
+      input.maxDeletedSnapshots < 0)
+  ) {
+    throw new FigmaSnapshotVaultError({
+      errorCode: "invalid_snapshot",
+      message: "maxDeletedSnapshots must be a non-negative integer",
+    });
+  }
+
+  const probePath = buildFigmaSnapshotVaultPath({
+    workspaceRoot: input.workspaceRoot,
+    tenantScope: input.tenantScope,
+    fileKeyHash: input.fileKeyHash,
+    snapshotId: "gc-root-probe",
+  });
+  const rootPath = dirname(probePath);
+  await assertFigmaSnapshotVaultPathContained({
+    workspaceRoot: input.workspaceRoot,
+    targetPath: rootPath,
+    label: "Figma snapshot GC root",
+  });
+  if (!(await pathExists(rootPath))) {
+    return {
+      rootPath,
+      deletedSnapshotIds: [],
+      deletedTempFiles: [],
+      retainedSnapshotIds: [...input.retainSnapshotIds].sort(),
+    };
+  }
+  await assertRealPathContained({
+    workspaceRoot: input.workspaceRoot,
+    targetPath: rootPath,
+    label: "Figma snapshot GC root",
+  });
+
+  const retain = new Set(input.retainSnapshotIds);
+  const deletedSnapshotIds: string[] = [];
+  const deletedTempFiles: string[] = [];
+  const maxDeletedSnapshots =
+    input.maxDeletedSnapshots ?? Number.POSITIVE_INFINITY;
+  const entries = [...(await readdir(rootPath, { withFileTypes: true }))].sort(
+    (left, right) => left.name.localeCompare(right.name),
+  );
+  for (const entry of entries) {
+    const entryPath = join(rootPath, entry.name);
+    if (entry.isSymbolicLink()) {
+      throw new FigmaSnapshotVaultError({
+        errorCode: "unsafe_path",
+        message: "Figma snapshot GC refused a symlinked vault entry",
+      });
+    }
+    if (entry.isFile() && entry.name.endsWith(".tmp")) {
+      await assertFigmaSnapshotVaultPathContained({
+        workspaceRoot: input.workspaceRoot,
+        targetPath: entryPath,
+        label: "Figma snapshot GC temporary file",
+      });
+      await unlink(entryPath);
+      deletedTempFiles.push(entry.name);
+      continue;
+    }
+    if (!entry.isDirectory()) continue;
+    assertSnapshotSegment("snapshotId", entry.name, SNAPSHOT_SEGMENT_RE);
+    if (retain.has(entry.name)) continue;
+    if (deletedSnapshotIds.length >= maxDeletedSnapshots) continue;
+    await assertNoSymlinkDescendants({
+      workspaceRoot: input.workspaceRoot,
+      rootPath: entryPath,
+      label: "Figma snapshot GC candidate",
+    });
+    await rm(entryPath, { recursive: true, force: false });
+    deletedSnapshotIds.push(entry.name);
+  }
+  return {
+    rootPath,
+    deletedSnapshotIds,
+    deletedTempFiles,
+    retainedSnapshotIds: [...retain].sort(),
+  };
+};
+
 export const validateFigmaSnapshotManifest = (
   input: unknown,
 ): FigmaSnapshotManifest =>
@@ -369,7 +603,9 @@ export const validateFigmaSnapshotImportStatus = (
   } catch (error) {
     const normalized = stripLegacyImportStatusRateLimitFields(input);
     if (normalized === input) throw error;
-    const parsed = importStatusSchema.parse(normalized) as FigmaSnapshotImportStatus;
+    const parsed = importStatusSchema.parse(
+      normalized,
+    ) as FigmaSnapshotImportStatus;
     assertNoSensitiveStrings(parsed);
     assertNoSensitiveStrings(input);
     const expectedLegacyDigest = computeFigmaSnapshotArtifactDigest(
@@ -442,6 +678,136 @@ const assertSnapshotSegment = (
     throw new Error(`${label} must not be '.' or '..'`);
   }
 };
+
+const assertNoSymlinkPathSegments = async (input: {
+  readonly workspaceRoot: string;
+  readonly targetPath: string;
+  readonly label: string;
+}): Promise<void> => {
+  const workspaceRoot = resolve(input.workspaceRoot);
+  const targetPath = resolve(input.targetPath);
+  assertLexicallyContained({
+    workspaceRoot,
+    targetPath,
+    label: input.label,
+  });
+  const relativePath = relative(workspaceRoot, targetPath);
+  if (relativePath.length === 0) {
+    await assertPathIsNotSymlink(workspaceRoot, input.label);
+    return;
+  }
+  let current = workspaceRoot;
+  await assertPathIsNotSymlink(current, input.label);
+  for (const segment of relativePath.split(/[\\/]/u)) {
+    current = join(current, segment);
+    if (!(await pathExists(current))) continue;
+    await assertPathIsNotSymlink(current, input.label);
+  }
+};
+
+const assertRealPathContained = async (input: {
+  readonly workspaceRoot: string;
+  readonly targetPath: string;
+  readonly label: string;
+}): Promise<void> => {
+  const workspaceRoot = await realpath(input.workspaceRoot);
+  const targetPath = await realpath(input.targetPath);
+  assertLexicallyContained({
+    workspaceRoot,
+    targetPath,
+    label: input.label,
+  });
+};
+
+const assertNoSymlinkDescendants = async (input: {
+  readonly workspaceRoot: string;
+  readonly rootPath: string;
+  readonly label: string;
+}): Promise<void> => {
+  await assertFigmaSnapshotVaultPathContained({
+    workspaceRoot: input.workspaceRoot,
+    targetPath: input.rootPath,
+    label: input.label,
+  });
+  await assertRealPathContained({
+    workspaceRoot: input.workspaceRoot,
+    targetPath: input.rootPath,
+    label: input.label,
+  });
+  const pending = [input.rootPath];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (current === undefined) break;
+    const stat = await lstat(current);
+    if (stat.isSymbolicLink()) {
+      throw new FigmaSnapshotVaultError({
+        errorCode: "unsafe_path",
+        message: `${input.label} contains a symlink`,
+      });
+    }
+    if (!stat.isDirectory()) continue;
+    for (const entry of await readdir(current)) {
+      pending.push(join(current, entry));
+    }
+  }
+};
+
+const assertLexicallyContained = (input: {
+  readonly workspaceRoot: string;
+  readonly targetPath: string;
+  readonly label: string;
+}): void => {
+  if (!isAbsolute(input.workspaceRoot) || !isAbsolute(input.targetPath)) {
+    throw new FigmaSnapshotVaultError({
+      errorCode: "unsafe_path",
+      message: `${input.label} must resolve to absolute paths`,
+    });
+  }
+  const relativePath = relative(input.workspaceRoot, input.targetPath);
+  if (
+    relativePath.startsWith("..") ||
+    relativePath === ".." ||
+    isAbsolute(relativePath)
+  ) {
+    throw new FigmaSnapshotVaultError({
+      errorCode: "unsafe_path",
+      message: `${input.label} must remain inside the configured workspace root`,
+    });
+  }
+};
+
+const assertPathIsNotSymlink = async (
+  path: string,
+  label: string,
+): Promise<void> => {
+  try {
+    const stat = await lstat(path);
+    if (stat.isSymbolicLink()) {
+      throw new FigmaSnapshotVaultError({
+        errorCode: "unsafe_path",
+        message: `${label} must not traverse symlinks`,
+      });
+    }
+  } catch (err) {
+    if (isFileNotFound(err)) return;
+    throw err;
+  }
+};
+
+const pathExists = async (path: string): Promise<boolean> => {
+  try {
+    await lstat(path);
+    return true;
+  } catch (err) {
+    if (isFileNotFound(err)) return false;
+    throw err;
+  }
+};
+
+const isFileNotFound = (err: unknown): boolean =>
+  typeof err === "object" &&
+  err !== null &&
+  (err as { readonly code?: unknown }).code === "ENOENT";
 
 const assertNoSensitiveStrings = (value: unknown, path = "$"): void => {
   if (typeof value === "string") {

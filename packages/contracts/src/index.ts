@@ -7945,6 +7945,16 @@ export interface FigmaSnapshotPreviewTile {
   readonly height: number;
 }
 
+/** Operator-visible preview-budget accounting for deterministic truncation. */
+export interface FigmaSnapshotPreviewBudgetMetadata {
+  readonly maxTiles: number;
+  readonly tileWidth: number;
+  readonly tileHeight: number;
+  readonly candidateTileCount: number;
+  readonly selectedTileCount: number;
+  readonly skippedTileCount: number;
+}
+
 /** Persisted preview-manifest for one Figma snapshot. */
 export interface FigmaSnapshotPreviewManifest {
   readonly schemaVersion: typeof FIGMA_SNAPSHOT_PREVIEW_MANIFEST_SCHEMA_VERSION;
@@ -7953,6 +7963,7 @@ export interface FigmaSnapshotPreviewManifest {
   readonly source: FigmaSnapshotSourceIdentifier;
   readonly previewStatus: FigmaSnapshotPreviewStatus;
   readonly boundedPreview: boolean;
+  readonly budget?: FigmaSnapshotPreviewBudgetMetadata;
   readonly assets: readonly FigmaSnapshotPreviewAsset[];
   readonly tiles: readonly FigmaSnapshotPreviewTile[];
   /** SHA-256 of the canonical preview-manifest bytes with this field stripped. */
@@ -7999,6 +8010,12 @@ export interface FigmaSnapshotImportBudgetMetadata {
 export type FigmaSnapshotImportFailureClass =
   | "throttled"
   | "budget_exhausted"
+  | "oversized_board"
+  | "corrupted_checkpoint"
+  | "missing_chunk"
+  | "invalid_snapshot"
+  | "unsafe_path"
+  | "non_resumable_partial_state"
   | "missing_credential"
   | "invalid_credential"
   | "unsupported_auth_mode"
@@ -8041,6 +8058,36 @@ export interface FigmaSnapshotImportCheckpoint {
   readonly completedChunkIds: readonly string[];
 }
 
+/** Configured hardening ceilings applied to one staged Figma import. */
+export interface FigmaSnapshotImportLimitMetadata {
+  readonly maxNodeCount?: number;
+  readonly maxPayloadBytes?: number;
+  readonly maxPreviewTiles?: number;
+  readonly maxPreviewBytes?: number;
+  readonly maxElapsedMs?: number;
+  readonly maxWorkingSetBytes?: number;
+  readonly maxChunkCount?: number;
+}
+
+/** Deterministic performance and cache metrics captured by staged imports. */
+export interface FigmaSnapshotImportPerformanceMetrics {
+  readonly elapsedMs: number;
+  readonly nodeCount: number;
+  readonly payloadBytes: number;
+  readonly previewBytes: number;
+  readonly chunkCount: number;
+  readonly previewCount: number;
+  readonly skippedPreviewCount: number;
+  readonly fetchedChunkCount: number;
+  readonly reusedChunkCount: number;
+  readonly cacheHitCount: number;
+  readonly liveRestCallCount: number;
+  readonly liveRestCallsAvoided: number;
+  readonly resumedChunkCount: number;
+  readonly peakWorkingSetBytes: number;
+  readonly peakHeapUsedBytes?: number;
+}
+
 /** Persisted lifecycle status for a resumable Figma snapshot import. */
 export interface FigmaSnapshotImportStatus {
   readonly schemaVersion: typeof FIGMA_SNAPSHOT_IMPORT_STATUS_SCHEMA_VERSION;
@@ -8053,6 +8100,8 @@ export interface FigmaSnapshotImportStatus {
   readonly credential?: FigmaSnapshotImportCredentialMetadata;
   readonly budget?: FigmaSnapshotImportBudgetMetadata;
   readonly failureClass?: FigmaSnapshotImportFailureClass;
+  readonly limits?: FigmaSnapshotImportLimitMetadata;
+  readonly metrics?: FigmaSnapshotImportPerformanceMetrics;
   readonly chunks: readonly FigmaSnapshotImportChunkInventoryEntry[];
   readonly checkpoint: FigmaSnapshotImportCheckpoint;
   /** SHA-256 of the canonical import-status bytes with this field stripped. */

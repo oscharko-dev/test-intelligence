@@ -23,6 +23,8 @@ import {
 import {
   buildFigmaSnapshotVaultPath,
   computeFigmaSnapshotArtifactDigest,
+  ensureFigmaSnapshotVaultDirectory,
+  assertFigmaSnapshotVaultPathContained,
   serializeFigmaSnapshotArtifact,
   validateFigmaSnapshotManifest,
   validateFigmaSnapshotNodeIndex,
@@ -136,8 +138,7 @@ export interface AttachFigmaSnapshotPreviewManifestDigestInput {
   readonly previewManifest: FigmaSnapshotPreviewManifest;
 }
 
-export interface WriteFigmaSnapshotPreviewCacheManifestInput
-  extends PlanFigmaSnapshotPreviewCacheInput {
+export interface WriteFigmaSnapshotPreviewCacheManifestInput extends PlanFigmaSnapshotPreviewCacheInput {
   readonly workspaceRoot: string;
   readonly manifest: FigmaSnapshotManifest;
 }
@@ -174,11 +175,15 @@ interface ControlHint {
 }
 
 const DomainTerms: readonly DomainTerm[] = [
-  ...BANKING_INSURANCE_SEMANTIC_KEYWORDS.map((term) => ({
-    term,
-    domain:
-      /versicherung|police|schadensfall|risiko/iu.test(term) ? "insurance" : "banking",
-  }) satisfies DomainTerm),
+  ...BANKING_INSURANCE_SEMANTIC_KEYWORDS.map(
+    (term) =>
+      ({
+        term,
+        domain: /versicherung|police|schadensfall|risiko/iu.test(term)
+          ? "insurance"
+          : "banking",
+      }) satisfies DomainTerm,
+  ),
   { term: "IBAN", domain: "banking" },
   { term: "BIC", domain: "banking" },
   { term: "SEPA", domain: "banking" },
@@ -284,10 +289,12 @@ export const buildFigmaSnapshotLocalNodeIndex = (
   } catch (err) {
     throw new FigmaSnapshotExplorerError({
       errorCode: "invalid_evidence",
-      message: `Figma snapshot node index evidence rejected: ${sanitizeErrorMessage({
-        error: err,
-        fallback: "invalid node index evidence",
-      })}`,
+      message: `Figma snapshot node index evidence rejected: ${sanitizeErrorMessage(
+        {
+          error: err,
+          fallback: "invalid node index evidence",
+        },
+      )}`,
       cause: err,
     });
   }
@@ -356,7 +363,9 @@ export const queryFigmaSnapshotNodeIndex = (
         pageId: record.pageId,
         pageName: record.pageName,
         ...(record.frameId !== undefined ? { frameId: record.frameId } : {}),
-        ...(record.frameName !== undefined ? { frameName: record.frameName } : {}),
+        ...(record.frameName !== undefined
+          ? { frameName: record.frameName }
+          : {}),
         visible: record.visible,
         offCanvas: isOffCanvas(record),
         missingBounds: record.bbox === undefined,
@@ -470,6 +479,14 @@ export const planFigmaSnapshotPreviewCache = (
     source: nodeIndex.source,
     previewStatus: "complete",
     boundedPreview,
+    budget: {
+      maxTiles,
+      tileWidth,
+      tileHeight,
+      candidateTileCount: candidateCount,
+      selectedTileCount: selected.length,
+      skippedTileCount: Math.max(0, candidateCount - selected.length),
+    },
     assets,
     tiles,
   });
@@ -480,7 +497,9 @@ export const attachFigmaSnapshotPreviewManifestDigest = (
   input: AttachFigmaSnapshotPreviewManifestDigestInput,
 ): FigmaSnapshotManifest => {
   const manifest = validateManifestForExplorer(input.manifest);
-  const previewManifest = validateFigmaSnapshotPreviewManifest(input.previewManifest);
+  const previewManifest = validateFigmaSnapshotPreviewManifest(
+    input.previewManifest,
+  );
   assertSameSnapshotIdentity("preview manifest", manifest, previewManifest);
   const updated = withDigest<FigmaSnapshotManifest>({
     ...manifest,
@@ -505,7 +524,8 @@ export const writeFigmaSnapshotPreviewCacheManifest = async (
   if (manifest.artifactDigests.nodeIndexDigest !== nodeIndex.contentDigest) {
     throw new FigmaSnapshotExplorerError({
       errorCode: "invalid_evidence",
-      message: "Figma snapshot manifest node-index digest does not match node index",
+      message:
+        "Figma snapshot manifest node-index digest does not match node index",
     });
   }
   const vaultPath = buildFigmaSnapshotVaultPath({
@@ -515,22 +535,36 @@ export const writeFigmaSnapshotPreviewCacheManifest = async (
     snapshotId: manifest.snapshotId,
   });
   try {
-    await writeFigmaSnapshotPreviewCacheAssets(vaultPath, previewManifest);
+    await writeFigmaSnapshotPreviewCacheAssets(vaultPath, previewManifest, {
+      workspaceRoot: input.workspaceRoot,
+    });
     await writeJsonAtomically(
       join(vaultPath, PREVIEW_MANIFEST_FILENAME),
       serializeFigmaSnapshotArtifact(previewManifest),
+      true,
+      {
+        workspaceRoot: input.workspaceRoot,
+        label: "Figma snapshot preview manifest",
+      },
     );
     await writeJsonAtomically(
       join(vaultPath, MANIFEST_FILENAME),
       serializeFigmaSnapshotArtifact(manifest),
+      true,
+      {
+        workspaceRoot: input.workspaceRoot,
+        label: "Figma snapshot manifest",
+      },
     );
   } catch (err) {
     throw new FigmaSnapshotExplorerError({
       errorCode: "persist_failed",
-      message: `Figma snapshot preview manifest persistence failed: ${sanitizeErrorMessage({
-        error: err,
-        fallback: "write failed",
-      })}`,
+      message: `Figma snapshot preview manifest persistence failed: ${sanitizeErrorMessage(
+        {
+          error: err,
+          fallback: "write failed",
+        },
+      )}`,
       cause: err,
     });
   }
@@ -540,9 +574,24 @@ export const writeFigmaSnapshotPreviewCacheManifest = async (
 export const writeFigmaSnapshotPreviewCacheAssets = async (
   vaultPath: string,
   previewManifest: FigmaSnapshotPreviewManifest,
+  options: { readonly workspaceRoot?: string } = {},
 ): Promise<void> => {
   const manifest = validateFigmaSnapshotPreviewManifest(previewManifest);
-  const tileByAssetId = new Map(manifest.tiles.map((tile) => [tile.assetId, tile]));
+  if (options.workspaceRoot !== undefined) {
+    await ensureFigmaSnapshotVaultDirectory({
+      workspaceRoot: options.workspaceRoot,
+      directoryPath: vaultPath,
+      label: "Figma snapshot preview vault",
+    });
+    await ensureFigmaSnapshotVaultDirectory({
+      workspaceRoot: options.workspaceRoot,
+      directoryPath: join(vaultPath, "previews"),
+      label: "Figma snapshot preview assets",
+    });
+  }
+  const tileByAssetId = new Map(
+    manifest.tiles.map((tile) => [tile.assetId, tile]),
+  );
   for (const asset of manifest.assets) {
     const tile = tileByAssetId.get(asset.assetId);
     if (tile === undefined) {
@@ -564,10 +613,21 @@ export const writeFigmaSnapshotPreviewCacheAssets = async (
     ) {
       throw new FigmaSnapshotExplorerError({
         errorCode: "invalid_evidence",
-        message: "Figma snapshot preview asset digest or byte length is inconsistent",
+        message:
+          "Figma snapshot preview asset digest or byte length is inconsistent",
       });
     }
-    await writeJsonAtomically(join(vaultPath, asset.relativePath), payloadBytes, false);
+    await writeJsonAtomically(
+      join(vaultPath, asset.relativePath),
+      payloadBytes,
+      false,
+      {
+        ...(options.workspaceRoot !== undefined
+          ? { workspaceRoot: options.workspaceRoot }
+          : {}),
+        label: "Figma snapshot preview asset",
+      },
+    );
   }
 };
 
@@ -575,7 +635,11 @@ const validateNodeIndexForExplorer = (
   value: FigmaSnapshotNodeIndex,
 ): FigmaSnapshotNodeIndex => {
   try {
-    if (typeof value === "object" && value !== null && ValidatedNodeIndexes.has(value)) {
+    if (
+      typeof value === "object" &&
+      value !== null &&
+      ValidatedNodeIndexes.has(value)
+    ) {
       return value;
     }
     return markValidatedNodeIndex(validateFigmaSnapshotNodeIndex(value));
@@ -595,7 +659,11 @@ const validateManifestForExplorer = (
   value: FigmaSnapshotManifest,
 ): FigmaSnapshotManifest => {
   try {
-    if (typeof value === "object" && value !== null && ValidatedManifests.has(value)) {
+    if (
+      typeof value === "object" &&
+      value !== null &&
+      ValidatedManifests.has(value)
+    ) {
       return value;
     }
     return markValidatedManifest(validateFigmaSnapshotManifest(value));
@@ -710,15 +778,18 @@ const normalizeDuplicateLabel = (record: FigmaSnapshotNodeRecord): string =>
 
 const buildSearchableTerms = (
   record: FigmaSnapshotNodeRecord,
-): readonly string[] => [
-  record.nodeName,
-  record.nodeType,
-  record.pageName,
-  record.frameName,
-  record.textSnippet,
-  ...record.labels,
-  ...record.componentHints,
-].filter((value): value is string => typeof value === "string" && value.length > 0);
+): readonly string[] =>
+  [
+    record.nodeName,
+    record.nodeType,
+    record.pageName,
+    record.frameName,
+    record.textSnippet,
+    ...record.labels,
+    ...record.componentHints,
+  ].filter(
+    (value): value is string => typeof value === "string" && value.length > 0,
+  );
 
 const collectMatches = (
   kind: Exclude<FigmaSnapshotNodeIndexQueryKind, "all">,
@@ -755,7 +826,9 @@ const collectMatches = (
         .filter(
           (hint) =>
             normalizeSearchText(hint.hint).includes(query) ||
-            hint.terms.some((term) => normalizeSearchText(term).includes(query)) ||
+            hint.terms.some((term) =>
+              normalizeSearchText(term).includes(query),
+            ) ||
             query === hint.kind,
         )
         .map((hint) => ({
@@ -847,7 +920,9 @@ const buildPreviewPlanPayload = (input: {
     tileId: input.tileId,
     snapshotId: input.snapshotId,
     pageId: input.node.pageId,
-    ...(input.node.frameId !== undefined ? { frameId: input.node.frameId } : {}),
+    ...(input.node.frameId !== undefined
+      ? { frameId: input.node.frameId }
+      : {}),
     x: bbox.x,
     y: bbox.y,
     width: input.width,
@@ -981,8 +1056,12 @@ const compareHits = (
   left: FigmaSnapshotNodeIndexSearchHit,
   right: FigmaSnapshotNodeIndexSearchHit,
 ): number => {
-  const leftPriority = Math.min(...left.matches.map((match) => matchKindPriority(match.kind)));
-  const rightPriority = Math.min(...right.matches.map((match) => matchKindPriority(match.kind)));
+  const leftPriority = Math.min(
+    ...left.matches.map((match) => matchKindPriority(match.kind)),
+  );
+  const rightPriority = Math.min(
+    ...right.matches.map((match) => matchKindPriority(match.kind)),
+  );
   return (
     leftPriority - rightPriority ||
     compareStrings(left.pageId, right.pageId) ||
@@ -1005,12 +1084,19 @@ const matchKindPriority = (
 
 const assertSameSnapshotIdentity = (
   label: string,
-  manifest: Pick<FigmaSnapshotManifest, "snapshotId" | "tenantScope" | "source">,
-  artifact: Pick<FigmaSnapshotNodeIndex | FigmaSnapshotPreviewManifest, "snapshotId" | "tenantScope" | "source">,
+  manifest: Pick<
+    FigmaSnapshotManifest,
+    "snapshotId" | "tenantScope" | "source"
+  >,
+  artifact: Pick<
+    FigmaSnapshotNodeIndex | FigmaSnapshotPreviewManifest,
+    "snapshotId" | "tenantScope" | "source"
+  >,
 ): void => {
   if (
     manifest.snapshotId !== artifact.snapshotId ||
-    canonicalJson(manifest.tenantScope) !== canonicalJson(artifact.tenantScope) ||
+    canonicalJson(manifest.tenantScope) !==
+      canonicalJson(artifact.tenantScope) ||
     canonicalJson(manifest.source) !== canonicalJson(artifact.source)
   ) {
     throw new FigmaSnapshotExplorerError({
@@ -1036,13 +1122,16 @@ const resolvePositiveInteger = (
 };
 
 const sanitizeText = (value: string | undefined, fallback: string): string => {
-  const raw = value === undefined || value.trim().length === 0 ? fallback : value;
+  const raw =
+    value === undefined || value.trim().length === 0 ? fallback : value;
   const redacted = redactHighRiskSecrets(raw, "[REDACTED]")
     .replace(URI_LIKE_GLOBAL_RE, "[URI_REDACTED]")
     .replace(FIGMA_TOKEN_LIKE_GLOBAL_RE, "[REDACTED]");
   const collapsed = redacted.replace(/\s+/gu, " ").trim();
   const safe = collapsed.length === 0 ? fallback : collapsed;
-  return safe.length > MAX_TEXT_LENGTH ? `${safe.slice(0, MAX_TEXT_LENGTH - 3)}...` : safe;
+  return safe.length > MAX_TEXT_LENGTH
+    ? `${safe.slice(0, MAX_TEXT_LENGTH - 3)}...`
+    : safe;
 };
 
 const sanitizeDiagnostic = (message: string): string =>
@@ -1066,7 +1155,13 @@ const normalizeSearchText = (value: string): string =>
 const uniqueSorted = (
   values: readonly (string | undefined)[],
 ): readonly string[] =>
-  [...new Set(values.filter((value): value is string => value !== undefined && value.length > 0))]
+  [
+    ...new Set(
+      values.filter(
+        (value): value is string => value !== undefined && value.length > 0,
+      ),
+    ),
+  ]
     .sort(compareStrings)
     .slice(0, 120);
 
@@ -1088,12 +1183,34 @@ const writeJsonAtomically = async (
   path: string,
   content: string,
   appendNewline = true,
+  options: { readonly workspaceRoot?: string; readonly label?: string } = {},
 ): Promise<void> => {
-  await mkdir(dirname(path), { recursive: true });
+  const label = options.label ?? "Figma snapshot explorer artifact";
+  if (options.workspaceRoot !== undefined) {
+    await ensureFigmaSnapshotVaultDirectory({
+      workspaceRoot: options.workspaceRoot,
+      directoryPath: dirname(path),
+      label,
+    });
+    await assertFigmaSnapshotVaultPathContained({
+      workspaceRoot: options.workspaceRoot,
+      targetPath: path,
+      label,
+    });
+  } else {
+    await mkdir(dirname(path), { recursive: true });
+  }
   const tempPath = join(
     dirname(path),
     `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`,
   );
+  if (options.workspaceRoot !== undefined) {
+    await assertFigmaSnapshotVaultPathContained({
+      workspaceRoot: options.workspaceRoot,
+      targetPath: tempPath,
+      label: `${label} temporary file`,
+    });
+  }
   const output =
     appendNewline && !content.endsWith("\n") ? `${content}\n` : content;
   await writeFile(tempPath, output, "utf8");
