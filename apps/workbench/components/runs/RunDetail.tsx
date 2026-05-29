@@ -4,10 +4,16 @@ import { AlertTriangle, Download, FileText, RotateCcw } from "lucide-react";
 import type { ReactNode } from "react";
 import { Badge } from "@/components/primitives/Badge";
 import { IconButton } from "@/components/primitives/IconButton";
+import { MetadataRow } from "@/components/primitives/MetadataRow";
 import { Panel } from "@/components/primitives/Panel";
 import { StatusChip } from "@/components/primitives/StatusChip";
 import { STAGE_ORDER } from "@/lib/run-state";
-import type { CustomerOutputFile, RunState, StageName } from "@/lib/types";
+import type {
+  CustomerOutputFile,
+  RunConfig,
+  RunState,
+  StageName,
+} from "@/lib/types";
 import { cx, ui } from "@/lib/ui-classes";
 import { ArtifactRow } from "./ArtifactRow";
 import { StageCard } from "./StageCard";
@@ -21,6 +27,13 @@ function formatTimestamp(iso: string | null): string {
   if (!iso) return "—";
   return iso.replace("T", " ").slice(0, 19) + "Z";
 }
+
+const formatSnapshotSelection = (config: RunConfig): string =>
+  [
+    `pages=${config.snapshotSelection.pageIds.length}`,
+    `frames=${config.snapshotSelection.frameIds.length}`,
+    `nodes=${config.snapshotSelection.nodeIds.length}`,
+  ].join(" · ");
 
 function CustomerOutputPanel({
   title,
@@ -133,6 +146,45 @@ export function RunDetail({ run, onNewRun }: RunDetailProps): ReactNode {
           />
         ))}
       </div>
+
+      {run.config !== null && (
+        <div className="mt-4">
+          <Panel
+            title="Run source"
+            description="Source provenance for this generated run."
+          >
+            <div className="grid gap-2 font-mono text-xs md:grid-cols-2">
+              {run.config.sourceMode === "snapshot" ? (
+                <>
+                  <MetadataRow
+                    label="mode"
+                    value="local snapshot"
+                  />
+                  <MetadataRow
+                    label="snapshot"
+                    value={run.config.snapshotId || "—"}
+                    muted={!run.config.snapshotId}
+                  />
+                  <MetadataRow
+                    label="selection"
+                    value={formatSnapshotSelection(run.config)}
+                  />
+                  <MetadataRow label="output" value={run.config.outputDir} />
+                </>
+              ) : (
+                <>
+                  <MetadataRow label="mode" value="figma url" />
+                  <MetadataRow
+                    label="figma"
+                    value={`${run.config.figmaUrl.slice(0, 72)}…`}
+                  />
+                  <MetadataRow label="output" value={run.config.outputDir} />
+                </>
+              )}
+            </div>
+          </Panel>
+        </div>
+      )}
 
       {run.errorMessage !== undefined && (
         <div className="mt-4">

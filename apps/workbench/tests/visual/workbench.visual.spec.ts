@@ -60,6 +60,9 @@ const browserSnapshotVaultPath = path.join(
   BROWSER_SNAPSHOT_ID,
 );
 
+const isFigmaHost = (hostname: string): boolean =>
+  hostname === "figma.com" || hostname.endsWith(".figma.com");
+
 const withDigest = <T extends { contentDigest: string }>(
   value: Omit<T, "contentDigest">,
 ): T => {
@@ -519,7 +522,7 @@ test("runs the Snapshot Vault browser flow from a real local vault", async ({
   const importPosts: string[] = [];
   page.on("request", (request) => {
     const url = new URL(request.url());
-    if (url.hostname.endsWith("figma.com")) figmaRequests.push(request.url());
+    if (isFigmaHost(url.hostname)) figmaRequests.push(request.url());
     if (
       request.method() === "POST" &&
       url.pathname === "/api/workbench/snapshots"
@@ -578,6 +581,8 @@ test("runs the Snapshot Vault browser flow from a real local vault", async ({
   await expect(page.getByRole("heading", { name: "Run detail" })).toBeVisible({
     timeout: 15_000,
   });
+  await expect(page.getByText("local snapshot")).toBeVisible();
+  await expect(page.getByText(BROWSER_SNAPSHOT_ID).first()).toBeVisible();
   await expect(page.locator(".statusbar")).toContainText("sealed", {
     timeout: 15_000,
   });

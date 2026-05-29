@@ -17,6 +17,7 @@ import {
   serializeFigmaSnapshotArtifact,
 } from "@oscharko-dev/ti-core-engine";
 import { describe, expect, it, afterEach } from "vitest";
+import { POST as previewSelectionRoute } from "@/app/api/workbench/snapshots/[snapshotId]/selection-preview/route";
 import {
   listWorkbenchSnapshots,
   previewWorkbenchSnapshotSelection,
@@ -328,5 +329,43 @@ describe("Workbench Snapshot Vault adapter", () => {
     );
 
     await expect(listWorkbenchSnapshots(envFor(repoRoot))).resolves.toEqual([]);
+  });
+
+  it("maps snapshot selection preflight input errors to client 4xx responses", async () => {
+    const repoRoot = await tempRepo();
+    const previousRepoRoot = process.env.WORKBENCH_REPO_ROOT;
+    process.env.WORKBENCH_REPO_ROOT = repoRoot;
+    try {
+      const response = await previewSelectionRoute(
+        new Request(
+          "http://localhost/api/workbench/snapshots/missing/selection-preview",
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              nodeIds: ["mask-iban"],
+              pageIds: [],
+              frameIds: [],
+            }),
+          },
+        ) as Parameters<typeof previewSelectionRoute>[0],
+        { params: Promise.resolve({ snapshotId: "missing" }) },
+      );
+      const payload = (await response.json()) as {
+        error?: { code?: string; message?: string };
+      };
+
+      expect(response.status).toBe(404);
+      expect(payload.error?.code).toBe(
+        "SNAPSHOT_SELECTION_MISSING_SNAPSHOT",
+      );
+      expect(payload.error?.message).toMatch(/snapshot/u);
+    } finally {
+      if (previousRepoRoot === undefined) {
+        delete process.env.WORKBENCH_REPO_ROOT;
+      } else {
+        process.env.WORKBENCH_REPO_ROOT = previousRepoRoot;
+      }
+    }
   });
 });

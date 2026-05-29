@@ -43,6 +43,23 @@ const catalog = {
       cacheState: "complete",
       rateLimit: { remaining: 42 },
     },
+    {
+      snapshotId: "snapshot-broken",
+      tenantScope: "default/default/default",
+      importedAt: "2026-05-29T08:05:00.000Z",
+      importStrategy: "hybrid",
+      lifecycleState: "failed",
+      previewStatus: "failed",
+      boundedPreview: false,
+      nodeCount: 0,
+      pageCount: 0,
+      frameCount: 0,
+      componentCount: 0,
+      hiddenCount: 0,
+      launchable: false,
+      cacheState: "failed",
+      rateLimit: {},
+    },
   ],
 };
 
@@ -113,6 +130,17 @@ describe("SnapshotVaultScreen", () => {
         if (url === "/api/workbench/snapshots/snapshot-ui-test") {
           return Response.json(detail);
         }
+        if (url === "/api/workbench/snapshots/snapshot-broken") {
+          return Response.json(
+            {
+              error: {
+                code: "SNAPSHOT_DETAIL_FAILED",
+                message: "Snapshot detail failed.",
+              },
+            },
+            { status: 500 },
+          );
+        }
         if (url.includes("/selection-preview")) {
           return Response.json({
             preview: {
@@ -178,5 +206,21 @@ describe("SnapshotVaultScreen", () => {
       }),
     );
     expect(push).toHaveBeenCalledWith("/runs");
+  });
+
+  it("clears stale local evidence when a newly selected snapshot fails", async () => {
+    render(<SnapshotVaultScreen />);
+
+    expect(await screen.findAllByText("IBAN input mask")).not.toHaveLength(0);
+
+    await userEvent.click(await screen.findByText("snapshot-broken"));
+
+    await waitFor(() => {
+      expect(screen.queryByText("IBAN input mask")).not.toBeInTheDocument();
+    });
+    expect(screen.getByText("Snapshot detail failed.")).toBeInTheDocument();
+    expect(
+      screen.getByText("Select or import a snapshot to inspect local evidence."),
+    ).toBeInTheDocument();
   });
 });

@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { FigmaSnapshotRunSourceError } from "@oscharko-dev/ti-production-runner";
 import {
   previewWorkbenchSnapshotSelection,
   WorkbenchSnapshotVaultError,
@@ -22,6 +23,20 @@ const jsonError = (error: WorkbenchSnapshotVaultError): NextResponse =>
     },
     { status: error.status },
   );
+
+const snapshotRunSourceStatus = (
+  error: FigmaSnapshotRunSourceError,
+): number => {
+  if (error.errorCode === "empty_scope") return 400;
+  if (error.errorCode === "unsafe_path") return 403;
+  if (
+    error.errorCode === "missing_snapshot" ||
+    error.errorCode === "cross_tenant_snapshot"
+  ) {
+    return 404;
+  }
+  return 422;
+};
 
 const readSelection = (value: unknown): SnapshotRunSelection => {
   const raw =
@@ -57,6 +72,17 @@ export async function POST(
     });
   } catch (error) {
     if (error instanceof WorkbenchSnapshotVaultError) return jsonError(error);
+    if (error instanceof FigmaSnapshotRunSourceError) {
+      return NextResponse.json(
+        {
+          error: {
+            code: `SNAPSHOT_SELECTION_${error.errorCode.toUpperCase()}`,
+            message: error.message,
+          },
+        },
+        { status: snapshotRunSourceStatus(error) },
+      );
+    }
     return NextResponse.json(
       {
         error: {

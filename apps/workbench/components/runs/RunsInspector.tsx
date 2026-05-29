@@ -14,6 +14,13 @@ import { useWorkbench } from "@/lib/workbench-context";
 type FormTabId = "summary" | "command" | "validation";
 type DetailTabId = "summary" | "stages" | "artifacts";
 
+const formatSnapshotSelection = (config: RunConfig): string =>
+  [
+    `pages=${config.snapshotSelection.pageIds.length}`,
+    `frames=${config.snapshotSelection.frameIds.length}`,
+    `nodes=${config.snapshotSelection.nodeIds.length}`,
+  ].join(" · ");
+
 export function RunsInspector(): ReactNode {
   const { runState, runForm, runFormIssues } = useWorkbench();
   if (runState.status === "idle") {
@@ -69,16 +76,32 @@ function RunsFormInspector({
           <>
             <div className={ui.inspectorGroup.group}>
               <span className={ui.inspectorGroup.title}>Source</span>
-              <MetadataRow
-                label="fileKey"
-                value={fileKey}
-                muted={fileKey === "—"}
-              />
-              <MetadataRow
-                label="node-id"
-                value={nodeId}
-                muted={nodeId === "—"}
-              />
+              {form.sourceMode === "snapshot" ? (
+                <>
+                  <MetadataRow
+                    label="snapshot"
+                    value={form.snapshotId || "—"}
+                    muted={!form.snapshotId}
+                  />
+                  <MetadataRow
+                    label="scope"
+                    value={formatSnapshotSelection(form)}
+                  />
+                </>
+              ) : (
+                <>
+                  <MetadataRow
+                    label="fileKey"
+                    value={fileKey}
+                    muted={fileKey === "—"}
+                  />
+                  <MetadataRow
+                    label="node-id"
+                    value={nodeId}
+                    muted={nodeId === "—"}
+                  />
+                </>
+              )}
               <MetadataRow
                 label="custom context"
                 value={
@@ -202,12 +225,26 @@ function RunsDetailInspector({ run }: { run: RunState }): ReactNode {
             </div>
             <div className={ui.inspectorGroup.group}>
               <span className={ui.inspectorGroup.title}>Source</span>
-              <MetadataRow
-                label="figma"
-                value={
-                  run.config ? run.config.figmaUrl.slice(0, 38) + "…" : "—"
-                }
-              />
+              {run.config?.sourceMode === "snapshot" ? (
+                <>
+                  <MetadataRow
+                    label="snapshot"
+                    value={run.config.snapshotId || "—"}
+                    muted={!run.config.snapshotId}
+                  />
+                  <MetadataRow
+                    label="scope"
+                    value={formatSnapshotSelection(run.config)}
+                  />
+                </>
+              ) : (
+                <MetadataRow
+                  label="figma"
+                  value={
+                    run.config ? run.config.figmaUrl.slice(0, 38) + "…" : "—"
+                  }
+                />
+              )}
               <MetadataRow
                 label="output"
                 value={run.config?.outputDir ?? "—"}

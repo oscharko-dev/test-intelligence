@@ -173,6 +173,12 @@ export function SnapshotVaultScreen(): ReactNode {
         const payload = await readJson<DetailResponse>(response);
         if (!response.ok || payload.detail === undefined) {
           setDetailError(messageFrom(payload, "Snapshot detail failed."));
+          setDetail(null);
+          setSearchResults([]);
+          setSelectedNode(null);
+          setSelection(emptySelection());
+          setSelectionPreview(null);
+          setSelectionError(null);
           return;
         }
         setDetail(payload.detail);
@@ -187,6 +193,12 @@ export function SnapshotVaultScreen(): ReactNode {
         setDetailError(
           error instanceof Error ? error.message : "Snapshot detail failed.",
         );
+        setDetail(null);
+        setSearchResults([]);
+        setSelectedNode(null);
+        setSelection(emptySelection());
+        setSelectionPreview(null);
+        setSelectionError(null);
       }
     };
     void loadDetail();
