@@ -238,12 +238,28 @@ void test("figma snapshot vault: rejects token-bearing and raw-URL content", () 
             {
               ...PREVIEW_BASE.assets[0],
               relativePath:
-                "https://www.figma.com/design/customer-sensitive-board",
+                "https://customer-bank.example/signed-snapshot-url",
             },
           ],
         }),
       ),
-    /raw Figma URL/,
+    /must not be a URL|raw URL/,
+  );
+
+  assert.throws(
+    () =>
+      validateFigmaSnapshotNodeIndex(
+        withDigest({
+          ...NODE_INDEX_BASE,
+          nodes: [
+            {
+              ...NODE_INDEX_BASE.nodes[0],
+              labels: ["Review https://customer-bank.example/case/123"],
+            },
+          ],
+        }),
+      ),
+    /raw URL/,
   );
 });
 
@@ -256,6 +272,60 @@ void test("figma snapshot vault: builds deterministic tenant-scoped storage path
       snapshotId: MANIFEST_BASE.snapshotId,
     }),
     "/tmp/workspace/.test-intelligence/figma-snapshots/tenant-acme/prod/claims-modernization/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/snapshot-20260529",
+  );
+
+  assert.throws(
+    () =>
+      buildFigmaSnapshotVaultPath({
+        workspaceRoot: "/tmp/workspace",
+        tenantScope: TENANT_SCOPE,
+        fileKeyHash: SOURCE.fileKeyHash,
+        snapshotId: ".",
+      }),
+    /must not be '.' or '..'/,
+  );
+
+  assert.throws(
+    () =>
+      buildFigmaSnapshotVaultPath({
+        workspaceRoot: "/tmp/workspace",
+        tenantScope: TENANT_SCOPE,
+        fileKeyHash: SOURCE.fileKeyHash,
+        snapshotId: "..",
+      }),
+    /must not be '.' or '..'/,
+  );
+
+  assert.throws(
+    () =>
+      validateFigmaSnapshotPreviewManifest(
+        withDigest({
+          ...PREVIEW_BASE,
+          assets: [
+            {
+              ...PREVIEW_BASE.assets[0],
+              relativePath: "../../.env",
+            },
+          ],
+        }),
+      ),
+    /must not contain '.' or '..' segments/,
+  );
+
+  assert.throws(
+    () =>
+      validateFigmaSnapshotPreviewManifest(
+        withDigest({
+          ...PREVIEW_BASE,
+          assets: [
+            {
+              ...PREVIEW_BASE.assets[0],
+              relativePath: "/absolute.png",
+            },
+          ],
+        }),
+      ),
+    /must be a relative descendant path/,
   );
 
   assert.throws(

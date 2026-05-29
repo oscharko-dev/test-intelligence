@@ -21,7 +21,7 @@ import * as z from "zod";
 
 const SHA256_HEX_RE = /^[a-f0-9]{64}$/u;
 const SNAPSHOT_SEGMENT_RE = /^[A-Za-z0-9._-]+$/u;
-const FIGMA_URL_RE = /^https:\/\/(?:www\.)?figma\.com\/(?:design|file|proto)\//iu;
+const URL_LIKE_RE = /\b[A-Za-z][A-Za-z0-9+.-]*:\/\/\S+/u;
 const ISO_8601_RE =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/u;
 
@@ -57,6 +57,10 @@ const stableSegmentSchema = (label: string): z.ZodType<string> =>
     .regex(
       SNAPSHOT_SEGMENT_RE,
       `${label} must contain only ASCII letters, digits, '.', '_' or '-'`,
+    )
+    .refine(
+      (value) => value !== "." && value !== "..",
+      `${label} must not be '.' or '..'`,
     );
 
 const isoTimestampSchema = z
@@ -130,7 +134,16 @@ const nodeRecordSchema = z.strictObject({
 
 const previewAssetSchema = z.strictObject({
   assetId: stableSegmentSchema("assets.assetId"),
-  relativePath: z.string().min(1),
+  relativePath: z.string().min(1).superRefine((value, ctx) => {
+    try {
+      assertSafeRelativePath("assets.relativePath", value);
+    } catch (error) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: (error as Error).message,
+      });
+    }
+  }),
   mediaType: z.string().min(1),
   width: z.number().int().nonnegative(),
   height: z.number().int().nonnegative(),
@@ -344,6 +357,9 @@ const assertSnapshotSegment = (
   if (!pattern.test(value)) {
     throw new Error(`${label} must match ${pattern.source}`);
   }
+  if (value === "." || value === "..") {
+    throw new Error(`${label} must not be '.' or '..'`);
+  }
 };
 
 const assertNoSensitiveStrings = (value: unknown, path = "$"): void => {
@@ -352,8 +368,8 @@ const assertNoSensitiveStrings = (value: unknown, path = "$"): void => {
     if (redacted !== value) {
       throw new Error(`${path} contains token-bearing content`);
     }
-    if (FIGMA_URL_RE.test(value)) {
-      throw new Error(`${path} contains a raw Figma URL`);
+    if (URL_LIKE_RE.test(value)) {
+      throw new Error(`${path} contains a raw URL`);
     }
     return;
   }
@@ -366,6 +382,31 @@ const assertNoSensitiveStrings = (value: unknown, path = "$"): void => {
   if (value !== null && typeof value === "object") {
     for (const [key, entry] of Object.entries(value)) {
       assertNoSensitiveStrings(entry, `${path}.${key}`);
+    }
+  }
+};
+
+const assertSafeRelativePath = (label: string, value: string): void => {
+  if (value.includes("\0")) {
+    throw new Error(`${label} must not contain NUL bytes`);
+  }
+  if (value.includes("\\")) {
+    throw new Error(`${label} must not contain backslashes`);
+  }
+  if (value.startsWith("/") || /^[A-Za-z]:\//u.test(value)) {
+    throw new Error(`${label} must be a relative descendant path`);
+  }
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//u.test(value)) {
+    throw new Error(`${label} must not be a URL`);
+  }
+  for (const segment of value.split("/")) {
+    if (segment.length === 0 || segment === "." || segment === "..") {
+      throw new Error(`${label} must not contain '.' or '..' segments`);
+    }
+    if (!SNAPSHOT_SEGMENT_RE.test(segment)) {
+      throw new Error(
+        `${label} segment "${segment}" must match ${SNAPSHOT_SEGMENT_RE.source}`,
+      );
     }
   }
 };
