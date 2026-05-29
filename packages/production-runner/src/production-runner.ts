@@ -13386,12 +13386,14 @@ const stampGeneratedTestCase = (input: {
     intent: input.intent,
   });
   const steps: GeneratedTestCaseStep[] = input.draft.steps.map((s, i) => {
+    const data = normalizeOptionalDraftString(s.data);
+    const expected = normalizeOptionalDraftString(s.expected);
     const projected: GeneratedTestCaseStep = {
       index: normalizeDraftStepIndex(s.index, i + 1),
       action: s.action,
     };
-    if (typeof s.data === "string") projected.data = s.data;
-    if (typeof s.expected === "string") projected.expected = s.expected;
+    if (data !== undefined) projected.data = data;
+    if (expected !== undefined) projected.expected = expected;
     const fieldLifecycleTransitionId = normalizeDraftFieldLifecycleTransitionId(
       s.fieldLifecycleTransitionId,
     );
@@ -13487,6 +13489,12 @@ const stampGeneratedTestCase = (input: {
       ),
     ),
   );
+};
+
+const normalizeOptionalDraftString = (value: unknown): string | undefined => {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length === 0 ? undefined : trimmed;
 };
 
 const isReplayCacheStoreValidationError = (

@@ -14,10 +14,14 @@ const okJson = (body: unknown): Response =>
     headers: { "content-type": "application/json" },
   });
 
-const errJson = (status: number, body: unknown): Response =>
+const errJson = (
+  status: number,
+  body: unknown,
+  headers: HeadersInit = {},
+): Response =>
   new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...headers },
   });
 
 const minimalFile = {
@@ -136,6 +140,63 @@ void test("fetchFigmaFileForTestIntelligence retries once on 5xx then succeeds",
   });
   assert.equal(calls, 2);
   assert.equal(result.name, "Test View 03");
+});
+
+void test("fetchFigmaFileForTestIntelligence honors Retry-After before retrying 429", async () => {
+  let calls = 0;
+  const fetchImpl = (async () => {
+    calls += 1;
+    if (calls === 1) {
+      return errJson(
+        429,
+        { err: "rate limited" },
+        {
+          "Retry-After": "0",
+          "X-Figma-Plan-Tier": "pro",
+          "X-Figma-Rate-Limit-Type": "high",
+        },
+      );
+    }
+    return okJson(minimalFile);
+  }) as unknown as typeof fetch;
+  const result = await fetchFigmaFileForTestIntelligence({
+    fileKey: "ABC",
+    accessToken: "figd_test",
+    fetchImpl,
+  });
+  assert.equal(calls, 2);
+  assert.equal(result.name, "Test View 03");
+});
+
+void test("fetchFigmaFileForTestIntelligence refuses over-budget Retry-After values", async () => {
+  let calls = 0;
+  const fetchImpl = (async () => {
+    calls += 1;
+    return errJson(
+      429,
+      { err: "rate limited" },
+      {
+        "Retry-After": "61",
+        "X-Figma-Plan-Tier": "starter",
+        "X-Figma-Rate-Limit-Type": "low",
+      },
+    );
+  }) as unknown as typeof fetch;
+  await assert.rejects(
+    () =>
+      fetchFigmaFileForTestIntelligence({
+        fileKey: "ABC",
+        accessToken: "figd_test",
+        fetchImpl,
+      }),
+    (err: unknown): boolean =>
+      err instanceof FigmaRestFetchError &&
+      err.errorClass === "rate_limited" &&
+      err.retryAfterSeconds === 61 &&
+      err.figmaPlanTier === "starter" &&
+      err.figmaRateLimitType === "low",
+  );
+  assert.equal(calls, 1);
 });
 
 void test("fetchFigmaFileForTestIntelligence surfaces TLS trust failures with operator action", async () => {
@@ -263,6 +324,41 @@ void test("fetchFigmaScreenCapturesForTestIntelligence resolves image lookup URL
   assert.equal(requestHeaders.length, 2);
   assert.equal(requestHeaders[0]?.get("x-figma-token"), "figd_test");
   assert.equal(requestHeaders[1]?.get("x-figma-token"), null);
+});
+
+void test("fetchFigmaScreenCapturesForTestIntelligence batches Figma image lookup ids", async () => {
+  const requestedUrls: string[] = [];
+  const fetchImpl = (async (url: string) => {
+    requestedUrls.push(url);
+    if (url.includes("/v1/images/")) {
+      return okJson({
+        images: {
+          "1:1": "https://figma-alpha-api.s3.us-west-2.amazonaws.com/1_1.png",
+          "2:2": "https://figma-alpha-api.s3.us-west-2.amazonaws.com/2_2.png",
+        },
+      });
+    }
+    return new Response(PNG_BYTES, {
+      status: 200,
+      headers: { "content-type": "image/png" },
+    });
+  }) as unknown as typeof fetch;
+  const captures = await fetchFigmaScreenCapturesForTestIntelligence({
+    fileKey: "ABC",
+    accessToken: "figd_test",
+    screens: [{ screenId: "1:1" }, { screenId: "2:2" }],
+    fetchImpl,
+  });
+  assert.equal(captures.length, 2);
+  assert.deepEqual(
+    captures.map((capture) => capture.screenId),
+    ["1:1", "2:2"],
+  );
+  assert.deepEqual(requestedUrls, [
+    "https://api.figma.com/v1/images/ABC?ids=1%3A1%2C2%3A2&format=png&scale=2",
+    "https://figma-alpha-api.s3.us-west-2.amazonaws.com/1_1.png",
+    "https://figma-alpha-api.s3.us-west-2.amazonaws.com/2_2.png",
+  ]);
 });
 
 void test("fetchFigmaScreenCapturesForTestIntelligence rejects non-Figma CDN screenshot URLs", async () => {

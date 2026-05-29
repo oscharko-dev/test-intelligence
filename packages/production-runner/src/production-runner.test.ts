@@ -7709,6 +7709,44 @@ void test("runFigmaToQcTestCases normalizes invalid draft step indexes before st
   }
 });
 
+void test("runFigmaToQcTestCases omits blank optional draft step expectations before validation", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "ti-runner-"));
+  try {
+    const malformed = {
+      ...SAMPLE_DRAFT,
+      steps: [
+        { ...SAMPLE_DRAFT.steps[0], expected: "" },
+        { ...SAMPLE_DRAFT.steps[1], expected: "   " },
+        {
+          ...SAMPLE_DRAFT.steps[2],
+          expected: "  Folgemaske wird angezeigt  ",
+        },
+      ],
+    } as unknown as ProductionRunnerLlmDraftCase;
+    const client = createMockLlmGatewayClient({
+      role: "test_generation",
+      deployment: "gpt-oss-120b-mock",
+      modelRevision: "mock-1",
+      gatewayRelease: "mock",
+      responder: okResponder([malformed]),
+    });
+    const result = await runFigmaToQcTestCases({
+      jobId: "job-blank-step-expected",
+      generatedAt: "2026-05-02T10:00:00Z",
+      source: { kind: "figma_paste_normalized", file: SAMPLE_FILE },
+      outputRoot: tempRoot,
+      llm: { client },
+    });
+    const stamped = result.generatedTestCases.testCases[0];
+    assert.ok(stamped);
+    assert.equal(stamped.steps[0]?.expected, undefined);
+    assert.equal(stamped.steps[1]?.expected, undefined);
+    assert.equal(stamped.steps[2]?.expected, "Folgemaske wird angezeigt");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 void test("runFigmaToQcTestCases replaces unknown draft lifecycle transition ids before validation", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "ti-runner-"));
   try {

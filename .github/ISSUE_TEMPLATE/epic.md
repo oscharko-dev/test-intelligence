@@ -1,69 +1,98 @@
 ---
-name: Product epic
-about: Plan a coordinated Test Intelligence delivery theme
+name: Epic
+about: Plan a coordinated delivery wave with child issues
 title: 'Epic: '
 labels: ['type: epic', 'status: ready']
 assignees: ''
 ---
 
-## Outcome
+## Summary
 
-Describe the product capability, release milestone, compliance posture, or operational improvement this epic delivers.
+Describe the strategic outcome, user/developer value, and why this epic exists.
 
-## Why It Matters
+## Product Thesis
 
-Explain the customer, maintainer, audit, or release value.
+Explain the product belief this epic validates and the trust or capability it should create.
 
-## Success Criteria
+## Non-goals
 
-- [ ]
-- [ ]
-- [ ]
+- This epic does not:
 
-## Non-Goals
+## Architecture Invariants
 
--
+- Existing architecture boundaries, quality gates, security posture, evidence semantics, and deterministic verification must not be weakened.
+- Productive model calls must remain behind the Model Gateway.
+- Workflow authority must remain explicit and documented.
 
-## Workstreams
+## Target Outcome
 
-- [ ] Product behavior:
-- [ ] Evidence and compliance:
-- [ ] Security and supply chain:
-- [ ] Packaging and release:
-- [ ] Documentation:
-
-Remove workstreams that do not apply.
+1. Outcome 1.
+2. Outcome 2.
+3. Outcome 3.
 
 ## Child Issues
 
-Link implementation issues here. Do not implement the full epic directly in one PR unless the epic is intentionally small.
+Child issues will be linked after creation.
 
-- [ ]
+## Required Implementation Order
 
-## Delivery Order
+1. First child issue.
+2. Second child issue.
+3. Final verification child issue.
 
-1.
-2.
-3. Final verification and closure evidence.
+## Definition of Done
 
-## Verification Strategy
+- [ ] All child issues are closed with acceptance criteria and expected verification updated.
+- [ ] Required GitHub checks are green on implementation PRs.
+- [ ] Final closure evidence is recorded in the epic or final child issue.
+- [ ] Known limitations and follow-ups are documented.
 
-- [ ] Each child issue defines its own acceptance criteria and verification plan.
-- [ ] Required GitHub checks pass on every implementation PR before merge.
-- [ ] Release-impacting work is validated through the relevant package, supply-chain, SBOM, and release-readiness checks.
-- [ ] Security-sensitive work records review evidence for trust boundaries, secrets, external calls, generated artifacts, and audit semantics.
-- [ ] Final closure evidence summarizes merged PRs, remaining known limitations, and follow-up issues.
+## Agent Execution Mode
 
-## Constraints
+- [ ] Single-agent
+- [ ] Agent team
+- [ ] Audit-only
+- [ ] Refactor-only
+- [ ] Feature delivery
+- [ ] Architecture / governance coordination
+- [ ] Audit/verification-heavy
 
-- Do not weaken architecture boundaries, deterministic verification, evidence semantics, security posture, or release gates.
-- Do not commit secrets, customer data, private logs, generated caches, or local-only internal documentation.
-- Keep scope explicit. Create follow-up issues instead of silently expanding this epic.
+This epic is a planning and coordination container. Do not implement the full epic directly; execute the linked child issues in order.
 
-## Closure Evidence
+## Agent Routing Hints
 
-Complete this section when all child issues are closed.
+- Lead agent: `coordinator`.
+- Required planning agents: `architect | explorer | security-reviewer | performance-engineer | docs-editor`.
+- Delivery agents per child issue: selected from `implementor | developer | test-engineer | ui-engineer | a11y-auditor | verifier | pr-reviewer | pr-shepherd`.
+- Write ownership: assigned per child issue only; no parallel write agents may own overlapping files.
+- PR lifecycle owner: `pr-shepherd` waits for GitHub checks, resolves findings, and confirms formal issue completion before merge.
 
-- Merged PRs:
-- Final verification:
-- Follow-up issues:
+## Expected Verification
+
+- [ ] Each child issue defines its own relevant verification gates.
+- [ ] Required GitHub check: `ci` on every implementation PR.
+- [ ] Security review when trust boundaries, model access, execution, patch application, generated artifacts, or validation guardrails change.
+- [ ] Final regression evidence captured in the final child issue.
+
+## Review Settlement and Formal Issue Completion
+
+- [ ] Implementation PRs wait for required GitHub checks before merge.
+- [ ] All actionable review findings are fixed or explicitly dispositioned before merge.
+- [ ] Child issue Acceptance Criteria and Expected Verification checkboxes are updated only when evidence exists.
+- [ ] The epic remains open until all child issues are closed and final closure evidence is recorded.
+
+## Stop Conditions
+
+- [ ] Stop if the implementation would expand beyond this epic's stated scope.
+- [ ] Stop if required acceptance criteria are missing, contradictory, or no longer match the linked child issues.
+- [ ] Stop if the work requires secrets, customer data, private runtime logs, or token-bearing artifacts.
+- [ ] Stop if two parallel agents would need to edit the same file scope.
+- [ ] Stop if the change would weaken architecture boundaries, quality gates, security posture, evidence semantics, deterministic verification, or required `ci` guarantees.
+- [ ] Stop after three CI or review-finding repair attempts with different root causes and report the blocker.
+
+## Language and Professional Standard
+
+- All issue work, PR descriptions, code comments, configuration properties, schema fields, README updates, Markdown files, and GitHub comments must be written in professional English.
+- Use accurate enterprise product terminology; when limitations exist, state them precisely without prototype-only, placeholder, fake, or informal framing.
+- Build production-ready, state-of-the-art solutions while keeping implementation simple, maintainable, and focused on the issue scope.
+- Be creative and innovative where it improves product quality, but avoid unnecessary special cases, speculative abstractions, and process overhead.
