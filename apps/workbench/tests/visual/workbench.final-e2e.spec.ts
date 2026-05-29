@@ -144,19 +144,6 @@ async function launchRun(
       headerText.toLowerCase().includes(candidate),
     ) ?? "unknown";
 
-  const artifactRootPanel = page.getByText("Filesystem root for this run.", {
-    exact: false,
-  });
-  await expect(artifactRootPanel).toBeVisible();
-  const artifactDirText = await artifactRootPanel.locator("..").innerText();
-  const artifactDir =
-    artifactDirText
-      .split("\n")
-      .map((line) => line.trim())
-      .find(
-        (line) => line.startsWith("/") && !line.startsWith("outputRoot "),
-      ) ?? "";
-
   const errorPanel = page.getByText("Run error");
   const errorMessage = (await errorPanel.count())
     ? await errorPanel.locator("..").innerText()
@@ -165,7 +152,7 @@ async function launchRun(
   return {
     jobId,
     status,
-    artifactDir: artifactDir.trim(),
+    artifactDir: path.join(repoRoot, fixture.outputDir, jobId),
     ...(errorMessage !== undefined ? { errorMessage } : {}),
   };
 }

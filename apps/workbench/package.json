@@ -17,8 +17,11 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@oscharko-dev/ti-contracts": "workspace:*",
+    "@oscharko-dev/ti-core-engine": "workspace:*",
     "@oscharko-dev/ti-model-gateway": "workspace:*",
     "@oscharko-dev/ti-production-runner": "workspace:*",
+    "@oscharko-dev/ti-tenant": "workspace:*",
     "is-path-inside": "workspace:*",
     "lucide-react": "^1.16.0",
     "next": "^16.2.6",

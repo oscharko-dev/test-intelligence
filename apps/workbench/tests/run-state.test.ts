@@ -8,18 +8,13 @@ import {
   sizeFor,
   withArtifactsForState,
 } from "@/lib/run-state";
+import { DEFAULT_FORM } from "@/lib/runs-form";
 import type { RunConfig, RunState } from "@/lib/types";
 
 const SAMPLE_CONFIG: RunConfig = {
+  ...DEFAULT_FORM,
   figmaUrl: "https://www.figma.com/design/ABC/Example?node-id=1-2",
-  customContext: "",
-  autoJiraStory: false,
   outputDir: ".out",
-  outputRunSubdir: "job-id",
-  visualSidecar: true,
-  allowPolicyBlocked: false,
-  caCerts: "",
-  jobIdOverride: "",
 };
 
 function queue(): RunState {

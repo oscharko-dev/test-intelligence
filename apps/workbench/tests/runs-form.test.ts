@@ -91,6 +91,41 @@ describe("validateForm", () => {
     expect(issues).toEqual([]);
   });
 
+  it("validates local snapshot mode without requiring a Figma URL", () => {
+    const issues = validateForm({
+      ...DEFAULT_FORM,
+      sourceMode: "snapshot",
+      snapshotId: "snapshot-20260529",
+      snapshotSelection: {
+        nodeIds: ["mask-iban"],
+        pageIds: [],
+        frameIds: [],
+      },
+      outputDir: ".out",
+      figmaUrl: "",
+      visualSidecar: false,
+    });
+    expect(issues).toEqual([]);
+  });
+
+  it("rejects auto Jira Story for local snapshot mode", () => {
+    const issues = validateForm({
+      ...DEFAULT_FORM,
+      sourceMode: "snapshot",
+      snapshotId: "snapshot-20260529",
+      snapshotSelection: {
+        nodeIds: ["mask-iban"],
+        pageIds: [],
+        frameIds: [],
+      },
+      outputDir: ".out",
+      figmaUrl: "",
+      autoJiraStory: true,
+      visualSidecar: true,
+    });
+    expect(issues.some((i) => i.field === "autoJiraStory")).toBe(true);
+  });
+
   it("requires visual sidecar and no manual context for auto Jira Story", () => {
     const issues = validateForm({
       ...DEFAULT_FORM,
@@ -156,6 +191,26 @@ describe("buildCli", () => {
     });
     expect(cli).toContain("--auto-jira-story-from-visual");
     expect(cli).toContain("--enable-visual-sidecar");
+  });
+
+  it("emits snapshot run flags without a raw Figma URL", () => {
+    const cli = buildCli({
+      ...DEFAULT_FORM,
+      sourceMode: "snapshot",
+      snapshotId: "snapshot-20260529",
+      snapshotSelection: {
+        nodeIds: ["mask-iban"],
+        pageIds: ["page-accounts"],
+        frameIds: ["frame-open-account"],
+      },
+      outputDir: ".out",
+      visualSidecar: false,
+    });
+    expect(cli).toContain("--figma-snapshot-id");
+    expect(cli).toContain("--figma-snapshot-node-id");
+    expect(cli).toContain("--figma-snapshot-page-id");
+    expect(cli).toContain("--figma-snapshot-frame-id");
+    expect(cli).not.toContain("--figma-url");
   });
 
   it("does not leave a trailing backslash on the final line", () => {

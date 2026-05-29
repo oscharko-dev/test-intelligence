@@ -50,7 +50,10 @@ export interface CustomerOutputFile {
 export type CustomerMarkdownFile = CustomerOutputFile;
 
 export interface RunConfig {
+  sourceMode: RunSourceMode;
   figmaUrl: string;
+  snapshotId: string;
+  snapshotSelection: SnapshotRunSelection;
   customContext: string;
   autoJiraStory: boolean;
   outputDir: string;
@@ -59,6 +62,14 @@ export interface RunConfig {
   allowPolicyBlocked: boolean;
   caCerts: string;
   jobIdOverride: string;
+}
+
+export type RunSourceMode = "figma-url" | "snapshot";
+
+export interface SnapshotRunSelection {
+  nodeIds: string[];
+  pageIds: string[];
+  frameIds: string[];
 }
 
 export type OutputSubdir = "job-id" | "timestamp" | "none";

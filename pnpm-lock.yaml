@@ -137,12 +137,21 @@ importers:
 
   apps/workbench:
     dependencies:
+      '@oscharko-dev/ti-contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@oscharko-dev/ti-core-engine':
+        specifier: workspace:*
+        version: link:../../packages/core-engine
       '@oscharko-dev/ti-model-gateway':
         specifier: workspace:*
         version: link:../../packages/model-gateway
       '@oscharko-dev/ti-production-runner':
         specifier: workspace:*
         version: link:../../packages/production-runner
+      '@oscharko-dev/ti-tenant':
+        specifier: workspace:*
+        version: link:../../packages/tenant
       is-path-inside:
         specifier: workspace:*
         version: link:../../packages/is-path-inside

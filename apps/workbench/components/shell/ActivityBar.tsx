@@ -2,18 +2,25 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { History, Play, Settings, type LucideIcon } from "lucide-react";
+import {
+  Database,
+  History,
+  Play,
+  Settings,
+  type LucideIcon,
+} from "lucide-react";
 import type { ReactNode } from "react";
 import { ui } from "@/lib/ui-classes";
 
 interface NavItem {
-  href: "/runs" | "/settings/model" | "/runs/history";
+  href: "/runs" | "/snapshots" | "/settings/model" | "/runs/history";
   icon: LucideIcon;
   label: string;
 }
 
 const ITEMS: readonly NavItem[] = [
   { href: "/runs", icon: Play, label: "Runs" },
+  { href: "/snapshots", icon: Database, label: "Snapshot Vault" },
   { href: "/settings/model", icon: Settings, label: "Model Settings" },
   { href: "/runs/history", icon: History, label: "Run History" },
 ];

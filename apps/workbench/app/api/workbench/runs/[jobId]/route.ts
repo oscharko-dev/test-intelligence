@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { getWorkbenchRun } from "@/lib/server/workbench-run-registry";
+import { getWorkbenchRunForClient } from "@/lib/server/workbench-run-registry";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -15,7 +15,7 @@ export async function GET(
   { params }: Params,
 ): Promise<NextResponse> {
   const { jobId } = await params;
-  const run = getWorkbenchRun(jobId);
+  const run = getWorkbenchRunForClient(jobId);
   if (run === undefined) {
     return NextResponse.json(
       {

@@ -1,10 +1,19 @@
-import { mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   getWorkbenchRun,
   getWorkbenchRunCompletionForTests,
+  getWorkbenchRunForClient,
   readWorkbenchRunFile,
   resetWorkbenchRunStoreForTests,
   resultArtifactPaths,
@@ -95,6 +104,92 @@ describe("prepareWorkbenchRun", () => {
     ).rejects.toMatchObject({
       code: "WORKBENCH_RUNNER_UNCONFIGURED",
       status: 503,
+    });
+  });
+
+  test("accepts snapshot-backed runs without a Figma token", async () => {
+    const repoRoot = await tempWorkspace();
+    vi.stubEnv("WORKBENCH_REPO_ROOT", repoRoot);
+    const prepared = await prepareWorkbenchRun({
+      body: {
+        ...baseRunBody,
+        sourceMode: "snapshot",
+        figmaUrl: "",
+        snapshotId: "snapshot-20260529",
+        snapshotSelection: {
+          nodeIds: ["mask-iban"],
+          pageIds: [],
+          frameIds: [],
+        },
+        visualSidecar: false,
+      },
+      env: env({
+        FIGMAPIPE_WORKSPACE_TEST_INTELLIGENCE: "1",
+        TEST_INTELLIGENCE_MODEL_ENDPOINT: "https://env.test/model",
+        TEST_INTELLIGENCE_LLM_API_KEY: "env-key",
+        TEST_INTELLIGENCE_REGION_ATTESTATION_SIGNING_KEY: "env-signing-key",
+      }),
+      now: new Date("2026-05-25T10:15:30.000Z"),
+    });
+
+    expect(prepared.config.sourceMode).toBe("snapshot");
+    expect(prepared.config.snapshotId).toBe("snapshot-20260529");
+    expect(prepared.env.figmaToken).toBeUndefined();
+  });
+
+  test("creates unique generated job IDs for repeated snapshot launches", async () => {
+    const repoRoot = await tempWorkspace();
+    vi.stubEnv("WORKBENCH_REPO_ROOT", repoRoot);
+    const body = {
+      ...baseRunBody,
+      sourceMode: "snapshot",
+      figmaUrl: "",
+      snapshotId: "snapshot-20260529",
+      snapshotSelection: {
+        nodeIds: ["mask-iban"],
+        pageIds: [],
+        frameIds: [],
+      },
+      jobIdOverride: "",
+      visualSidecar: false,
+    };
+    const now = new Date("2026-05-25T10:15:30.000Z");
+
+    const first = await prepareWorkbenchRun({
+      body,
+      env: env({ WORKBENCH_RUNNER_MODE: "mock" }),
+      now,
+    });
+    const second = await prepareWorkbenchRun({
+      body,
+      env: env({ WORKBENCH_RUNNER_MODE: "mock" }),
+      now,
+    });
+
+    expect(first.jobId).toMatch(/^ti-workbench-\d+-[a-f0-9-]{8}$/u);
+    expect(second.jobId).toMatch(/^ti-workbench-\d+-[a-f0-9-]{8}$/u);
+    expect(first.jobId).not.toBe(second.jobId);
+    expect(first.artifactDir).not.toBe(second.artifactDir);
+  });
+
+  test("rejects empty snapshot selections before queueing a run", async () => {
+    const repoRoot = await tempWorkspace();
+    vi.stubEnv("WORKBENCH_REPO_ROOT", repoRoot);
+    await expect(
+      prepareWorkbenchRun({
+        body: {
+          ...baseRunBody,
+          sourceMode: "snapshot",
+          figmaUrl: "",
+          snapshotId: "snapshot-20260529",
+          snapshotSelection: { nodeIds: [], pageIds: [], frameIds: [] },
+        },
+        env: env({ WORKBENCH_RUNNER_MODE: "mock" }),
+        now: new Date("2026-05-25T10:15:30.000Z"),
+      }),
+    ).rejects.toMatchObject({
+      code: "RUN_CONFIG_INVALID",
+      status: 400,
     });
   });
 
@@ -332,7 +427,7 @@ describe("prepareWorkbenchRun", () => {
       now: new Date("2026-05-25T10:15:30.000Z"),
     });
 
-    expect(prepared.caCertPath).toBe(caPath);
+    await expect(realpath(caPath)).resolves.toBe(prepared.caCertPath);
   });
 
   test("accepts a persisted CA bundle path when the run request leaves the field empty", async () => {
@@ -363,7 +458,36 @@ describe("prepareWorkbenchRun", () => {
       now: new Date("2026-05-25T10:15:30.000Z"),
     });
 
-    expect(prepared.caCertPath).toBe(caPath);
+    await expect(realpath(caPath)).resolves.toBe(prepared.caCertPath);
+  });
+
+  test("rejects CA bundle symlinks that escape the workspace", async () => {
+    const repoRoot = await tempWorkspace();
+    vi.stubEnv("WORKBENCH_REPO_ROOT", repoRoot);
+    const outside = path.join(await tempWorkspace(), "outside-ca.pem");
+    await writeFile(outside, "outside", "utf8");
+    await mkdir(path.join(repoRoot, "trust"), { recursive: true });
+    await symlink(outside, path.join(repoRoot, "trust", "corp-ca.pem"));
+
+    await expect(
+      prepareWorkbenchRun({
+        body: {
+          ...baseRunBody,
+          caCerts: "trust/corp-ca.pem",
+        },
+        env: env({
+          FIGMAPIPE_WORKSPACE_TEST_INTELLIGENCE: "1",
+          TEST_INTELLIGENCE_MODEL_ENDPOINT: "https://env.test/model",
+          TEST_INTELLIGENCE_LLM_API_KEY: "env-key",
+          FIGMA_ACCESS_TOKEN: "env-figma-token",
+          TEST_INTELLIGENCE_REGION_ATTESTATION_SIGNING_KEY: "env-signing-key",
+        }),
+        now: new Date("2026-05-25T10:15:30.000Z"),
+      }),
+    ).rejects.toMatchObject({
+      code: "RUN_CONFIG_INVALID",
+      status: 400,
+    });
   });
 
   test("rejects a per-run CA bundle path that does not point to a file", async () => {
@@ -608,6 +732,66 @@ describe("workbench run registry", () => {
     expect(txtDownload.bytes.toString("utf8")).toContain(
       "Fachliche Testfaelle",
     );
+  });
+
+  test("client run status and file downloads are scoped to the active tenant", async () => {
+    const repoRoot = await tempWorkspace();
+    vi.stubEnv("WORKBENCH_REPO_ROOT", repoRoot);
+    vi.stubEnv("WORKBENCH_RUNNER_MODE", "mock");
+    const tenantA = env({
+      WORKBENCH_REPO_ROOT: repoRoot,
+      WORKBENCH_RUNNER_MODE: "mock",
+      TEST_INTELLIGENCE_TENANT_ID: "tenant-a",
+      TEST_INTELLIGENCE_ENVIRONMENT_ID: "qa",
+      TEST_INTELLIGENCE_PROJECT_ID: "claims",
+    });
+    const tenantB = env({
+      WORKBENCH_REPO_ROOT: repoRoot,
+      WORKBENCH_RUNNER_MODE: "mock",
+      TEST_INTELLIGENCE_TENANT_ID: "tenant-b",
+      TEST_INTELLIGENCE_ENVIRONMENT_ID: "qa",
+      TEST_INTELLIGENCE_PROJECT_ID: "claims",
+    });
+    const prepared = await prepareWorkbenchRun({
+      body: baseRunBody,
+      env: tenantA,
+      now: new Date("2026-05-25T10:15:30.000Z"),
+    });
+
+    const initial = startWorkbenchRun(prepared);
+    expect(initial.artifactDir).toBeDefined();
+
+    const clientRun = getWorkbenchRunForClient(prepared.jobId, tenantA);
+    expect(clientRun?.artifactDir).toBeUndefined();
+    expect(clientRun?.outputRoot).toBeUndefined();
+    expect(prepared.tenantScope).toMatchObject({
+      tenantId: "tenant-a",
+      environmentId: "qa",
+      projectId: "claims",
+    });
+    expect(prepared.tenantScopeKey).toBe("tenant-a/qa/claims");
+    expect(getWorkbenchRunForClient(prepared.jobId, tenantB)).toBeUndefined();
+
+    await getWorkbenchRunCompletionForTests(prepared.jobId);
+    await expect(
+      readWorkbenchRunFile(
+        prepared.jobId,
+        "customer-txt/testfaelle.txt",
+        tenantB,
+      ),
+    ).rejects.toMatchObject({
+      code: "WORKBENCH_RUN_NOT_FOUND",
+      status: 404,
+    });
+    await expect(
+      readWorkbenchRunFile(
+        prepared.jobId,
+        "customer-txt/testfaelle.txt",
+        tenantA,
+      ),
+    ).resolves.toMatchObject({
+      contentType: "text/plain; charset=utf-8",
+    });
   });
 
   test("mock runner emits the generated Jira Story artifact in auto mode", async () => {

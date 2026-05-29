@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import {
   startWorkbenchRun,
+  toClientRunState,
   WorkbenchRunRegistryError,
 } from "@/lib/server/workbench-run-registry";
 import {
@@ -55,7 +56,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
           : new Date(),
     });
     const run = startWorkbenchRun(prepared);
-    return NextResponse.json({ run }, { status: 202 });
+    return NextResponse.json({ run: toClientRunState(run) }, { status: 202 });
   } catch (error) {
     if (error instanceof WorkbenchRunValidationError) {
       return jsonError({

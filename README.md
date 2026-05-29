@@ -93,9 +93,18 @@ or entering the values manually.
 Runtime state, PID files, and logs are written under
 `.test-intelligence/local-runtime/` and are intentionally ignored by Git.
 
-The Workbench currently provides Runs and Model Settings for local operator
-workflows. Run History is read-only sample data until persisted history loading
-is implemented.
+The Workbench provides Runs, Snapshot Vault, Model Settings, and Run History
+for local operator workflows. Snapshot Vault can import or refresh a Figma board
+when a Figma access token is configured, then browse validated repo-local
+snapshot artifacts under `.test-intelligence/figma-snapshots/`. Import/refresh
+is the live Figma path; catalog browsing, search, node inspection, preview-plan
+rendering, scope preflight, and run-from-snapshot launch use only local cached
+snapshot artifacts. The browser receives snapshot IDs, hashed source identity,
+tenant scope, status metadata, and selected page/frame/node IDs; it does not
+need raw Figma URLs, tokens, or private vault paths for run-from-snapshot.
+
+Run History is read-only sample data until persisted history loading is
+implemented.
 
 ## Final Local E2E
 
