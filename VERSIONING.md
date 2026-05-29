@@ -31,3 +31,10 @@ internal documentation are not public compatibility guarantees.
 Schema-versioned artifacts carry their own version fields. Artifact consumers
 should validate those fields instead of relying only on the npm package
 version.
+
+For `0.2.0-beta.0`, Snapshot Vault artifacts use the `1.1.0` schema family for
+manifest, node-index, preview-manifest, and import-status artifacts. Generated
+test-case artifacts use `1.4.0` to identify optional Snapshot Vault audit-source
+metadata. The top-level contract constants remain read-compatible with legacy
+live-Figma and non-Figma evidence paths because the new fields are optional or
+specific to Snapshot Vault artifacts.

@@ -1,6 +1,6 @@
 {
   "name": "@oscharko-dev/ti-production-runner",
-  "version": "0.1.0-beta.6",
+  "version": "0.2.0-beta.0",
   "description": "Top-level orchestrator: ingestion, harness invocation, evidence collection, adapter factory.",
   "private": true,
   "type": "module",

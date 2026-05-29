@@ -1,6 +1,6 @@
 {
   "name": "@oscharko-dev/ti-integrations",
-  "version": "0.1.0-beta.6",
+  "version": "0.2.0-beta.0",
   "description": "TMS/QC push adapters, Jira-write adapter, traceability matrix, execution evidence ingest.",
   "private": true,
   "type": "module",

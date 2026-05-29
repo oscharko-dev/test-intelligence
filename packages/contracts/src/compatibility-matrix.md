@@ -19,11 +19,13 @@ surface. It changes only when the exported contract surface changes.
 `TEST_INTELLIGENCE_CONTRACT_VERSION` (`1.39.0`) versions the Test Intelligence
 sub-contract that engine modules and golden fixtures reference by name.
 
-Issue #35 adds optional sanitized Figma Snapshot Vault provenance fields to
-evidence, FinOps, genealogy, policy, compliance, and run-quality artifacts.
-These fields are additive and omitted by legacy artifact producers, so existing
-`TEST_INTELLIGENCE_CONTRACT_VERSION` and artifact schema-version constants remain
-read-compatible with legacy live-Figma and non-Figma evidence paths.
+Issues #29 through #37 add Snapshot Vault contracts, storage, local snapshot
+generation, provenance, large-board hardening, and public release packaging.
+The wire additions are optional or Snapshot Vault-specific, so
+`CONTRACT_VERSION` and `TEST_INTELLIGENCE_CONTRACT_VERSION` remain
+read-compatible with legacy live-Figma and non-Figma evidence paths. Snapshot
+Vault artifact schema constants and generated-test-case schema metadata identify
+the `0.2.0-beta.0` artifact family explicitly.
 
 When a major schema bump is published, the previous major's `CONTRACT_VERSION`
 remains documented in this file and in the package changelog. The package ships
@@ -37,12 +39,16 @@ sealed version before deserialising older evidence.
 These constants version individual artifact shapes. They are independent of
 `CONTRACT_VERSION` and of each other.
 
-| Constant                                    | Value   | Versions                                                   |
-| ------------------------------------------- | ------- | ---------------------------------------------------------- |
-| `GENERATED_TEST_CASE_SCHEMA_VERSION`        | `1.3.0` | Structural shape of a `GeneratedTestCaseList` artifact.    |
-| `TEST_INTELLIGENCE_PROMPT_TEMPLATE_VERSION` | `1.7.3` | Compiled prompt-template family that produced a case.      |
-| `VISUAL_SIDECAR_SCHEMA_VERSION`             | `1.1.0` | Visual sidecar schema consumed by the prompt compiler.     |
-| `REDACTION_POLICY_VERSION`                  | `1.0.0` | Redaction policy bundle applied before prompt compilation. |
+| Constant                                         | Value   | Versions                                                            |
+| ------------------------------------------------ | ------- | ------------------------------------------------------------------- |
+| `GENERATED_TEST_CASE_SCHEMA_VERSION`             | `1.4.0` | Structural shape of a `GeneratedTestCaseList` artifact.             |
+| `FIGMA_SNAPSHOT_MANIFEST_SCHEMA_VERSION`         | `1.1.0` | Persisted Snapshot Vault manifest artifact.                         |
+| `FIGMA_SNAPSHOT_NODE_INDEX_SCHEMA_VERSION`       | `1.1.0` | Persisted Snapshot Vault local node-index artifact.                 |
+| `FIGMA_SNAPSHOT_PREVIEW_MANIFEST_SCHEMA_VERSION` | `1.1.0` | Persisted Snapshot Vault preview manifest artifact.                 |
+| `FIGMA_SNAPSHOT_IMPORT_STATUS_SCHEMA_VERSION`    | `1.1.0` | Persisted Snapshot Vault resumable import-status artifact.          |
+| `TEST_INTELLIGENCE_PROMPT_TEMPLATE_VERSION`      | `1.7.3` | Compiled prompt-template family that produced a case.               |
+| `VISUAL_SIDECAR_SCHEMA_VERSION`                  | `1.1.0` | Visual sidecar schema consumed by the prompt compiler.              |
+| `REDACTION_POLICY_VERSION`                       | `1.0.0` | Redaction policy bundle applied before prompt compilation.          |
 
 ## Branded-ID prefix
 

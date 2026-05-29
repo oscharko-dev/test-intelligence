@@ -1,6 +1,6 @@
 {
   "name": "@oscharko-dev/ti-review",
-  "version": "0.1.0-beta.6",
+  "version": "0.2.0-beta.0",
   "description": "Human review queue, four-eyes governance, review state machine, review storage.",
   "private": true,
   "type": "module",

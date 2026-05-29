@@ -1,6 +1,6 @@
 {
   "name": "@oscharko-dev/ti-core-engine",
-  "version": "0.1.0-beta.6",
+  "version": "0.2.0-beta.0",
   "description": "Domain logic: intent derivation, reconciliation, test-design model, workflow state machine.",
   "private": true,
   "type": "module",
