@@ -281,10 +281,10 @@ interface MutableImportMetrics {
   previewCount: number;
   skippedPreviewCount: number;
   liveRestCallCount: number;
-  resumedChunkCount: number;
   peakWorkingSetBytes: number;
   peakHeapUsedBytes?: number;
   readonly chunkPayloadBytes: Map<string, number>;
+  readonly resumedChunkIds: Set<string>;
   nodeIndexBytes: number;
   previewManifestBytes: number;
   previewAssetBytes: number;
@@ -423,9 +423,9 @@ export const importStagedFigmaSnapshot = async (
       previewCount: 0,
       skippedPreviewCount: 0,
       liveRestCallCount: bootstrapLiveRestCallCount,
-      resumedChunkCount: 0,
       peakWorkingSetBytes: 0,
       chunkPayloadBytes: new Map<string, number>(),
+      resumedChunkIds: new Set<string>(),
       nodeIndexBytes: 0,
       previewManifestBytes: 0,
       previewAssetBytes: 0,
@@ -818,6 +818,10 @@ const importNodeChunks = async (input: {
 }): Promise<void> => {
   const missing: LogicalRootPlan[] = [];
   for (const root of input.rootPlans) {
+    if (input.state.completedChunkIds.has(root.nodeChunkId)) {
+      markCompletedCheckpointChunkReused(input.state, root.nodeChunkId);
+      continue;
+    }
     const cached = await readCachedChunk({
       state: input.state,
       chunkKind: "node",
@@ -951,6 +955,10 @@ const importImageMetadataChunks = async (input: {
 }): Promise<void> => {
   const missing: LogicalRootPlan[] = [];
   for (const root of input.rootPlans) {
+    if (input.state.completedChunkIds.has(root.imageChunkId)) {
+      markCompletedCheckpointChunkReused(input.state, root.imageChunkId);
+      continue;
+    }
     const cached = await readCachedChunk({
       state: input.state,
       chunkKind: "image_metadata",
@@ -1321,14 +1329,21 @@ const applyCheckpoint = async (input: {
       const inventory = chunkById.get(chunkId);
       if (inventory === undefined) continue;
       const chunkKind = chunkId.startsWith("node-") ? "node" : "image_metadata";
-      await readChunkFile({
+      const chunk = await readChunkFile({
         state: input.state,
         chunkKind,
         chunkId,
         figmaRevisionDigest: input.figmaRevisionDigest,
       });
+      if (chunk.chunkKind === "node") {
+        stateAddNodeCount(
+          input.state,
+          chunk.records.length,
+          "resumed node chunk",
+        );
+      }
       input.state.completedChunkIds.add(chunkId);
-      input.state.metrics.resumedChunkCount += 1;
+      input.state.metrics.resumedChunkIds.add(chunkId);
     }
   } catch (err) {
     if (err instanceof FigmaStagedImportError) throw err;
@@ -1391,7 +1406,8 @@ const readChunkFile = async <TKind extends StagedChunkKind>(input: {
       targetPath: path,
       label: "Figma staged import chunk",
     });
-    const payload = JSON.parse(await readFile(path, "utf8")) as unknown;
+    const content = await readFile(path, "utf8");
+    const payload = JSON.parse(content) as unknown;
     const chunk = validateChunkArtifact(payload);
     if (
       chunk.chunkKind !== input.chunkKind ||
@@ -1402,9 +1418,15 @@ const readChunkFile = async <TKind extends StagedChunkKind>(input: {
     ) {
       throw new Error("chunk metadata is incompatible with the current import");
     }
+    stateRecordChunkPayloadBytes(input.state, {
+      chunkId: chunk.chunkId,
+      byteLength: Buffer.byteLength(content, "utf8"),
+      phase: `${chunk.chunkKind} chunk payload`,
+    });
     return chunk as Extract<StagedChunkArtifact, { chunkKind: TKind }>;
   } catch (err) {
     if (isFileNotFound(err)) throw err;
+    if (err instanceof FigmaStagedImportError) throw err;
     if (err instanceof FigmaSnapshotVaultError) {
       throw new FigmaStagedImportError({
         errorCode: "unsafe_path",
@@ -1586,7 +1608,7 @@ const markChunkCompleted = (
   input: {
     chunkId: string;
     nodeCount: number;
-    contentDigest: string;
+    contentDigest?: string;
     reused: boolean;
   },
 ): void => {
@@ -1595,11 +1617,34 @@ const markChunkCompleted = (
     chunkId: input.chunkId,
     state: "completed",
     nodeCount: input.nodeCount,
-    contentDigest: input.contentDigest,
+    ...(input.contentDigest !== undefined
+      ? { contentDigest: input.contentDigest }
+      : {}),
   });
-  if (input.reused) state.reusedChunkIds.push(input.chunkId);
-  else state.fetchedChunkIds.push(input.chunkId);
+  if (input.reused) {
+    if (!state.reusedChunkIds.includes(input.chunkId)) {
+      state.reusedChunkIds.push(input.chunkId);
+    }
+  } else if (!state.fetchedChunkIds.includes(input.chunkId)) {
+    state.fetchedChunkIds.push(input.chunkId);
+  }
   state.dirty = true;
+};
+
+const markCompletedCheckpointChunkReused = (
+  state: MutableImportState,
+  chunkId: string,
+): void => {
+  const inventory = state.chunkInventory.get(chunkId);
+  if (inventory === undefined || inventory.state !== "completed") return;
+  markChunkCompleted(state, {
+    chunkId,
+    nodeCount: inventory.nodeCount,
+    ...(inventory.contentDigest !== undefined
+      ? { contentDigest: inventory.contentDigest }
+      : {}),
+    reused: true,
+  });
 };
 
 const stateAddNodeCount = (
@@ -1610,6 +1655,19 @@ const stateAddNodeCount = (
   state.metrics.nodeCount += nodeCount;
   updatePeakWorkingSetBytes(state);
   assertImportLimits(state, phase);
+};
+
+const stateRecordChunkPayloadBytes = (
+  state: MutableImportState,
+  input: {
+    readonly chunkId: string;
+    readonly byteLength: number;
+    readonly phase: string;
+  },
+): void => {
+  state.metrics.chunkPayloadBytes.set(input.chunkId, input.byteLength);
+  updatePeakWorkingSetBytes(state);
+  assertImportLimits(state, input.phase);
 };
 
 const resolveLargeBoardPolicy = (
@@ -1748,6 +1806,10 @@ const snapshotPerformanceMetrics = (
     state.metrics.manifestBytes;
   const elapsedMs = Math.max(0, Math.ceil(state.nowMs() - state.startedAtMs));
   const peakHeapUsedBytes = state.metrics.peakHeapUsedBytes;
+  const liveRestCallsAvoided = new Set([
+    ...state.reusedChunkIds,
+    ...state.metrics.resumedChunkIds,
+  ]).size;
   return {
     elapsedMs,
     nodeCount: state.metrics.nodeCount,
@@ -1761,8 +1823,8 @@ const snapshotPerformanceMetrics = (
     reusedChunkCount: state.reusedChunkIds.length,
     cacheHitCount: state.reusedChunkIds.length,
     liveRestCallCount: state.metrics.liveRestCallCount,
-    liveRestCallsAvoided: state.reusedChunkIds.length,
-    resumedChunkCount: state.metrics.resumedChunkCount,
+    liveRestCallsAvoided,
+    resumedChunkCount: state.metrics.resumedChunkIds.size,
     peakWorkingSetBytes: state.metrics.peakWorkingSetBytes,
     ...(peakHeapUsedBytes !== undefined ? { peakHeapUsedBytes } : {}),
   };

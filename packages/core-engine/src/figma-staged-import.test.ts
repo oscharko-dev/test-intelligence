@@ -739,6 +739,29 @@ void test("staged import resumes a safe checkpoint after interruption", async ()
     },
   );
 
+  const budgetMock = createMockFigmaFetch({ nodeIds });
+  await assert.rejects(
+    () =>
+      importWithMock(workspaceRoot, budgetMock, {
+        figmaUrl: `https://www.figma.com/design/${FILE_KEY}/Customer-Board`,
+        nodeBatchSize: 1,
+        checkpoint,
+        largeBoardPolicy: { maxPayloadBytes: 1 },
+      }),
+    (err: unknown): boolean => {
+      assert.ok(err instanceof FigmaStagedImportError);
+      assert.equal(err.failureClass, "oversized_board");
+      return true;
+    },
+  );
+  assert.equal(
+    countRequests(
+      budgetMock,
+      (url) => url.pathname === `/v1/files/${FILE_KEY}/nodes`,
+    ),
+    0,
+  );
+
   const secondMock = createMockFigmaFetch({ nodeIds });
   const resumed = await importWithMock(workspaceRoot, secondMock, {
     figmaUrl: `https://www.figma.com/design/${FILE_KEY}/Customer-Board`,
@@ -750,6 +773,10 @@ void test("staged import resumes a safe checkpoint after interruption", async ()
   assert.ok(
     resumed.reusedChunkIds.some((chunkId) => chunkId.startsWith("node-")),
   );
+  assert.equal(resumed.importStatus.metrics?.cacheHitCount, 1);
+  assert.equal(resumed.importStatus.metrics?.resumedChunkCount, 1);
+  assert.equal(resumed.importStatus.metrics?.liveRestCallsAvoided, 1);
+  assert.ok((resumed.importStatus.metrics?.payloadBytes ?? 0) > 0);
   const requestedNodeIds = secondMock.requestedUrls
     .map((rawUrl) => new URL(rawUrl))
     .filter((url) => url.pathname === `/v1/files/${FILE_KEY}/nodes`)
@@ -781,6 +808,11 @@ void test("staged import reuses unchanged cached chunks on repeated imports", as
     second.importStatus.metrics?.liveRestCallsAvoided,
     first.importStatus.chunks.length,
   );
+  assert.equal(
+    second.importStatus.metrics?.resumedChunkCount,
+    first.importStatus.chunks.length,
+  );
+  assert.ok((second.importStatus.metrics?.payloadBytes ?? 0) > 0);
   assert.equal(second.importStatus.metrics?.liveRestCallCount, 1);
   assert.equal(
     countRequests(
