@@ -225,12 +225,9 @@ void test("fetchFigmaFileForTestIntelligence sanitizes hostile rate-limit metada
       { err: "rate limited" },
       {
         "Retry-After": "61",
-        "X-Figma-Plan-Tier":
-          `enterprise https://customer.example/private?token=${FIGMA_TOKEN_PREFIX}plan_secret_value_1234567890`,
-        "X-Figma-Rate-Limit-Type":
-          `file_content ${FIGMA_TOKEN_PREFIX}limit_secret_value_1234567890`,
-        "X-Figma-Upgrade-Link":
-          `https://customer.example/upgrade?token=${FIGMA_TOKEN_PREFIX}upgrade_secret_value_1234567890`,
+        "X-Figma-Plan-Tier": `enterprise https://customer.example/private?token=${FIGMA_TOKEN_PREFIX}plan_secret_value_1234567890`,
+        "X-Figma-Rate-Limit-Type": `file_content ${FIGMA_TOKEN_PREFIX}limit_secret_value_1234567890`,
+        "X-Figma-Upgrade-Link": `https://customer.example/upgrade?token=${FIGMA_TOKEN_PREFIX}upgrade_secret_value_1234567890`,
       },
     )) as unknown as typeof fetch;
 
@@ -248,7 +245,10 @@ void test("fetchFigmaFileForTestIntelligence sanitizes hostile rate-limit metada
       assert.match(err.figmaUpgradeLinkDigest ?? "", /^[a-f0-9]{64}$/u);
       assert.doesNotMatch(err.message, /https:\/\/customer\.example/u);
       assert.doesNotMatch(err.message, /figd_/u);
-      assert.doesNotMatch(err.figmaPlanTier ?? "", /https:\/\/customer\.example/u);
+      assert.doesNotMatch(
+        err.figmaPlanTier ?? "",
+        /https:\/\/customer\.example/u,
+      );
       assert.doesNotMatch(err.figmaPlanTier ?? "", /figd_/u);
       assert.doesNotMatch(err.figmaRateLimitType ?? "", /figd_/u);
       assert.notEqual(
@@ -343,8 +343,7 @@ void test("fetchFigmaFileForTestIntelligence appends ids when nodeId is supplied
 });
 
 void test("fetchFigmaFileForTestIntelligence rejects unsafe nodeId before network calls", async () => {
-  const unsafeNodeId =
-    `https://customer.example/private?token=${FIGMA_TOKEN_PREFIX}supersecret_single_node_token_1234567890`;
+  const unsafeNodeId = `https://customer.example/private?token=${FIGMA_TOKEN_PREFIX}supersecret_single_node_token_1234567890`;
   let calls = 0;
   const fetchImpl = (async () => {
     calls += 1;
@@ -396,8 +395,7 @@ void test("fetchFigmaFileForTestIntelligence rejects URI-like nodeId before netw
 });
 
 void test("fetchFigmaNodesForTestIntelligence rejects unsafe node ids before network calls", async () => {
-  const unsafeNodeId =
-    `https://customer.example/private?token=${FIGMA_TOKEN_PREFIX}supersecret_node_token_1234567890`;
+  const unsafeNodeId = `https://customer.example/private?token=${FIGMA_TOKEN_PREFIX}supersecret_node_token_1234567890`;
   let calls = 0;
   const fetchImpl = (async () => {
     calls += 1;
@@ -481,9 +479,9 @@ void test("fetchFigmaNodesForTestIntelligence returns multi-id node documents", 
 });
 
 void test("fetchFigmaNodesForTestIntelligence redacts secret-shaped node ids in diagnostics", async () => {
-  const secretLikeNodeId =
-    `${FIGMA_TOKEN_PREFIX}supersecret_node_token_value_1234567890`;
-  const fetchImpl = (async () => okJson({ nodes: {} })) as unknown as typeof fetch;
+  const secretLikeNodeId = `${FIGMA_TOKEN_PREFIX}supersecret_node_token_value_1234567890`;
+  const fetchImpl = (async () =>
+    okJson({ nodes: {} })) as unknown as typeof fetch;
 
   await assert.rejects(
     () =>
@@ -526,8 +524,7 @@ void test("fetchFigmaImageMetadataForTestIntelligence persists only URL digests"
 });
 
 void test("fetchFigmaImageMetadataForTestIntelligence redacts secret-shaped node ids in diagnostics", async () => {
-  const secretLikeNodeId =
-    `${FIGMA_TOKEN_PREFIX}supersecret_image_token_value_1234567890`;
+  const secretLikeNodeId = `${FIGMA_TOKEN_PREFIX}supersecret_image_token_value_1234567890`;
   const fetchImpl = (async () =>
     okJson({
       images: {
@@ -581,12 +578,16 @@ void test("fetchFigmaNodesForTestIntelligence stops reading oversized streaming 
       err.errorClass === "transport" &&
       /exceeds 1024 bytes/u.test(err.message),
   );
-  assert.ok(pulls < 10, `expected early stream cancellation, got ${pulls} pulls`);
+  assert.ok(
+    pulls < 10,
+    `expected early stream cancellation, got ${pulls} pulls`,
+  );
 });
 
 void test("fetchFigmaScreenCapturesForTestIntelligence resolves image lookup URLs and returns PNG captures", async () => {
   const requestedUrls: string[] = [];
   const requestHeaders: Headers[] = [];
+  let observedFigmaRestRequests = 0;
   const fetchImpl = (async (url: string, init?: RequestInit) => {
     requestedUrls.push(url);
     requestHeaders.push(new Headers(init?.headers));
@@ -607,6 +608,9 @@ void test("fetchFigmaScreenCapturesForTestIntelligence resolves image lookup URL
     accessToken: "figd_test",
     screens: [{ screenId: "1:1", screenName: "Main Screen" }],
     fetchImpl,
+    onFigmaRestRequest: () => {
+      observedFigmaRestRequests += 1;
+    },
   });
   assert.equal(captures.length, 1);
   assert.equal(captures[0]?.screenId, "1:1");
@@ -627,6 +631,7 @@ void test("fetchFigmaScreenCapturesForTestIntelligence resolves image lookup URL
   assert.equal(requestHeaders.length, 2);
   assert.equal(requestHeaders[0]?.get("x-figma-token"), "figd_test");
   assert.equal(requestHeaders[1]?.get("x-figma-token"), null);
+  assert.equal(observedFigmaRestRequests, 1);
 });
 
 void test("fetchFigmaScreenCapturesForTestIntelligence batches Figma image lookup ids", async () => {

@@ -165,6 +165,8 @@ export interface FetchFigmaFileForTestIntelligenceInput {
   maxResponseBytes?: number;
   /** Observer used by resumable import orchestration to persist safe metadata. */
   onRateLimited?: FigmaRestRateLimitObserver;
+  /** Observer invoked before each live Figma REST request attempt. */
+  onFigmaRestRequest?: FigmaRestRequestObserver;
   /** Override for tests so 429 handling can be verified without wall-clock waits. */
   sleepMs?: (ms: number) => Promise<void>;
 }
@@ -180,6 +182,8 @@ export interface FetchFigmaScreenCapturesForTestIntelligenceInput {
   timeoutMs?: number;
   maxResponseBytes?: number;
   scale?: number;
+  /** Observer invoked before each live Figma REST request attempt. */
+  onFigmaRestRequest?: FigmaRestRequestObserver;
 }
 
 export interface FigmaRestRateLimitMetadata {
@@ -193,6 +197,8 @@ export type FigmaRestRateLimitObserver = (
   metadata: Readonly<FigmaRestRateLimitMetadata>,
 ) => void;
 
+export type FigmaRestRequestObserver = () => void;
+
 export interface FetchFigmaNodesForTestIntelligenceInput {
   fileKey: string;
   accessToken: string;
@@ -202,6 +208,7 @@ export interface FetchFigmaNodesForTestIntelligenceInput {
   timeoutMs?: number;
   maxResponseBytes?: number;
   onRateLimited?: FigmaRestRateLimitObserver;
+  onFigmaRestRequest?: FigmaRestRequestObserver;
   sleepMs?: (ms: number) => Promise<void>;
 }
 
@@ -223,6 +230,7 @@ export interface FetchFigmaImageMetadataForTestIntelligenceInput {
   maxResponseBytes?: number;
   scale?: number;
   onRateLimited?: FigmaRestRateLimitObserver;
+  onFigmaRestRequest?: FigmaRestRequestObserver;
   sleepMs?: (ms: number) => Promise<void>;
 }
 
@@ -364,6 +372,9 @@ export const fetchFigmaFileForTestIntelligence = async (
           ...(input.onRateLimited !== undefined
             ? { onRateLimited: input.onRateLimited }
             : {}),
+          ...(input.onFigmaRestRequest !== undefined
+            ? { onFigmaRestRequest: input.onFigmaRestRequest }
+            : {}),
           ...(input.sleepMs !== undefined ? { sleepMs: input.sleepMs } : {}),
         }
       : {
@@ -376,6 +387,9 @@ export const fetchFigmaFileForTestIntelligence = async (
           fetchImpl,
           ...(input.onRateLimited !== undefined
             ? { onRateLimited: input.onRateLimited }
+            : {}),
+          ...(input.onFigmaRestRequest !== undefined
+            ? { onFigmaRestRequest: input.onFigmaRestRequest }
             : {}),
           ...(input.sleepMs !== undefined ? { sleepMs: input.sleepMs } : {}),
         };
@@ -520,6 +534,9 @@ export const fetchFigmaScreenCapturesForTestIntelligence = async (
     timeoutMs,
     maxResponseBytes,
     scale,
+    ...(input.onFigmaRestRequest !== undefined
+      ? { onFigmaRestRequest: input.onFigmaRestRequest }
+      : {}),
   });
   return Promise.all(
     screens.map(async (screen) => {
@@ -578,6 +595,9 @@ export const fetchFigmaNodesForTestIntelligence = async (
     timeoutMs,
     ...(input.onRateLimited !== undefined
       ? { onRateLimited: input.onRateLimited }
+      : {}),
+    ...(input.onFigmaRestRequest !== undefined
+      ? { onFigmaRestRequest: input.onFigmaRestRequest }
       : {}),
     ...(input.sleepMs !== undefined ? { sleepMs: input.sleepMs } : {}),
   });
@@ -651,6 +671,9 @@ export const fetchFigmaImageMetadataForTestIntelligence = async (
     timeoutMs,
     ...(input.onRateLimited !== undefined
       ? { onRateLimited: input.onRateLimited }
+      : {}),
+    ...(input.onFigmaRestRequest !== undefined
+      ? { onFigmaRestRequest: input.onFigmaRestRequest }
       : {}),
     ...(input.sleepMs !== undefined ? { sleepMs: input.sleepMs } : {}),
   });
@@ -883,7 +906,9 @@ const nonEmptyHeader = (value: string | null): string | undefined => {
   return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
 };
 
-const sanitizeRateLimitHeaderLabel = (value: string | null): string | undefined => {
+const sanitizeRateLimitHeaderLabel = (
+  value: string | null,
+): string | undefined => {
   const sanitized = nonEmptyHeader(value);
   if (sanitized === undefined) return undefined;
   const redacted = redactBoundedMessage(sanitized)
@@ -992,8 +1017,7 @@ const readRuntimeCaCertificates = (
 ): readonly string[] => {
   // Node 22.14 satisfies our engines range but does not expose this API yet.
   // Keep the namespace lookup lazy so the published CLI can load there.
-  const getRuntimeCaCertificates = (tls as RuntimeTlsModule)
-    .getCACertificates;
+  const getRuntimeCaCertificates = (tls as RuntimeTlsModule).getCACertificates;
   if (typeof getRuntimeCaCertificates === "function") {
     try {
       return getRuntimeCaCertificates(source);
@@ -1096,6 +1120,27 @@ const createTrustedFigmaFetch = (
   }) as typeof fetch;
 };
 
+const isFigmaRestApiUrl = (rawUrl: string): boolean => {
+  try {
+    const url = new URL(rawUrl);
+    return (
+      url.protocol === "https:" &&
+      url.hostname.toLowerCase() === FIGMA_REST_HOST
+    );
+  } catch {
+    return false;
+  }
+};
+
+const notifyFigmaRestRequest = (
+  rawUrl: string,
+  observer: FigmaRestRequestObserver | undefined,
+): void => {
+  if (observer !== undefined && isFigmaRestApiUrl(rawUrl)) {
+    observer();
+  }
+};
+
 const dispatchOnce = async (input: {
   url: string;
   accessToken: string;
@@ -1105,12 +1150,14 @@ const dispatchOnce = async (input: {
   maxResponseBytes: number;
   fetchImpl: typeof fetch;
   onRateLimited?: FigmaRestRateLimitObserver;
+  onFigmaRestRequest?: FigmaRestRequestObserver;
   sleepMs?: (ms: number) => Promise<void>;
 }): Promise<FigmaRestFileSnapshot | FigmaRestFetchError> => {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), input.timeoutMs);
   let response: Response;
   try {
+    notifyFigmaRestRequest(input.url, input.onFigmaRestRequest);
     response = await input.fetchImpl(input.url, {
       method: "GET",
       headers: {
@@ -1429,6 +1476,7 @@ const fetchFigmaRenderableImageUrls = async (input: {
   timeoutMs: number;
   maxResponseBytes: number;
   scale: number;
+  onFigmaRestRequest?: FigmaRestRequestObserver;
 }): Promise<Map<string, string>> => {
   const url = buildFigmaImageLookupUrl({
     fileKey: input.fileKey,
@@ -1451,6 +1499,9 @@ const fetchFigmaRenderableImageUrls = async (input: {
     accessToken: input.accessToken,
     fetchImpl: input.fetchImpl,
     timeoutMs: input.timeoutMs,
+    ...(input.onFigmaRestRequest !== undefined
+      ? { onFigmaRestRequest: input.onFigmaRestRequest }
+      : {}),
   });
   const bodyText = await readBoundedText(response, input.maxResponseBytes);
   let payload: unknown;
@@ -1476,9 +1527,10 @@ const fetchFigmaRenderableImageUrls = async (input: {
       retryable: false,
     });
   }
-  const images = (
-    (payload as Record<string, unknown>).images as Record<string, unknown>
-  );
+  const images = (payload as Record<string, unknown>).images as Record<
+    string,
+    unknown
+  >;
   const imageUrls = new Map<string, string>();
   for (const screenId of input.screenIds) {
     const imageUrl = images[screenId];
@@ -1528,6 +1580,7 @@ const dispatchHttpRequest = async (input: {
   fetchImpl: typeof fetch;
   timeoutMs: number;
   onRateLimited?: FigmaRestRateLimitObserver;
+  onFigmaRestRequest?: FigmaRestRequestObserver;
   sleepMs?: (ms: number) => Promise<void>;
 }): Promise<Response> => {
   let lastError: FigmaRestFetchError | undefined;
@@ -1535,6 +1588,7 @@ const dispatchHttpRequest = async (input: {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), input.timeoutMs);
     try {
+      notifyFigmaRestRequest(input.url, input.onFigmaRestRequest);
       const response = await input.fetchImpl(input.url, {
         method: "GET",
         headers:

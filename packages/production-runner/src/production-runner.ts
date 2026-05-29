@@ -270,6 +270,7 @@ import {
   parseFigmaUrl,
   type FigmaRestFileSnapshot,
   type FigmaRestNode,
+  type FigmaRestRequestObserver,
 } from "@oscharko-dev/ti-core-engine";
 import { readDriftCanaryFixtureIntentOverride } from "@oscharko-dev/ti-core-engine";
 import { normalizeFigmaFileToIntentInput } from "@oscharko-dev/ti-core-engine";
@@ -3111,6 +3112,7 @@ export const runFigmaToQcTestCases = async (
       input.customerProfile,
     );
     const tenantScope: TenantScope = __tenantScope;
+    const liveFigmaRestCounter = createLiveFigmaRestCounter();
 
     // 1. Resolve Figma source.
     emit({
@@ -3123,11 +3125,13 @@ export const runFigmaToQcTestCases = async (
       source: input.source,
       maxPayloadBytes: figmaPayloadCap,
       tenantScope,
+      onFigmaRestRequest: liveFigmaRestCounter.observe,
+      getLiveFigmaRestCallCount: liveFigmaRestCounter.count,
     });
     const figmaFile = resolvedSourceEvidence.figmaFile;
     const figmaPayloadActualBytes = resolvedSourceEvidence.payloadBytes;
     const snapshotSourceRef = resolvedSourceEvidence.snapshotSource;
-    const figmaSourceAudit =
+    let figmaSourceAudit =
       resolvedSourceEvidence.figmaSourceAudit === undefined
         ? undefined
         : sanitizeFigmaSourceAuditSummary(
@@ -3243,11 +3247,16 @@ export const runFigmaToQcTestCases = async (
         ...(input.source.caCertPath !== undefined
           ? { caCertPath: input.source.caCertPath }
           : {}),
+        onFigmaRestRequest: liveFigmaRestCounter.observe,
         screens: intent.screens.map((screen) => ({
           screenId: screen.screenId,
           screenName: screen.screenName,
         })),
       });
+      figmaSourceAudit = withObservedLiveFigmaRestCallCount(
+        figmaSourceAudit,
+        liveFigmaRestCounter.count(),
+      );
       visualCaptures = captures;
       try {
         visualCaptureArtifacts = await persistVisualCaptureArtifacts({
@@ -8466,10 +8475,25 @@ interface ResolvedProductionRunnerSourceEvidence {
   readonly snapshotUntrustedFigmaDocument?: unknown;
 }
 
+const createLiveFigmaRestCounter = (): {
+  observe: FigmaRestRequestObserver;
+  count: () => number;
+} => {
+  let requestCount = 0;
+  return {
+    observe: () => {
+      requestCount += 1;
+    },
+    count: () => requestCount,
+  };
+};
+
 const resolveProductionRunnerSourceEvidence = async (input: {
   readonly source: ProductionRunnerSource;
   readonly maxPayloadBytes: number;
   readonly tenantScope: TenantScope;
+  readonly onFigmaRestRequest?: FigmaRestRequestObserver;
+  readonly getLiveFigmaRestCallCount?: () => number;
 }): Promise<ResolvedProductionRunnerSourceEvidence> => {
   if (input.source.kind === "figma_snapshot") {
     if (
@@ -8543,6 +8567,7 @@ const resolveProductionRunnerSourceEvidence = async (input: {
   const figmaFile = await resolveFigmaSource(
     input.source,
     input.maxPayloadBytes,
+    input.onFigmaRestRequest,
   );
   return {
     figmaFile,
@@ -8550,17 +8575,21 @@ const resolveProductionRunnerSourceEvidence = async (input: {
       figmaFile,
       input.maxPayloadBytes,
     ),
-    figmaSourceAudit: buildFigmaSourceAuditForNonSnapshotSource(input.source),
+    figmaSourceAudit: buildFigmaSourceAuditForNonSnapshotSource(
+      input.source,
+      input.getLiveFigmaRestCallCount?.() ?? 0,
+    ),
   };
 };
 
 const buildFigmaSourceAuditForNonSnapshotSource = (
   source: Exclude<ProductionRunnerSource, { kind: "figma_snapshot" }>,
+  liveFigmaRestCallCount: number,
 ): FigmaSourceAuditSummary => {
   if (source.kind === "figma_url") {
     return {
       acquisitionMode: "live_figma_url",
-      liveFigmaRestCallCount: 1,
+      liveFigmaRestCallCount,
       avoidedLiveFigmaRestCallCount: 0,
       snapshotReuse: false,
     };
@@ -8571,6 +8600,19 @@ const buildFigmaSourceAuditForNonSnapshotSource = (
     avoidedLiveFigmaRestCallCount: 0,
     snapshotReuse: false,
   };
+};
+
+const withObservedLiveFigmaRestCallCount = (
+  audit: FigmaSourceAuditSummary | undefined,
+  liveFigmaRestCallCount: number,
+): FigmaSourceAuditSummary | undefined => {
+  if (audit === undefined || audit.acquisitionMode !== "live_figma_url") {
+    return audit;
+  }
+  return sanitizeFigmaSourceAuditSummary({
+    ...audit,
+    liveFigmaRestCallCount,
+  });
 };
 
 const assertFigmaSourceAuditSafeInteger = (
@@ -8746,6 +8788,7 @@ const sanitizeFigmaSourceAuditSummary = (
 const resolveFigmaSource = async (
   source: Exclude<ProductionRunnerSource, { kind: "figma_snapshot" }>,
   maxPayloadBytes: number,
+  onFigmaRestRequest?: FigmaRestRequestObserver,
 ): Promise<FigmaRestFileSnapshot> => {
   if (source.kind === "figma_paste_normalized") {
     return source.file;
@@ -8778,6 +8821,7 @@ const resolveFigmaSource = async (
       ...(source.caCertPath !== undefined
         ? { caCertPath: source.caCertPath }
         : {}),
+      ...(onFigmaRestRequest !== undefined ? { onFigmaRestRequest } : {}),
       maxResponseBytes: maxPayloadBytes,
       ...(parsed.nodeId !== undefined ? { nodeId: parsed.nodeId } : {}),
     });

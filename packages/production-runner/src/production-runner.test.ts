@@ -1206,10 +1206,10 @@ void test("runFigmaToQcTestCases resolves local snapshot source without live Fig
       result.customerMarkdownPaths.combined,
       "utf8",
     );
-    assert.match(customerMarkdown, /Snapshot reuse: yes/u);
+    assert.match(customerMarkdown, /Snapshot-Wiederverwendung: ja/u);
     assert.match(
       customerMarkdown,
-      /Live Figma REST calls in this generation: 0/u,
+      /Live-Figma-REST-Aufrufe in dieser Generierung: 0/u,
     );
     assert.doesNotMatch(customerMarkdown, /https:\/\/www\.figma\.com/u);
     assert.doesNotMatch(customerMarkdown, new RegExp(SNAPSHOT_ID, "u"));
@@ -3352,6 +3352,7 @@ void test("runFigmaToQcTestCases wires Figma URL screenshots through the visual 
     assert.equal(requestHeaders[0]?.get("x-figma-token"), "figd_test");
     assert.equal(requestHeaders[1]?.get("x-figma-token"), "figd_test");
     assert.equal(requestHeaders[2]?.get("x-figma-token"), null);
+    assert.equal(result.figmaSourceAudit?.liveFigmaRestCallCount, 2);
     const finopsReport = JSON.parse(
       await readFile(result.artifactPaths.finopsReport, "utf8"),
     ) as FinOpsBudgetReport & {

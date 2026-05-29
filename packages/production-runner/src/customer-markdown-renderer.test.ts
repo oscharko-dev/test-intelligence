@@ -203,11 +203,11 @@ void test("renderCustomerMarkdown surfaces snapshot reuse without raw customer U
     },
   });
 
-  assert.match(result.combinedMarkdown, /## Source evidence/u);
-  assert.match(result.combinedMarkdown, /Snapshot reuse: yes/u);
+  assert.match(result.combinedMarkdown, /## Quellen-Nachweis/u);
+  assert.match(result.combinedMarkdown, /Snapshot-Wiederverwendung: ja/u);
   assert.match(
     result.combinedMarkdown,
-    /Avoided live Figma REST calls through local evidence reuse: 1/u,
+    /Vermiedene Live-Figma-REST-Aufrufe durch lokale Wiederverwendung: 1/u,
   );
   assert.match(result.combinedMarkdown, /111111111111\.\.\./u);
   assert.doesNotMatch(result.combinedMarkdown, /snap-1/u);

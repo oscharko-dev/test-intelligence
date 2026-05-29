@@ -842,51 +842,53 @@ const appendFigmaSourceAuditSection = (
   audit: FigmaSourceAuditSummary,
   mode: "customer" | "technical",
 ): void => {
-  lines.push("## Source evidence");
+  lines.push("## Quellen-Nachweis");
   lines.push("");
-  lines.push(`Figma acquisition mode: ${audit.acquisitionMode}`);
+  lines.push(`Figma-Bezugsmodus: ${audit.acquisitionMode}`);
   lines.push(
-    `Live Figma REST calls in this generation: ${audit.liveFigmaRestCallCount}`,
+    `Live-Figma-REST-Aufrufe in dieser Generierung: ${audit.liveFigmaRestCallCount}`,
   );
   lines.push(
-    `Avoided live Figma REST calls through local evidence reuse: ${audit.avoidedLiveFigmaRestCallCount}`,
+    `Vermiedene Live-Figma-REST-Aufrufe durch lokale Wiederverwendung: ${audit.avoidedLiveFigmaRestCallCount}`,
   );
-  lines.push(`Snapshot reuse: ${audit.snapshotReuse ? "yes" : "no"}`);
+  lines.push(
+    `Snapshot-Wiederverwendung: ${audit.snapshotReuse ? "ja" : "nein"}`,
+  );
   if (audit.snapshotVault !== undefined) {
     const snapshot = audit.snapshotVault;
     lines.push("");
-    lines.push("| Field | Value |");
+    lines.push("| Feld | Wert |");
     lines.push("| --- | --- |");
     lines.push(
-      `| Snapshot ID hash | ${digestForMode(snapshot.snapshotIdHash, mode)} |`,
+      `| Snapshot-ID-Hash | ${digestForMode(snapshot.snapshotIdHash, mode)} |`,
     );
     lines.push(
       `| Snapshot digest | ${digestForMode(snapshot.snapshotDigest, mode)} |`,
     );
     lines.push(
-      `| Selected-scope digest | ${digestForMode(snapshot.scopeDigest, mode)} |`,
+      `| Digest des ausgewählten Umfangs | ${digestForMode(snapshot.scopeDigest, mode)} |`,
     );
     lines.push(
-      `| Source file-key hash | ${digestForMode(snapshot.fileKeyHash, mode)} |`,
+      `| Quell-File-Key-Hash | ${digestForMode(snapshot.fileKeyHash, mode)} |`,
     );
     lines.push(
-      `| Source URL hash | ${digestForMode(snapshot.sourceUrlHash, mode)} |`,
+      `| Quell-URL-Hash | ${digestForMode(snapshot.sourceUrlHash, mode)} |`,
     );
     lines.push(
-      `| Selected local nodes | ${snapshot.selectedNodeCount.toString()} |`,
+      `| Ausgewählte lokale Knoten | ${snapshot.selectedNodeCount.toString()} |`,
     );
     if (mode === "technical") {
       lines.push(
-        `| Selected node ref hashes | ${escapeTableCell(snapshot.selectedNodeRefHashes.join(", "))} |`,
+        `| Ausgewählte Knotenreferenz-Hashes | ${escapeTableCell(snapshot.selectedNodeRefHashes.join(", "))} |`,
       );
       lines.push(
-        `| Selected page ref hashes | ${escapeTableCell(snapshot.selectedPageRefHashes.join(", "))} |`,
+        `| Ausgewählte Seitenreferenz-Hashes | ${escapeTableCell(snapshot.selectedPageRefHashes.join(", "))} |`,
       );
       lines.push(
-        `| Selected frame ref hashes | ${escapeTableCell(snapshot.selectedFrameRefHashes.join(", "))} |`,
+        `| Ausgewählte Frame-Referenz-Hashes | ${escapeTableCell(snapshot.selectedFrameRefHashes.join(", "))} |`,
       );
       lines.push(
-        `| Import-status digest | ${digestForMode(snapshot.importStatusDigest, mode)} |`,
+        `| Importstatus-Digest | ${digestForMode(snapshot.importStatusDigest, mode)} |`,
       );
     }
   }
