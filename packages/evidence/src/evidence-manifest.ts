@@ -45,6 +45,7 @@ import {
   WAVE1_VALIDATION_EVIDENCE_MANIFEST_SCHEMA_VERSION,
   type ActiveModelBinding,
   type AgentModelBinding,
+  type FigmaSourceAuditSummary,
   type RegionAttestation,
   type Wave1ValidationEvidenceArtifact,
   type Wave1ValidationEvidenceArtifactCategory,
@@ -244,6 +245,8 @@ export interface BuildWave1ValidationEvidenceManifestInput {
   visualSidecarCaptureIdentities?: readonly VisualSidecarCaptureIdentity[];
   /** Active model-binding summary attested for this run. */
   activeModelBindings?: readonly ActiveModelBinding[];
+  /** Sanitized Figma acquisition and Snapshot Vault provenance summary. */
+  figmaSourceAudit?: FigmaSourceAuditSummary;
   /** Additive Wave 4 multi-source evidence metadata. */
   multiSource?: {
     sourceProvenanceRecords: readonly MultiSourceSourceProvenanceRecord[];
@@ -267,7 +270,10 @@ const toBytes = (value: Uint8Array | Buffer): Uint8Array => {
 const cloneActiveModelBinding = (
   binding: AgentModelBinding,
 ): ActiveModelBinding => {
-  if (typeof binding.providerId !== "string" || binding.providerId.length === 0) {
+  if (
+    typeof binding.providerId !== "string" ||
+    binding.providerId.length === 0
+  ) {
     throw new RangeError(
       "buildWave1ValidationEvidenceManifest: activeModelBindings.providerId must be a non-empty string",
     );
@@ -328,19 +334,186 @@ const cloneActiveModelBindings = (
 ): ActiveModelBinding[] =>
   [...bindings]
     .map((binding) => cloneActiveModelBinding(binding))
-    .sort((left, right) =>
-      left.providerId.localeCompare(right.providerId) ||
-      left.modelId.localeCompare(right.modelId) ||
-      (left.inferenceProfileId ?? "").localeCompare(
-        right.inferenceProfileId ?? "",
-      ) ||
-      (left.ictRegisterRef ?? "").localeCompare(right.ictRegisterRef ?? ""),
+    .sort(
+      (left, right) =>
+        left.providerId.localeCompare(right.providerId) ||
+        left.modelId.localeCompare(right.modelId) ||
+        (left.inferenceProfileId ?? "").localeCompare(
+          right.inferenceProfileId ?? "",
+        ) ||
+        (left.ictRegisterRef ?? "").localeCompare(right.ictRegisterRef ?? ""),
     );
 
 const cloneVisualSidecarCaptureIdentities = (
   identities: readonly VisualSidecarCaptureIdentity[],
 ): VisualSidecarCaptureIdentity[] =>
   identities.map((identity) => ({ ...identity }));
+
+const cloneSnapshotHashArray = (
+  field: string,
+  values: readonly string[],
+): readonly string[] => {
+  if (
+    !Array.isArray(values) ||
+    !values.every((value) => typeof value === "string" && HEX64.test(value))
+  ) {
+    throw new RangeError(
+      `buildWave1ValidationEvidenceManifest: figmaSourceAudit.snapshotVault.${field} must be an array of sha256 hex strings`,
+    );
+  }
+  return Object.freeze([...values]);
+};
+
+const validateNonNegativeSafeInteger = (
+  field: string,
+  value: number,
+): number => {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new RangeError(
+      `buildWave1ValidationEvidenceManifest: figmaSourceAudit.${field} must be a non-negative safe integer`,
+    );
+  }
+  return value;
+};
+
+const cloneFigmaSourceAudit = (
+  input: FigmaSourceAuditSummary,
+): FigmaSourceAuditSummary => {
+  if (
+    input.acquisitionMode !== "live_figma_url" &&
+    input.acquisitionMode !== "snapshot_vault" &&
+    input.acquisitionMode !== "offline_figma_payload"
+  ) {
+    throw new RangeError(
+      "buildWave1ValidationEvidenceManifest: figmaSourceAudit.acquisitionMode is invalid",
+    );
+  }
+  if (input.acquisitionMode === "snapshot_vault") {
+    if (!input.snapshotReuse || input.snapshotVault === undefined) {
+      throw new RangeError(
+        "buildWave1ValidationEvidenceManifest: figmaSourceAudit snapshot_vault acquisition requires snapshot reuse provenance",
+      );
+    }
+  } else if (input.snapshotReuse || input.snapshotVault !== undefined) {
+    throw new RangeError(
+      "buildWave1ValidationEvidenceManifest: figmaSourceAudit non-snapshot acquisition must not carry snapshotVault provenance",
+    );
+  }
+  if (input.snapshotVault !== undefined) {
+    if (input.snapshotVault.sourceKind !== "figma_snapshot_vault") {
+      throw new RangeError(
+        "buildWave1ValidationEvidenceManifest: figmaSourceAudit.snapshotVault.sourceKind is invalid",
+      );
+    }
+    if (
+      input.snapshotVault.scopeDigestAlgorithm !==
+      "sha256_canonical_selection_v1"
+    ) {
+      throw new RangeError(
+        "buildWave1ValidationEvidenceManifest: figmaSourceAudit.snapshotVault.scopeDigestAlgorithm is invalid",
+      );
+    }
+    for (const [field, value] of Object.entries({
+      importedAt: input.snapshotVault.importedAt,
+      importStrategy: input.snapshotVault.importStrategy,
+    })) {
+      if (typeof value !== "string" || value.length === 0) {
+        throw new RangeError(
+          `buildWave1ValidationEvidenceManifest: figmaSourceAudit.snapshotVault.${field} must be a non-empty string`,
+        );
+      }
+    }
+    for (const [field, value] of Object.entries({
+      snapshotIdHash: input.snapshotVault.snapshotIdHash,
+      snapshotDigest: input.snapshotVault.snapshotDigest,
+      nodeIndexDigest: input.snapshotVault.nodeIndexDigest,
+      importStatusDigest: input.snapshotVault.importStatusDigest,
+      fileKeyHash: input.snapshotVault.fileKeyHash,
+      sourceUrlHash: input.snapshotVault.sourceUrlHash,
+      scopeDigest: input.snapshotVault.scopeDigest,
+      ...(input.snapshotVault.previewManifestDigest !== undefined
+        ? { previewManifestDigest: input.snapshotVault.previewManifestDigest }
+        : {}),
+    })) {
+      if (!HEX64.test(value)) {
+        throw new RangeError(
+          `buildWave1ValidationEvidenceManifest: figmaSourceAudit.snapshotVault.${field} must be a sha256 hex string`,
+        );
+      }
+    }
+    if (
+      input.snapshotVault.selectedNodeCount !==
+        input.snapshotVault.selectedNodeRefHashes.length ||
+      input.snapshotVault.selectedPageCount !==
+        input.snapshotVault.selectedPageRefHashes.length ||
+      input.snapshotVault.selectedFrameCount !==
+        input.snapshotVault.selectedFrameRefHashes.length
+    ) {
+      throw new RangeError(
+        "buildWave1ValidationEvidenceManifest: figmaSourceAudit.snapshotVault selected reference counts must match hash arrays",
+      );
+    }
+  }
+  return Object.freeze({
+    acquisitionMode: input.acquisitionMode,
+    liveFigmaRestCallCount: validateNonNegativeSafeInteger(
+      "liveFigmaRestCallCount",
+      input.liveFigmaRestCallCount,
+    ),
+    avoidedLiveFigmaRestCallCount: validateNonNegativeSafeInteger(
+      "avoidedLiveFigmaRestCallCount",
+      input.avoidedLiveFigmaRestCallCount,
+    ),
+    snapshotReuse: input.snapshotReuse,
+    ...(input.snapshotVault !== undefined
+      ? {
+          snapshotVault: Object.freeze({
+            sourceKind: input.snapshotVault.sourceKind,
+            snapshotIdHash: input.snapshotVault.snapshotIdHash,
+            snapshotDigest: input.snapshotVault.snapshotDigest,
+            nodeIndexDigest: input.snapshotVault.nodeIndexDigest,
+            importStatusDigest: input.snapshotVault.importStatusDigest,
+            ...(input.snapshotVault.previewManifestDigest !== undefined
+              ? {
+                  previewManifestDigest:
+                    input.snapshotVault.previewManifestDigest,
+                }
+              : {}),
+            fileKeyHash: input.snapshotVault.fileKeyHash,
+            sourceUrlHash: input.snapshotVault.sourceUrlHash,
+            importedAt: input.snapshotVault.importedAt,
+            importStrategy: input.snapshotVault.importStrategy,
+            scopeDigestAlgorithm: input.snapshotVault.scopeDigestAlgorithm,
+            scopeDigest: input.snapshotVault.scopeDigest,
+            selectedNodeCount: validateNonNegativeSafeInteger(
+              "snapshotVault.selectedNodeCount",
+              input.snapshotVault.selectedNodeCount,
+            ),
+            selectedPageCount: validateNonNegativeSafeInteger(
+              "snapshotVault.selectedPageCount",
+              input.snapshotVault.selectedPageCount,
+            ),
+            selectedFrameCount: validateNonNegativeSafeInteger(
+              "snapshotVault.selectedFrameCount",
+              input.snapshotVault.selectedFrameCount,
+            ),
+            selectedNodeRefHashes: cloneSnapshotHashArray(
+              "selectedNodeRefHashes",
+              input.snapshotVault.selectedNodeRefHashes,
+            ),
+            selectedPageRefHashes: cloneSnapshotHashArray(
+              "selectedPageRefHashes",
+              input.snapshotVault.selectedPageRefHashes,
+            ),
+            selectedFrameRefHashes: cloneSnapshotHashArray(
+              "selectedFrameRefHashes",
+              input.snapshotVault.selectedFrameRefHashes,
+            ),
+          }),
+        }
+      : {}),
+  });
+};
 
 const sha256OfBytes = (bytes: Uint8Array): string => {
   return createHash("sha256").update(bytes).digest("hex");
@@ -455,6 +628,10 @@ export const buildWave1ValidationEvidenceManifest = (
     input.activeModelBindings !== undefined
       ? cloneActiveModelBindings(input.activeModelBindings)
       : undefined;
+  const figmaSourceAudit =
+    input.figmaSourceAudit !== undefined
+      ? cloneFigmaSourceAudit(input.figmaSourceAudit)
+      : undefined;
 
   const manifest: Wave1ValidationEvidenceManifest = {
     schemaVersion: WAVE1_VALIDATION_EVIDENCE_MANIFEST_SCHEMA_VERSION,
@@ -493,6 +670,7 @@ export const buildWave1ValidationEvidenceManifest = (
           rawPasteBytesPersisted: false,
         }
       : {}),
+    ...(figmaSourceAudit !== undefined ? { figmaSourceAudit } : {}),
     rawScreenshotsIncluded: false,
     imagePayloadSentToTestGeneration: false,
   };
@@ -615,7 +793,9 @@ export class Wave1ValidationEvidenceManifestLoadError extends Error {
     reason: Wave1ValidationEvidenceManifestLoadError["reason"],
     manifestPath: string,
   ) {
-    super(`verifyWave1ValidationEvidenceFromDisk: ${reason} in ${manifestPath}`);
+    super(
+      `verifyWave1ValidationEvidenceFromDisk: ${reason} in ${manifestPath}`,
+    );
     this.name = "Wave1ValidationEvidenceManifestLoadError";
     this.reason = reason;
   }
@@ -661,6 +841,212 @@ const hasOnlyKnownKeys = (
   allowed: ReadonlySet<string>,
 ): boolean => Object.keys(value).every((key) => allowed.has(key));
 
+const validateFigmaSourceAuditMetadata = (
+  value: unknown,
+  issues: string[],
+): void => {
+  if (!isRecord(value)) {
+    issues.push("figmaSourceAudit must be an object");
+    return;
+  }
+  if (
+    !hasOnlyKnownKeys(
+      value,
+      new Set([
+        "acquisitionMode",
+        "liveFigmaRestCallCount",
+        "avoidedLiveFigmaRestCallCount",
+        "snapshotReuse",
+        "snapshotVault",
+      ]),
+    )
+  ) {
+    issues.push("figmaSourceAudit contains unknown keys");
+  }
+  const acquisitionMode = value["acquisitionMode"];
+  if (
+    acquisitionMode !== "live_figma_url" &&
+    acquisitionMode !== "snapshot_vault" &&
+    acquisitionMode !== "offline_figma_payload"
+  ) {
+    issues.push("figmaSourceAudit.acquisitionMode is invalid");
+  }
+  for (const field of [
+    "liveFigmaRestCallCount",
+    "avoidedLiveFigmaRestCallCount",
+  ] as const) {
+    if (
+      typeof value[field] !== "number" ||
+      !Number.isSafeInteger(value[field]) ||
+      value[field] < 0
+    ) {
+      issues.push(`figmaSourceAudit.${field} must be a non-negative integer`);
+    }
+  }
+  if (typeof value["snapshotReuse"] !== "boolean") {
+    issues.push("figmaSourceAudit.snapshotReuse must be a boolean");
+  }
+  const snapshotVault = value["snapshotVault"];
+  if (value["snapshotReuse"] === true && snapshotVault === undefined) {
+    issues.push(
+      "figmaSourceAudit.snapshotVault is required for snapshot reuse",
+    );
+  }
+  if (acquisitionMode === "snapshot_vault" && snapshotVault === undefined) {
+    issues.push(
+      "figmaSourceAudit.snapshotVault is required for snapshot_vault acquisition",
+    );
+  }
+  if (
+    acquisitionMode !== "snapshot_vault" &&
+    (value["snapshotReuse"] === true || snapshotVault !== undefined)
+  ) {
+    issues.push(
+      "figmaSourceAudit non-snapshot acquisition must not carry snapshotVault provenance",
+    );
+  }
+  if (snapshotVault === undefined) return;
+  if (!isRecord(snapshotVault)) {
+    issues.push("figmaSourceAudit.snapshotVault must be an object");
+    return;
+  }
+  if (
+    !hasOnlyKnownKeys(
+      snapshotVault,
+      new Set([
+        "sourceKind",
+        "snapshotIdHash",
+        "snapshotDigest",
+        "nodeIndexDigest",
+        "importStatusDigest",
+        "previewManifestDigest",
+        "fileKeyHash",
+        "sourceUrlHash",
+        "importedAt",
+        "importStrategy",
+        "scopeDigestAlgorithm",
+        "scopeDigest",
+        "selectedNodeCount",
+        "selectedPageCount",
+        "selectedFrameCount",
+        "selectedNodeRefHashes",
+        "selectedPageRefHashes",
+        "selectedFrameRefHashes",
+      ]),
+    )
+  ) {
+    issues.push("figmaSourceAudit.snapshotVault contains unknown keys");
+  }
+  if (snapshotVault["sourceKind"] !== "figma_snapshot_vault") {
+    issues.push("figmaSourceAudit.snapshotVault.sourceKind is invalid");
+  }
+  for (const field of [
+    "snapshotIdHash",
+    "snapshotDigest",
+    "nodeIndexDigest",
+    "importStatusDigest",
+    "fileKeyHash",
+    "sourceUrlHash",
+    "scopeDigest",
+  ] as const) {
+    if (
+      typeof snapshotVault[field] !== "string" ||
+      !HEX64.test(snapshotVault[field])
+    ) {
+      issues.push(
+        `figmaSourceAudit.snapshotVault.${field} must be a sha256 hex string`,
+      );
+    }
+  }
+  if (
+    snapshotVault["previewManifestDigest"] !== undefined &&
+    (typeof snapshotVault["previewManifestDigest"] !== "string" ||
+      !HEX64.test(snapshotVault["previewManifestDigest"]))
+  ) {
+    issues.push(
+      "figmaSourceAudit.snapshotVault.previewManifestDigest must be a sha256 hex string",
+    );
+  }
+  for (const field of ["importedAt", "importStrategy"] as const) {
+    if (
+      typeof snapshotVault[field] !== "string" ||
+      snapshotVault[field].length === 0
+    ) {
+      issues.push(
+        `figmaSourceAudit.snapshotVault.${field} must be a non-empty string`,
+      );
+    }
+  }
+  if (
+    snapshotVault["scopeDigestAlgorithm"] !== "sha256_canonical_selection_v1"
+  ) {
+    issues.push(
+      "figmaSourceAudit.snapshotVault.scopeDigestAlgorithm is invalid",
+    );
+  }
+  for (const field of [
+    "selectedNodeCount",
+    "selectedPageCount",
+    "selectedFrameCount",
+  ] as const) {
+    if (
+      typeof snapshotVault[field] !== "number" ||
+      !Number.isSafeInteger(snapshotVault[field]) ||
+      snapshotVault[field] < 0
+    ) {
+      issues.push(
+        `figmaSourceAudit.snapshotVault.${field} must be a non-negative integer`,
+      );
+    }
+  }
+  for (const field of [
+    "selectedNodeRefHashes",
+    "selectedPageRefHashes",
+    "selectedFrameRefHashes",
+  ] as const) {
+    if (
+      !Array.isArray(snapshotVault[field]) ||
+      !snapshotVault[field].every(
+        (item) => typeof item === "string" && HEX64.test(item),
+      )
+    ) {
+      issues.push(
+        `figmaSourceAudit.snapshotVault.${field} must be an array of sha256 hex strings`,
+      );
+    }
+  }
+  if (
+    typeof snapshotVault["selectedNodeCount"] === "number" &&
+    Array.isArray(snapshotVault["selectedNodeRefHashes"]) &&
+    snapshotVault["selectedNodeCount"] !==
+      snapshotVault["selectedNodeRefHashes"].length
+  ) {
+    issues.push(
+      "figmaSourceAudit.snapshotVault.selectedNodeCount must match selectedNodeRefHashes length",
+    );
+  }
+  if (
+    typeof snapshotVault["selectedPageCount"] === "number" &&
+    Array.isArray(snapshotVault["selectedPageRefHashes"]) &&
+    snapshotVault["selectedPageCount"] !==
+      snapshotVault["selectedPageRefHashes"].length
+  ) {
+    issues.push(
+      "figmaSourceAudit.snapshotVault.selectedPageCount must match selectedPageRefHashes length",
+    );
+  }
+  if (
+    typeof snapshotVault["selectedFrameCount"] === "number" &&
+    Array.isArray(snapshotVault["selectedFrameRefHashes"]) &&
+    snapshotVault["selectedFrameCount"] !==
+      snapshotVault["selectedFrameRefHashes"].length
+  ) {
+    issues.push(
+      "figmaSourceAudit.snapshotVault.selectedFrameCount must match selectedFrameRefHashes length",
+    );
+  }
+};
+
 export const validateWave1ValidationEvidenceManifestMetadata = (
   manifest: Wave1ValidationEvidenceManifest,
 ): string[] => {
@@ -677,6 +1063,9 @@ export const validateWave1ValidationEvidenceManifestMetadata = (
     issues.push(
       `subprocessorRegisterVersion must equal ${SUBPROCESSOR_REGISTER_VERSION}`,
     );
+  }
+  if (raw["figmaSourceAudit"] !== undefined) {
+    validateFigmaSourceAuditMetadata(raw["figmaSourceAudit"], issues);
   }
   for (const hashField of [
     "promptHash",
@@ -872,7 +1261,8 @@ const evaluateManifestIntegrity = (
       ok: boolean;
     }
   | undefined => {
-  const actualHash = computeWave1ValidationEvidenceManifestIntegrityHash(manifest);
+  const actualHash =
+    computeWave1ValidationEvidenceManifestIntegrityHash(manifest);
   const raw = manifest as unknown as Record<string, unknown>;
   const integrity = raw["manifestIntegrity"];
 
@@ -987,8 +1377,12 @@ export const verifyWave1ValidationEvidenceManifest = async (
       if (!isENOENT(err)) throw err;
     }
     unexpected = entries
-      .filter((name) => name !== WAVE1_VALIDATION_EVIDENCE_MANIFEST_ARTIFACT_FILENAME)
-      .filter((name) => name !== WAVE1_VALIDATION_EVIDENCE_MANIFEST_DIGEST_FILENAME)
+      .filter(
+        (name) => name !== WAVE1_VALIDATION_EVIDENCE_MANIFEST_ARTIFACT_FILENAME,
+      )
+      .filter(
+        (name) => name !== WAVE1_VALIDATION_EVIDENCE_MANIFEST_DIGEST_FILENAME,
+      )
       .filter((name) => !attested.has(name))
       .sort();
   }
@@ -1047,7 +1441,8 @@ export const verifyWave1ValidationEvidenceFromDisk = async (
     );
   }
   if (
-    parsedRaw["schemaVersion"] !== WAVE1_VALIDATION_EVIDENCE_MANIFEST_SCHEMA_VERSION ||
+    parsedRaw["schemaVersion"] !==
+      WAVE1_VALIDATION_EVIDENCE_MANIFEST_SCHEMA_VERSION ||
     parsedRaw["testIntelligenceContractVersion"] !==
       TEST_INTELLIGENCE_CONTRACT_VERSION
   ) {

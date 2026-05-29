@@ -166,6 +166,55 @@ void test("renderCustomerMarkdown emits a German-format combined document with o
   );
 });
 
+void test("renderCustomerMarkdown surfaces snapshot reuse without raw customer URLs", () => {
+  const result = renderCustomerMarkdown({
+    list: {
+      schemaVersion: GENERATED_TEST_CASE_SCHEMA_VERSION,
+      jobId: "job-1",
+      testCases: [buildCase()],
+    },
+    fileName: "Snapshot View",
+    sourceLabel: "(figma_snapshot:000000000000)",
+    generatedAt: "2026-05-02T10:00:00Z",
+    figmaSourceAudit: {
+      acquisitionMode: "snapshot_vault",
+      liveFigmaRestCallCount: 0,
+      avoidedLiveFigmaRestCallCount: 1,
+      snapshotReuse: true,
+      snapshotVault: {
+        sourceKind: "figma_snapshot_vault",
+        snapshotIdHash: "0".repeat(64),
+        snapshotDigest: "1".repeat(64),
+        nodeIndexDigest: "2".repeat(64),
+        importStatusDigest: "3".repeat(64),
+        fileKeyHash: "4".repeat(64),
+        sourceUrlHash: "5".repeat(64),
+        importedAt: "2026-05-29T06:15:00.000Z",
+        importStrategy: "rest_nodes",
+        scopeDigestAlgorithm: "sha256_canonical_selection_v1",
+        scopeDigest: "6".repeat(64),
+        selectedNodeCount: 2,
+        selectedPageCount: 1,
+        selectedFrameCount: 1,
+        selectedNodeRefHashes: ["7".repeat(64), "8".repeat(64)],
+        selectedPageRefHashes: ["9".repeat(64)],
+        selectedFrameRefHashes: ["a".repeat(64)],
+      },
+    },
+  });
+
+  assert.match(result.combinedMarkdown, /## Source evidence/u);
+  assert.match(result.combinedMarkdown, /Snapshot reuse: yes/u);
+  assert.match(
+    result.combinedMarkdown,
+    /Avoided live Figma REST calls through local evidence reuse: 1/u,
+  );
+  assert.match(result.combinedMarkdown, /111111111111\.\.\./u);
+  assert.doesNotMatch(result.combinedMarkdown, /snap-1/u);
+  assert.doesNotMatch(result.combinedMarkdown, /node-a/u);
+  assert.doesNotMatch(result.combinedMarkdown, /https:\/\/www\.figma\.com/u);
+});
+
 void test("markdownToCustomerPlainText converts customer Markdown into readable text", () => {
   const text = markdownToCustomerPlainText(
     [

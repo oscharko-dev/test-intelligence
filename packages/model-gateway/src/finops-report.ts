@@ -42,6 +42,7 @@ import {
   type FinOpsBudgetBreachReason,
   type FinOpsBudgetEnvelope,
   type FinOpsBudgetReport,
+  type FigmaSourceAuditSummary,
   type FinOpsCostRate,
   type FinOpsCostRateMap,
   type FinOpsJobOutcome,
@@ -67,6 +68,8 @@ import {
 } from "./per-source-cost.js";
 import { redactHighRiskSecrets } from "@oscharko-dev/ti-security";
 
+const SHA256_HEX_RE = /^[a-f0-9]{64}$/u;
+
 const MAX_REPORT_LABEL_LENGTH = 160;
 
 const sanitizeReportString = (input: string): string => {
@@ -88,17 +91,23 @@ const sanitizeBudgetEnvelope = (
   };
 };
 
-const assertNonNegativeSafeIntegerByteCount = (
+const assertNonNegativeSafeInteger = (
+  context: string,
   field: string,
   value: number,
 ): number => {
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new RangeError(
-      `buildFinOpsBudgetReport: figmaPayload.${field} must be a non-negative safe integer; got ${value}`,
+      `buildFinOpsBudgetReport: ${context}.${field} must be a non-negative safe integer; got ${value}`,
     );
   }
   return value;
 };
+
+const assertNonNegativeSafeIntegerByteCount = (
+  field: string,
+  value: number,
+): number => assertNonNegativeSafeInteger("figmaPayload", field, value);
 
 const sanitizeFigmaPayloadAudit = (
   input: NonNullable<FinOpsBudgetReport["figmaPayload"]>,
@@ -121,6 +130,170 @@ const sanitizeFigmaPayloadAudit = (
   ),
   overrideApplied: input.overrideApplied,
 });
+
+const cloneSnapshotHashArray = (
+  field: string,
+  values: readonly string[],
+): readonly string[] => {
+  if (
+    !Array.isArray(values) ||
+    !values.every(
+      (value) => typeof value === "string" && SHA256_HEX_RE.test(value),
+    )
+  ) {
+    throw new RangeError(
+      `buildFinOpsBudgetReport: figmaSourceAudit.snapshotVault.${field} must be an array of sha256 hex strings`,
+    );
+  }
+  return Object.freeze([...values]);
+};
+
+const assertSha256Hex = (field: string, value: string): string => {
+  if (!SHA256_HEX_RE.test(value)) {
+    throw new RangeError(
+      `buildFinOpsBudgetReport: figmaSourceAudit.snapshotVault.${field} must be a sha256 hex string`,
+    );
+  }
+  return value;
+};
+
+const sanitizeFigmaSourceAudit = (
+  input: FigmaSourceAuditSummary,
+): FigmaSourceAuditSummary => {
+  if (
+    input.acquisitionMode !== "live_figma_url" &&
+    input.acquisitionMode !== "snapshot_vault" &&
+    input.acquisitionMode !== "offline_figma_payload"
+  ) {
+    throw new RangeError(
+      "buildFinOpsBudgetReport: figmaSourceAudit.acquisitionMode is invalid",
+    );
+  }
+  if (input.acquisitionMode === "snapshot_vault") {
+    if (!input.snapshotReuse || input.snapshotVault === undefined) {
+      throw new RangeError(
+        "buildFinOpsBudgetReport: figmaSourceAudit snapshot_vault acquisition requires snapshot reuse provenance",
+      );
+    }
+  } else if (input.snapshotReuse || input.snapshotVault !== undefined) {
+    throw new RangeError(
+      "buildFinOpsBudgetReport: figmaSourceAudit non-snapshot acquisition must not carry snapshotVault provenance",
+    );
+  }
+  if (
+    input.snapshotVault !== undefined &&
+    (input.snapshotVault.sourceKind !== "figma_snapshot_vault" ||
+      input.snapshotVault.scopeDigestAlgorithm !==
+        "sha256_canonical_selection_v1" ||
+      input.snapshotVault.importedAt.length === 0 ||
+      input.snapshotVault.importStrategy.length === 0)
+  ) {
+    throw new RangeError(
+      "buildFinOpsBudgetReport: figmaSourceAudit.snapshotVault metadata is invalid",
+    );
+  }
+  if (
+    input.snapshotVault !== undefined &&
+    (input.snapshotVault.selectedNodeCount !==
+      input.snapshotVault.selectedNodeRefHashes.length ||
+      input.snapshotVault.selectedPageCount !==
+        input.snapshotVault.selectedPageRefHashes.length ||
+      input.snapshotVault.selectedFrameCount !==
+        input.snapshotVault.selectedFrameRefHashes.length)
+  ) {
+    throw new RangeError(
+      "buildFinOpsBudgetReport: figmaSourceAudit.snapshotVault selected reference counts must match hash arrays",
+    );
+  }
+
+  return {
+    acquisitionMode: input.acquisitionMode,
+    liveFigmaRestCallCount: assertNonNegativeSafeInteger(
+      "figmaSourceAudit",
+      "liveFigmaRestCallCount",
+      input.liveFigmaRestCallCount,
+    ),
+    avoidedLiveFigmaRestCallCount: assertNonNegativeSafeInteger(
+      "figmaSourceAudit",
+      "avoidedLiveFigmaRestCallCount",
+      input.avoidedLiveFigmaRestCallCount,
+    ),
+    snapshotReuse: input.snapshotReuse,
+    ...(input.snapshotVault !== undefined
+      ? {
+          snapshotVault: {
+            sourceKind: input.snapshotVault.sourceKind,
+            snapshotIdHash: assertSha256Hex(
+              "snapshotIdHash",
+              input.snapshotVault.snapshotIdHash,
+            ),
+            snapshotDigest: assertSha256Hex(
+              "snapshotDigest",
+              input.snapshotVault.snapshotDigest,
+            ),
+            nodeIndexDigest: assertSha256Hex(
+              "nodeIndexDigest",
+              input.snapshotVault.nodeIndexDigest,
+            ),
+            importStatusDigest: assertSha256Hex(
+              "importStatusDigest",
+              input.snapshotVault.importStatusDigest,
+            ),
+            ...(input.snapshotVault.previewManifestDigest !== undefined
+              ? {
+                  previewManifestDigest: assertSha256Hex(
+                    "previewManifestDigest",
+                    input.snapshotVault.previewManifestDigest,
+                  ),
+                }
+              : {}),
+            fileKeyHash: assertSha256Hex(
+              "fileKeyHash",
+              input.snapshotVault.fileKeyHash,
+            ),
+            sourceUrlHash: assertSha256Hex(
+              "sourceUrlHash",
+              input.snapshotVault.sourceUrlHash,
+            ),
+            importedAt: input.snapshotVault.importedAt,
+            importStrategy: input.snapshotVault.importStrategy,
+            scopeDigestAlgorithm: input.snapshotVault.scopeDigestAlgorithm,
+            scopeDigest: assertSha256Hex(
+              "scopeDigest",
+              input.snapshotVault.scopeDigest,
+            ),
+            selectedNodeCount: assertNonNegativeSafeInteger(
+              "figmaSourceAudit.snapshotVault",
+              "selectedNodeCount",
+              input.snapshotVault.selectedNodeCount,
+            ),
+            selectedPageCount: assertNonNegativeSafeInteger(
+              "figmaSourceAudit.snapshotVault",
+              "selectedPageCount",
+              input.snapshotVault.selectedPageCount,
+            ),
+            selectedFrameCount: assertNonNegativeSafeInteger(
+              "figmaSourceAudit.snapshotVault",
+              "selectedFrameCount",
+              input.snapshotVault.selectedFrameCount,
+            ),
+            selectedNodeRefHashes: cloneSnapshotHashArray(
+              "selectedNodeRefHashes",
+              input.snapshotVault.selectedNodeRefHashes,
+            ),
+            selectedPageRefHashes: cloneSnapshotHashArray(
+              "selectedPageRefHashes",
+              input.snapshotVault.selectedPageRefHashes,
+            ),
+            selectedFrameRefHashes: cloneSnapshotHashArray(
+              "selectedFrameRefHashes",
+              input.snapshotVault.selectedFrameRefHashes,
+            ),
+          },
+        }
+      : {}),
+  };
+};
 
 /**
  * Attribution mode for an attempt observation (Issue #2016).
@@ -419,8 +592,7 @@ export const createFinOpsUsageRecorder = (
           : {}),
         ...(observation.result.constrainedDecoding !== undefined
           ? {
-              constrainedDecoding:
-                observation.result.constrainedDecoding,
+              constrainedDecoding: observation.result.constrainedDecoding,
             }
           : {}),
         ...(observation.region !== undefined
@@ -690,6 +862,8 @@ export interface BuildFinOpsBudgetReportInput {
    * observe cap-vs-actual without re-running the job.
    */
   figmaPayload?: FinOpsBudgetReport["figmaPayload"];
+  /** Optional sanitized Figma acquisition and Snapshot Vault provenance summary. */
+  figmaSourceAudit?: FigmaSourceAuditSummary;
 }
 
 /**
@@ -728,7 +902,9 @@ export const buildFinOpsBudgetReport = (
       : {
           distinctRegions: Array.from(
             new Set(
-              regionAttestationEntries.flatMap((entry) => entry.distinctRegions),
+              regionAttestationEntries.flatMap(
+                (entry) => entry.distinctRegions,
+              ),
             ),
           ).sort() as RegionAttestationHostingRegion[],
           attestedCallCount: regionAttestationEntries.reduce(
@@ -772,6 +948,9 @@ export const buildFinOpsBudgetReport = (
     ...(regionAttestation !== undefined ? { regionAttestation } : {}),
     ...(input.figmaPayload !== undefined
       ? { figmaPayload: sanitizeFigmaPayloadAudit(input.figmaPayload) }
+      : {}),
+    ...(input.figmaSourceAudit !== undefined
+      ? { figmaSourceAudit: sanitizeFigmaSourceAudit(input.figmaSourceAudit) }
       : {}),
     totals,
     breaches,

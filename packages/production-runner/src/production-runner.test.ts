@@ -42,6 +42,7 @@ import {
   type MockLlmGatewayClient,
 } from "@oscharko-dev/ti-model-gateway";
 import { createMockLlmGatewayClientBundle } from "@oscharko-dev/ti-model-gateway";
+import { sha256Hex } from "@oscharko-dev/ti-security";
 
 const asMockClient = (client: LlmGatewayClient): MockLlmGatewayClient => {
   if (!isMockLlmGatewayClient(client)) {
@@ -60,6 +61,8 @@ import { verifyProvenanceFromDisk } from "./provenance-verify.js";
 import { buildRuntimeModelRoutingPolicy } from "@oscharko-dev/ti-model-gateway";
 import { PRODUCTION_RUNNER_EVIDENCE_SEAL_ARTIFACT_FILENAME } from "./production-runner-evidence.js";
 import { AGENT_PARTICIPATION_ARTIFACT_FILENAME } from "./agent-participation.js";
+import { COMPLIANCE_ANNOTATION_ARTIFACT_FILENAME } from "./compliance-annotator-agent.js";
+import { COMPLIANCE_COVERAGE_REPORT_ARTIFACT_FILENAME } from "./compliance-coverage-report.js";
 import {
   PROMPT_MAX_ACTIONS_PER_SCREEN,
   PROMPT_CONTEXT_BUDGET_SAFETY_RATIO,
@@ -872,9 +875,75 @@ void test("runFigmaToQcTestCases happy path persists artifacts and renders custo
   }
 });
 
+void test("runFigmaToQcTestCases redacts live Figma URL source labels in customer artifacts", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "ti-runner-"));
+  const originalFetch = globalThis.fetch;
+  const figmaUrl =
+    "https://www.figma.com/design/ABC/Customer-Loan-Portal?node-id=1-1&token=private";
+  try {
+    const client = createMockLlmGatewayClient({
+      role: "test_generation",
+      deployment: "gpt-oss-120b-mock",
+      modelRevision: "mock-1",
+      gatewayRelease: "mock",
+      responder: okResponder([SAMPLE_DRAFT]),
+    });
+    globalThis.fetch = (async (url: string) => {
+      if (url.includes("/v1/files/ABC/nodes?ids=1%3A1")) {
+        return new Response(
+          JSON.stringify({
+            name: "Customer Loan Portal",
+            nodes: {
+              "1:1": {
+                document: SAMPLE_FILE.document.children?.[0]?.children?.[0],
+              },
+            },
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          },
+        );
+      }
+      if (url.includes("/v1/files/ABC")) {
+        return new Response(JSON.stringify(SAMPLE_FILE), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as typeof fetch;
+
+    const result = await runFigmaToQcTestCases({
+      jobId: "job-live-url-source-label",
+      generatedAt: "2026-05-29T10:30:00Z",
+      source: figmaUrlSource(figmaUrl),
+      outputRoot: tempRoot,
+      llm: { client },
+      generation: { diversityPasses: 1 },
+    });
+
+    const customerMarkdown = await readFile(
+      result.customerMarkdownPaths.combined,
+      "utf8",
+    );
+    assert.match(customerMarkdown, /Quelle: \(figma_url:[a-f0-9]{12}\)/u);
+    assert.doesNotMatch(customerMarkdown, /https:\/\/www\.figma\.com/u);
+    assert.doesNotMatch(customerMarkdown, /Customer-Loan-Portal/u);
+    assert.doesNotMatch(customerMarkdown, /token=private/u);
+    assert.equal(result.figmaSourceAudit?.acquisitionMode, "live_figma_url");
+    assert.equal(result.figmaSourceAudit?.liveFigmaRestCallCount, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 void test("runFigmaToQcTestCases resolves local snapshot source without live Figma REST and stamps snapshot trace metadata", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "ti-runner-"));
-  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "ti-snapshot-ws-"));
+  const workspaceRoot = await mkdtemp(
+    path.join(os.tmpdir(), "ti-snapshot-ws-"),
+  );
   const originalFetch = globalThis.fetch;
   let fetchCalled = false;
   try {
@@ -921,10 +990,32 @@ void test("runFigmaToQcTestCases resolves local snapshot source without live Fig
 
     assert.equal(fetchCalled, false);
     const generated = result.generatedTestCases.testCases[0]!;
+    const snapshotIdHash = sha256Hex({
+      kind: "figma_snapshot_snapshot_id",
+      value: SNAPSHOT_ID,
+    });
+    const selectedNodeRefHashes = ["node-field", "node-submit"].map((value) =>
+      sha256Hex({ kind: "figma_snapshot_node_id", value }),
+    );
     assert.equal(generated.audit.snapshotSource?.snapshotId, SNAPSHOT_ID);
     assert.equal(
       generated.audit.snapshotSource?.snapshotDigest,
       manifest.contentDigest,
+    );
+    assert.equal(result.figmaSourceAudit?.acquisitionMode, "snapshot_vault");
+    assert.equal(result.figmaSourceAudit?.liveFigmaRestCallCount, 0);
+    assert.equal(result.figmaSourceAudit?.avoidedLiveFigmaRestCallCount, 1);
+    assert.equal(
+      result.figmaSourceAudit?.snapshotVault?.snapshotIdHash,
+      snapshotIdHash,
+    );
+    assert.equal(
+      result.figmaSourceAudit?.snapshotVault?.importStatusDigest,
+      manifest.artifactDigests.importStatusDigest,
+    );
+    assert.equal(
+      result.figmaSourceAudit?.snapshotVault?.scopeDigest,
+      generated.audit.snapshotSource?.scopeDigest,
     );
     assert.equal(generated.figmaTraceRefs[0]?.screenId, "frame-1");
     assert.equal(generated.figmaTraceRefs[0]?.nodeId, "node-field");
@@ -937,6 +1028,192 @@ void test("runFigmaToQcTestCases resolves local snapshot source without live Fig
       artifact.testCases[0]?.audit.snapshotSource?.snapshotId,
       SNAPSHOT_ID,
     );
+    const evidenceManifest = JSON.parse(
+      await readFile(
+        path.join(
+          result.artifactDir,
+          WAVE1_VALIDATION_EVIDENCE_MANIFEST_ARTIFACT_FILENAME,
+        ),
+        "utf8",
+      ),
+    ) as {
+      figmaSourceAudit?: {
+        acquisitionMode: string;
+        snapshotVault?: {
+          snapshotIdHash: string;
+          selectedNodeCount: number;
+          selectedNodeRefHashes: string[];
+        };
+      };
+      artifacts?: Array<{ filename: string }>;
+    };
+    assert.equal(
+      evidenceManifest.figmaSourceAudit?.snapshotVault?.snapshotIdHash,
+      snapshotIdHash,
+    );
+    assert.equal(
+      evidenceManifest.figmaSourceAudit?.snapshotVault?.selectedNodeCount,
+      2,
+    );
+    assert.deepEqual(
+      evidenceManifest.figmaSourceAudit?.snapshotVault?.selectedNodeRefHashes,
+      selectedNodeRefHashes,
+    );
+    assert.equal(
+      evidenceManifest.artifacts?.some(
+        (artifact) =>
+          artifact.filename === COMPLIANCE_ANNOTATION_ARTIFACT_FILENAME,
+      ),
+      true,
+    );
+    assert.equal(
+      evidenceManifest.artifacts?.some(
+        (artifact) =>
+          artifact.filename === COMPLIANCE_COVERAGE_REPORT_ARTIFACT_FILENAME,
+      ),
+      true,
+    );
+
+    const policyReport = JSON.parse(
+      await readFile(result.artifactPaths.policyReport, "utf8"),
+    ) as { figmaSourceAudit?: { acquisitionMode: string } };
+    assert.equal(
+      policyReport.figmaSourceAudit?.acquisitionMode,
+      "snapshot_vault",
+    );
+
+    const runQuality = JSON.parse(
+      await readFile(result.artifactPaths.runQuality, "utf8"),
+    ) as { figmaSourceAudit?: { snapshotReuse: boolean } };
+    assert.equal(runQuality.figmaSourceAudit?.snapshotReuse, true);
+
+    const complianceAnnotationsPath =
+      result.artifactPaths.complianceAnnotations;
+    const complianceCoverageReportPath =
+      result.artifactPaths.complianceCoverageReport;
+    assert.ok(complianceAnnotationsPath);
+    assert.ok(complianceCoverageReportPath);
+    assert.ok(
+      complianceAnnotationsPath.endsWith(
+        COMPLIANCE_ANNOTATION_ARTIFACT_FILENAME,
+      ),
+    );
+    assert.ok(
+      complianceCoverageReportPath.endsWith(
+        COMPLIANCE_COVERAGE_REPORT_ARTIFACT_FILENAME,
+      ),
+    );
+    const complianceAnnotationsText = await readFile(
+      complianceAnnotationsPath,
+      "utf8",
+    );
+    const complianceCoverageText = await readFile(
+      complianceCoverageReportPath,
+      "utf8",
+    );
+    const complianceAnnotations = JSON.parse(complianceAnnotationsText) as {
+      figmaSourceAudit?: {
+        snapshotVault?: { snapshotIdHash: string; scopeDigest: string };
+      };
+      entries: Array<{
+        snapshotTraceability?: {
+          snapshotIdHash: string;
+          scopeDigest: string;
+          traceNodeRefHashes: string[];
+        };
+      }>;
+    };
+    const complianceCoverage = JSON.parse(complianceCoverageText) as {
+      figmaSourceAudit?: {
+        snapshotVault?: { snapshotIdHash: string; scopeDigest: string };
+      };
+    };
+    assert.equal(
+      complianceAnnotations.figmaSourceAudit?.snapshotVault?.snapshotIdHash,
+      snapshotIdHash,
+    );
+    assert.equal(
+      complianceCoverage.figmaSourceAudit?.snapshotVault?.snapshotIdHash,
+      snapshotIdHash,
+    );
+    assert.equal(
+      complianceAnnotations.entries[0]?.snapshotTraceability?.snapshotIdHash,
+      snapshotIdHash,
+    );
+    assert.equal(
+      complianceAnnotations.entries[0]?.snapshotTraceability?.scopeDigest,
+      generated.audit.snapshotSource?.scopeDigest,
+    );
+    assert.deepEqual(
+      complianceAnnotations.entries[0]?.snapshotTraceability
+        ?.traceNodeRefHashes,
+      selectedNodeRefHashes.slice(0, 1),
+    );
+    assert.doesNotMatch(
+      complianceAnnotationsText,
+      new RegExp(SNAPSHOT_ID, "u"),
+    );
+    assert.doesNotMatch(complianceCoverageText, new RegExp(SNAPSHOT_ID, "u"));
+    assert.doesNotMatch(complianceAnnotationsText, /node-field|node-submit/u);
+    assert.doesNotMatch(complianceCoverageText, /node-field|node-submit/u);
+
+    const finopsReport = JSON.parse(
+      await readFile(result.artifactPaths.finopsReport, "utf8"),
+    ) as {
+      figmaSourceAudit?: {
+        liveFigmaRestCallCount: number;
+        avoidedLiveFigmaRestCallCount: number;
+      };
+    };
+    assert.deepEqual(finopsReport.figmaSourceAudit, {
+      acquisitionMode: "snapshot_vault",
+      avoidedLiveFigmaRestCallCount: 1,
+      liveFigmaRestCallCount: 0,
+      snapshotReuse: true,
+      snapshotVault: result.figmaSourceAudit?.snapshotVault,
+    });
+
+    const genealogy = JSON.parse(
+      await readFile(result.artifactPaths.genealogy, "utf8"),
+    ) as { figmaSourceAudit?: { snapshotVault?: { scopeDigest: string } } };
+    assert.equal(
+      genealogy.figmaSourceAudit?.snapshotVault?.scopeDigest,
+      generated.audit.snapshotSource?.scopeDigest,
+    );
+
+    const provenance = JSON.parse(
+      await readFile(result.artifactPaths.provenance, "utf8"),
+    ) as {
+      "ti:figmaSourceAudit"?: {
+        snapshotVault?: { snapshotIdHash: string };
+      };
+      "@graph": Array<Record<string, unknown>>;
+    };
+    assert.equal(
+      provenance["ti:figmaSourceAudit"]?.snapshotVault?.snapshotIdHash,
+      snapshotIdHash,
+    );
+    assert.ok(
+      provenance["@graph"].some(
+        (node) =>
+          node["ti:snapshotIdHash"] === snapshotIdHash &&
+          node["ti:scopeDigest"] ===
+            generated.audit.snapshotSource?.scopeDigest,
+      ),
+    );
+
+    const customerMarkdown = await readFile(
+      result.customerMarkdownPaths.combined,
+      "utf8",
+    );
+    assert.match(customerMarkdown, /Snapshot reuse: yes/u);
+    assert.match(
+      customerMarkdown,
+      /Live Figma REST calls in this generation: 0/u,
+    );
+    assert.doesNotMatch(customerMarkdown, /https:\/\/www\.figma\.com/u);
+    assert.doesNotMatch(customerMarkdown, new RegExp(SNAPSHOT_ID, "u"));
+    assert.doesNotMatch(customerMarkdown, /node-field|node-submit/u);
   } finally {
     globalThis.fetch = originalFetch;
     await rm(tempRoot, { recursive: true, force: true });
@@ -946,7 +1223,9 @@ void test("runFigmaToQcTestCases resolves local snapshot source without live Fig
 
 void test("runFigmaToQcTestCases preserves explicit snapshot trace node refs when anchor details belong to another node", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "ti-runner-"));
-  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "ti-snapshot-ws-"));
+  const workspaceRoot = await mkdtemp(
+    path.join(os.tmpdir(), "ti-snapshot-ws-"),
+  );
   try {
     await writeProductionRunnerSnapshotVault(workspaceRoot);
     const client = createMockLlmGatewayClient({
@@ -1000,7 +1279,9 @@ void test("runFigmaToQcTestCases preserves explicit snapshot trace node refs whe
 
 void test("runFigmaToQcTestCases enforces snapshot payload cap against derived intent input", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "ti-runner-"));
-  const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), "ti-snapshot-ws-"));
+  const workspaceRoot = await mkdtemp(
+    path.join(os.tmpdir(), "ti-snapshot-ws-"),
+  );
   try {
     await writeProductionRunnerSnapshotVault(workspaceRoot);
     const client = createMockLlmGatewayClient({
@@ -8061,7 +8342,8 @@ void test("runFigmaToQcTestCases drops blank draft step expectations before vali
     assert.ok(stamped);
     assert.equal(
       stamped.steps.some(
-        (step) => step.expected !== undefined && step.expected.trim().length === 0,
+        (step) =>
+          step.expected !== undefined && step.expected.trim().length === 0,
       ),
       false,
     );

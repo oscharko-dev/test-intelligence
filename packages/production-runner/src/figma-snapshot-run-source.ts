@@ -6,6 +6,7 @@ import type {
   FigmaSnapshotManifest,
   FigmaSnapshotNodeIndex,
   FigmaSnapshotNodeRecord,
+  FigmaSourceAuditSummary,
   GeneratedTestCaseSnapshotSourceRef,
   TenantScope,
 } from "@oscharko-dev/ti-contracts";
@@ -31,6 +32,11 @@ const NODE_INDEX_FILENAME = "node-index.json" as const;
 const IMPORT_STATUS_FILENAME = "import-status.json" as const;
 const SNAPSHOT_ID_RE = /^[A-Za-z0-9._-]+$/u;
 const URL_SCHEME_RE = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//u;
+
+const hashSnapshotRef = (
+  kind: "snapshot_id" | "node_id" | "page_id" | "frame_id",
+  value: string,
+): string => sha256Hex({ kind: `figma_snapshot_${kind}`, value });
 
 export type FigmaSnapshotRunSourceErrorCode =
   | "unsafe_path"
@@ -88,6 +94,7 @@ export interface ResolvedFigmaSnapshotRunSource {
   readonly importStatus: FigmaSnapshotImportStatus;
   readonly intentInput: IntentDerivationFigmaInput;
   readonly auditRef: GeneratedTestCaseSnapshotSourceRef;
+  readonly figmaSourceAudit: FigmaSourceAuditSummary;
   readonly traceAnchors: readonly FigmaSnapshotTraceAnchor[];
   readonly untrustedFigmaDocument: unknown;
 }
@@ -140,7 +147,9 @@ export const resolveFigmaSnapshotRunSource = async (
       message: "Figma snapshot manifest node-index digest mismatch.",
     });
   }
-  if (manifest.artifactDigests.importStatusDigest !== importStatus.contentDigest) {
+  if (
+    manifest.artifactDigests.importStatusDigest !== importStatus.contentDigest
+  ) {
     throw new FigmaSnapshotRunSourceError({
       errorCode: "invalid_snapshot",
       message: "Figma snapshot manifest import-status digest mismatch.",
@@ -163,10 +172,13 @@ export const resolveFigmaSnapshotRunSource = async (
   if (generationRecords.length === 0) {
     throw new FigmaSnapshotRunSourceError({
       errorCode: "empty_scope",
-      message: "Figma snapshot selection matched no generation-safe local nodes.",
+      message:
+        "Figma snapshot selection matched no generation-safe local nodes.",
     });
   }
-  const resolvedNodeIds = generationRecords.map((record) => record.nodeId).sort();
+  const resolvedNodeIds = generationRecords
+    .map((record) => record.nodeId)
+    .sort();
   const scopeDigest = sha256Hex({
     snapshotId: manifest.snapshotId,
     snapshotDigest: manifest.contentDigest,
@@ -188,12 +200,51 @@ export const resolveFigmaSnapshotRunSource = async (
     selectedPageIds: [...selection.selectedPageIds],
     selectedFrameIds: [...selection.selectedFrameIds],
   };
+  const snapshotIdHash = hashSnapshotRef("snapshot_id", manifest.snapshotId);
+  const figmaSourceAudit: FigmaSourceAuditSummary = {
+    acquisitionMode: "snapshot_vault",
+    liveFigmaRestCallCount: 0,
+    avoidedLiveFigmaRestCallCount: 1,
+    snapshotReuse: true,
+    snapshotVault: {
+      sourceKind: "figma_snapshot_vault",
+      snapshotIdHash,
+      snapshotDigest: manifest.contentDigest,
+      nodeIndexDigest: nodeIndex.contentDigest,
+      importStatusDigest: importStatus.contentDigest,
+      ...(manifest.artifactDigests.previewManifestDigest !== undefined
+        ? {
+            previewManifestDigest:
+              manifest.artifactDigests.previewManifestDigest,
+          }
+        : {}),
+      fileKeyHash: manifest.source.fileKeyHash,
+      sourceUrlHash: manifest.source.sourceUrlHash,
+      importedAt: manifest.importedAt,
+      importStrategy: manifest.importStrategy,
+      scopeDigestAlgorithm: "sha256_canonical_selection_v1",
+      scopeDigest,
+      selectedNodeCount: resolvedNodeIds.length,
+      selectedPageCount: selection.selectedPageIds.length,
+      selectedFrameCount: selection.selectedFrameIds.length,
+      selectedNodeRefHashes: resolvedNodeIds.map((nodeId) =>
+        hashSnapshotRef("node_id", nodeId),
+      ),
+      selectedPageRefHashes: selection.selectedPageIds.map((pageId) =>
+        hashSnapshotRef("page_id", pageId),
+      ),
+      selectedFrameRefHashes: selection.selectedFrameIds.map((frameId) =>
+        hashSnapshotRef("frame_id", frameId),
+      ),
+    },
+  };
   return {
-    fileKey: `snapshot-${manifest.snapshotId}`,
-    name: `Figma snapshot ${manifest.snapshotId}`,
+    fileKey: `snapshot-${snapshotIdHash.slice(0, 24)}`,
+    name: `Figma snapshot ${snapshotIdHash.slice(0, 12)}`,
     payloadBytes: Buffer.byteLength(
       canonicalJson({
         snapshotSource: auditRef,
+        figmaSourceAudit,
         intentInput,
       }),
       "utf8",
@@ -203,6 +254,7 @@ export const resolveFigmaSnapshotRunSource = async (
     importStatus,
     intentInput,
     auditRef,
+    figmaSourceAudit,
     traceAnchors,
     untrustedFigmaDocument: buildUntrustedFigmaDocumentFromSnapshotRecords({
       snapshotId: manifest.snapshotId,
@@ -211,7 +263,9 @@ export const resolveFigmaSnapshotRunSource = async (
   };
 };
 
-const resolveSafeWorkspaceRoot = async (workspaceRoot: string): Promise<string> => {
+const resolveSafeWorkspaceRoot = async (
+  workspaceRoot: string,
+): Promise<string> => {
   if (
     workspaceRoot.length === 0 ||
     workspaceRoot.includes("\0") ||
@@ -302,13 +356,15 @@ const findSnapshotManifest = async (input: {
       if (manifest.snapshotId !== input.snapshotId) {
         throw new FigmaSnapshotRunSourceError({
           errorCode: "invalid_snapshot",
-          message: "Figma snapshot manifest id does not match the requested snapshot.",
+          message:
+            "Figma snapshot manifest id does not match the requested snapshot.",
         });
       }
       if (manifest.source.fileKeyHash !== entry.name) {
         throw new FigmaSnapshotRunSourceError({
           errorCode: "invalid_snapshot",
-          message: "Figma snapshot manifest source does not match the vault path.",
+          message:
+            "Figma snapshot manifest source does not match the vault path.",
         });
       }
       candidates.push({ manifest });
@@ -375,10 +431,12 @@ const readValidatedArtifact = async <T>(input: {
   } catch (err) {
     throw new FigmaSnapshotRunSourceError({
       errorCode: "invalid_snapshot",
-      message: `Figma snapshot ${input.label} is invalid: ${sanitizeErrorMessage({
-        error: err,
-        fallback: "validation failed",
-      })}`,
+      message: `Figma snapshot ${input.label} is invalid: ${sanitizeErrorMessage(
+        {
+          error: err,
+          fallback: "validation failed",
+        },
+      )}`,
       cause: err,
     });
   }
@@ -531,8 +589,12 @@ const normalizeSelection = (
   selectedFrameIds: normalizeIdList(selection?.frameIds),
 });
 
-const normalizeIdList = (values: readonly string[] | undefined): readonly string[] =>
-  [...new Set((values ?? []).map((value) => value.trim()).filter(Boolean))].sort();
+const normalizeIdList = (
+  values: readonly string[] | undefined,
+): readonly string[] =>
+  [
+    ...new Set((values ?? []).map((value) => value.trim()).filter(Boolean)),
+  ].sort();
 
 const selectNodeRecords = (
   records: readonly FigmaSnapshotNodeRecord[],
@@ -541,7 +603,8 @@ const selectNodeRecords = (
   const nodeIds = new Set(selection.selectedNodeIds);
   const pageIds = new Set(selection.selectedPageIds);
   const frameIds = new Set(selection.selectedFrameIds);
-  const hasSelection = nodeIds.size > 0 || pageIds.size > 0 || frameIds.size > 0;
+  const hasSelection =
+    nodeIds.size > 0 || pageIds.size > 0 || frameIds.size > 0;
   return records
     .filter((record) => {
       if (!hasSelection) return true;
@@ -813,7 +876,9 @@ const buildTraceAnchors = (
       nodePath: buildNodePath(record),
     });
   }
-  return anchors.sort((left, right) => left.screenId.localeCompare(right.screenId));
+  return anchors.sort((left, right) =>
+    left.screenId.localeCompare(right.screenId),
+  );
 };
 
 const resolveIntentNodeType = (record: FigmaSnapshotNodeRecord): string => {
@@ -827,10 +892,16 @@ const resolveIntentNodeType = (record: FigmaSnapshotNodeRecord): string => {
     .filter((value): value is string => value !== undefined)
     .join(" ")
     .toLowerCase();
-  if (/action:|button|submit|continue|weiter|absenden|confirm|save/u.test(search)) {
+  if (
+    /action:|button|submit|continue|weiter|absenden|confirm|save/u.test(search)
+  ) {
     return "BUTTON";
   }
-  if (/field:|control:text-entry|input|textfield|textarea|eingabe|iban|bic/u.test(search)) {
+  if (
+    /field:|control:text-entry|input|textfield|textarea|eingabe|iban|bic/u.test(
+      search,
+    )
+  ) {
     return "TEXT_FIELD";
   }
   if (/select|dropdown|radio|checkbox|choice|auswahl/u.test(search)) {
@@ -856,7 +927,11 @@ const compareNodeRecords = (
   left.nodeId.localeCompare(right.nodeId);
 
 const assertSafeSnapshotId = (snapshotId: string): void => {
-  if (!SNAPSHOT_ID_RE.test(snapshotId) || snapshotId === "." || snapshotId === "..") {
+  if (
+    !SNAPSHOT_ID_RE.test(snapshotId) ||
+    snapshotId === "." ||
+    snapshotId === ".."
+  ) {
     throw new FigmaSnapshotRunSourceError({
       errorCode: "unsafe_path",
       message: "Figma snapshot id contains unsafe path characters.",
@@ -874,7 +949,8 @@ const assertSameTenantScope = (
   ) {
     throw new FigmaSnapshotRunSourceError({
       errorCode: "cross_tenant_snapshot",
-      message: "Figma snapshot tenant scope does not match the active run scope.",
+      message:
+        "Figma snapshot tenant scope does not match the active run scope.",
     });
   }
 };

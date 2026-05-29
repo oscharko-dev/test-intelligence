@@ -27,6 +27,7 @@ import {
   REGION_ATTESTATION_SCHEMA_VERSION,
   SUPPORTED_REGION_ATTESTATION_HOSTING_REGIONS,
   TEST_INTELLIGENCE_CONTRACT_VERSION,
+  type FigmaSourceAuditSummary,
   type FinOpsBudgetEnvelope,
   type FinOpsBudgetReport,
   type FinOpsCostRateMap,
@@ -45,6 +46,32 @@ import {
 
 const JOB_ID = "job-1371";
 const GENERATED_AT = "2026-04-25T10:00:00.000Z";
+
+const snapshotAudit = (): FigmaSourceAuditSummary => ({
+  acquisitionMode: "snapshot_vault",
+  liveFigmaRestCallCount: 0,
+  avoidedLiveFigmaRestCallCount: 1,
+  snapshotReuse: true,
+  snapshotVault: {
+    sourceKind: "figma_snapshot_vault",
+    snapshotIdHash: "0".repeat(64),
+    snapshotDigest: "1".repeat(64),
+    nodeIndexDigest: "2".repeat(64),
+    importStatusDigest: "3".repeat(64),
+    fileKeyHash: "4".repeat(64),
+    sourceUrlHash: "5".repeat(64),
+    importedAt: "2026-05-29T06:15:00.000Z",
+    importStrategy: "rest_nodes",
+    scopeDigestAlgorithm: "sha256_canonical_selection_v1",
+    scopeDigest: "6".repeat(64),
+    selectedNodeCount: 1,
+    selectedPageCount: 0,
+    selectedFrameCount: 1,
+    selectedNodeRefHashes: ["7".repeat(64)],
+    selectedPageRefHashes: [],
+    selectedFrameRefHashes: ["8".repeat(64)],
+  },
+});
 
 const successResult = (
   inputTokens: number,
@@ -476,6 +503,84 @@ void test("buildFinOpsBudgetReport: stamps schema/contract versions and negative
   assert.equal(report.rawPromptsIncluded, false);
   assert.equal(report.rawScreenshotsIncluded, false);
   assert.equal(report.outcome, "completed");
+});
+
+void test("buildFinOpsBudgetReport: stamps sanitized snapshot REST-savings audit", () => {
+  const recorder = createFinOpsUsageRecorder();
+  const report = buildFinOpsBudgetReport({
+    jobId: JOB_ID,
+    generatedAt: GENERATED_AT,
+    budget: permissive,
+    recorder,
+    figmaSourceAudit: snapshotAudit(),
+  });
+
+  assert.equal(report.figmaSourceAudit?.snapshotReuse, true);
+  assert.equal(report.figmaSourceAudit?.liveFigmaRestCallCount, 0);
+  assert.equal(report.figmaSourceAudit?.avoidedLiveFigmaRestCallCount, 1);
+  assert.equal(
+    report.figmaSourceAudit?.snapshotVault?.sourceUrlHash,
+    "5".repeat(64),
+  );
+});
+
+void test("buildFinOpsBudgetReport: rejects unsafe snapshot provenance shapes", () => {
+  const recorder = createFinOpsUsageRecorder();
+  const base = {
+    jobId: JOB_ID,
+    generatedAt: GENERATED_AT,
+    budget: permissive,
+    recorder,
+  };
+  const audit = snapshotAudit();
+
+  assert.throws(
+    () =>
+      buildFinOpsBudgetReport({
+        ...base,
+        figmaSourceAudit: { ...audit, snapshotReuse: false },
+      }),
+    /snapshot_vault acquisition requires snapshot reuse provenance/u,
+  );
+  assert.throws(
+    () =>
+      buildFinOpsBudgetReport({
+        ...base,
+        figmaSourceAudit: {
+          ...audit,
+          acquisitionMode: "offline_figma_payload",
+        },
+      }),
+    /non-snapshot acquisition must not carry snapshotVault provenance/u,
+  );
+  assert.throws(
+    () =>
+      buildFinOpsBudgetReport({
+        ...base,
+        figmaSourceAudit: {
+          ...audit,
+          snapshotVault: {
+            ...audit.snapshotVault!,
+            selectedNodeRefHashes: ["node-a"],
+          },
+        },
+      }),
+    /selectedNodeRefHashes must be an array of sha256 hex strings/u,
+  );
+  assert.throws(
+    () =>
+      buildFinOpsBudgetReport({
+        ...base,
+        figmaSourceAudit: {
+          ...audit,
+          snapshotVault: {
+            ...audit.snapshotVault!,
+            selectedNodeCount: 2,
+          },
+        },
+      }),
+    /selected reference counts must match hash arrays/u,
+  );
 });
 
 void test("contracts: region-attestation constants remain stable", () => {

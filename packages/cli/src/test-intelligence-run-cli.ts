@@ -56,7 +56,7 @@ export const MAX_CUSTOM_CONTEXT_MARKDOWN_FILE_BYTES: number = 256 * 1024;
 /** Same operator-side cap for the explicit customer eval rubric Markdown. */
 export const MAX_CUSTOMER_EVAL_MARKDOWN_FILE_BYTES: number = 256 * 1024;
 
-import { sanitizeErrorMessage } from "@oscharko-dev/ti-security";
+import { sanitizeErrorMessage, sha256Hex } from "@oscharko-dev/ti-security";
 import {
   DEFAULT_OUTPUT_ROOT,
   resolveTestIntelligenceEnabled,
@@ -430,9 +430,16 @@ const appendRepeatedStringFlag = (
 };
 
 const formatTenantScope = (scope: TenantScope): string => {
-  const [tenantId, environmentId, projectId] = resolveTenantScopeSegments(scope);
+  const [tenantId, environmentId, projectId] =
+    resolveTenantScopeSegments(scope);
   return `${tenantId}/${environmentId}/${projectId}`;
 };
+
+const formatSnapshotIdHashPrefix = (snapshotId: string): string =>
+  sha256Hex({ kind: "figma_snapshot_snapshot_id", value: snapshotId }).slice(
+    0,
+    12,
+  );
 
 /** Parsed, validated flags for the test-intelligence run command. */
 export interface TestIntelligenceRunOptions {
@@ -4086,6 +4093,14 @@ const runComplianceCoverageEvaluation = async (
   input: RunComplianceCoverageEvaluationInput,
 ): Promise<string> => {
   const { result, policyProfileId, explicitFrameworks } = input;
+  if (result.compliance !== undefined) {
+    return formatComplianceCoverageSummary({
+      activeFrameworks: result.compliance.coverage.activeFrameworks,
+      coverage: result.compliance.coverage,
+      coveragePath: result.compliance.coveragePath,
+    });
+  }
+
   const activeFrameworks = resolveActiveFrameworks(
     explicitFrameworks,
     policyProfileId,
@@ -4107,6 +4122,9 @@ const runComplianceCoverageEvaluation = async (
     generatedAt: result.generatedAt,
     testCases: result.generatedTestCases.testCases,
     activeFrameworks,
+    ...(result.figmaSourceAudit !== undefined
+      ? { figmaSourceAudit: result.figmaSourceAudit }
+      : {}),
     subprocessorRegister,
     subprocessorRegisterArtifactFilename:
       SUBPROCESSOR_REGISTER_ARTIFACT_FILENAME,
@@ -4140,13 +4158,25 @@ const runComplianceCoverageEvaluation = async (
     throw err;
   }
 
-  const attentionFlag = coverage.hasUncoveredErrorRule
+  return formatComplianceCoverageSummary({
+    activeFrameworks,
+    coverage,
+    coveragePath,
+  });
+};
+
+const formatComplianceCoverageSummary = (input: {
+  readonly activeFrameworks: readonly ComplianceFrameworkId[];
+  readonly coverage: ReturnType<typeof buildComplianceCoverageReport>;
+  readonly coveragePath: string;
+}): string => {
+  const attentionFlag = input.coverage.hasUncoveredErrorRule
     ? " [auffällig: compliance coverage gap]"
     : "";
   return (
-    `  compliance coverage : ${activeFrameworks.length} frameworks · ` +
-    `${(coverage.overallCoverageRatio * 100).toFixed(1)}% covered ` +
-    `(${coveragePath})${attentionFlag}`
+    `  compliance coverage : ${input.activeFrameworks.length} frameworks · ` +
+    `${(input.coverage.overallCoverageRatio * 100).toFixed(1)}% covered ` +
+    `(${input.coveragePath})${attentionFlag}`
   );
 };
 
@@ -4562,7 +4592,7 @@ export const runTestIntelligenceCommand = async (
         `  source kind   : ${resolved.source.kind}`,
         ...(resolved.source.kind === "figma_snapshot"
           ? [
-              `  snapshot id   : ${resolved.source.snapshotId}`,
+              `  snapshot ref  : ${formatSnapshotIdHashPrefix(resolved.source.snapshotId)}`,
               `  snapshot root : ${resolved.source.workspaceRoot}`,
               `  tenant scope  : ${formatTenantScope(options.tenantScope ?? DEFAULT_TENANT_SCOPE)}`,
             ]
@@ -4705,6 +4735,9 @@ export const runTestIntelligenceCommand = async (
       : {}),
     ...(options.policyProfile !== undefined
       ? { policyProfileId: options.policyProfile }
+      : {}),
+    ...(options.complianceFrameworks !== undefined
+      ? { complianceFrameworks: options.complianceFrameworks }
       : {}),
     ...(harnessConfig !== undefined ? { harness: harnessConfig } : {}),
     ...(customContextMarkdownBody !== undefined
