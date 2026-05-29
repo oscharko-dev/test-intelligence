@@ -13,8 +13,9 @@
  *   - Failure-class disjointness: `auth_failed` (401/403, fail-closed),
  *     `not_found` (404), `rate_limited` (429), `transport` (5xx, retry once),
  *     `timeout`, `parse_error` (malformed JSON body).
- *   - Retry budget: at most one retry on a transient class. Auth/4xx never
- *     retry. Default per-request timeout 30s.
+ *   - Retry budget: at most one retry on a transient class. 429 retries honor
+ *     Figma's Retry-After header when it stays within the local retry budget.
+ *     Auth/4xx never retry. Default per-request timeout 30s.
  *
  * Why we do not import the existing `figma-source.ts`: that module lives in
  * `src/job-engine/` and `lint:boundaries` blocks `src/test-intelligence/`
@@ -31,6 +32,8 @@ import * as tls from "node:tls";
 
 const FIGMA_REST_HOST = "api.figma.com" as const;
 const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_FIGMA_RETRY_AFTER_SECONDS = 1;
+const MAX_FIGMA_RETRY_AFTER_SECONDS = 60;
 const FIGMA_URL_DESIGN_PATH_RE = /^\/(?:design|file|proto)\/([^/]+)/u;
 const DEFAULT_FIGMA_IMAGE_SCALE = 2;
 const ALLOWED_FIGMA_CDN_HOSTS: readonly string[] = [
@@ -60,12 +63,20 @@ export class FigmaRestFetchError extends Error {
   readonly errorClass: FigmaRestFetchErrorClass;
   readonly retryable: boolean;
   readonly status?: number;
+  readonly retryAfterSeconds?: number;
+  readonly figmaPlanTier?: string;
+  readonly figmaRateLimitType?: string;
+  readonly figmaUpgradeLink?: string;
 
   constructor(input: {
     errorClass: FigmaRestFetchErrorClass;
     message: string;
     retryable: boolean;
     status?: number;
+    retryAfterSeconds?: number;
+    figmaPlanTier?: string;
+    figmaRateLimitType?: string;
+    figmaUpgradeLink?: string;
     cause?: unknown;
   }) {
     super(
@@ -77,6 +88,18 @@ export class FigmaRestFetchError extends Error {
     this.retryable = input.retryable;
     if (input.status !== undefined) {
       this.status = input.status;
+    }
+    if (input.retryAfterSeconds !== undefined) {
+      this.retryAfterSeconds = input.retryAfterSeconds;
+    }
+    if (input.figmaPlanTier !== undefined) {
+      this.figmaPlanTier = input.figmaPlanTier;
+    }
+    if (input.figmaRateLimitType !== undefined) {
+      this.figmaRateLimitType = input.figmaRateLimitType;
+    }
+    if (input.figmaUpgradeLink !== undefined) {
+      this.figmaUpgradeLink = input.figmaUpgradeLink;
     }
   }
 }
@@ -278,6 +301,9 @@ export const fetchFigmaFileForTestIntelligence = async (
     if (!result.retryable || attempt === 2) {
       throw result;
     }
+    if (!(await waitBeforeRetryingFigmaRequest(result))) {
+      throw result;
+    }
   }
   throw (
     lastError ??
@@ -369,25 +395,41 @@ export const fetchFigmaScreenCapturesForTestIntelligence = async (
   const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxResponseBytes = input.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
   const scale = clampImageScale(input.scale ?? DEFAULT_FIGMA_IMAGE_SCALE);
+  const screens = input.screens.map((screen) => {
+    const screenId = screen.screenId.trim();
+    if (screenId.length === 0) {
+      throw new FigmaRestFetchError({
+        errorClass: "request_invalid",
+        message: "screenId is required",
+        retryable: false,
+      });
+    }
+    return {
+      screenId,
+      ...(screen.screenName !== undefined
+        ? { screenName: screen.screenName }
+        : {}),
+    };
+  });
+  const imageUrls = await fetchFigmaRenderableImageUrls({
+    fileKey,
+    screenIds: screens.map((screen) => screen.screenId),
+    accessToken: input.accessToken,
+    fetchImpl,
+    timeoutMs,
+    maxResponseBytes,
+    scale,
+  });
   return Promise.all(
-    input.screens.map(async (screen) => {
-      const screenId = screen.screenId.trim();
-      if (screenId.length === 0) {
+    screens.map(async (screen) => {
+      const imageUrl = imageUrls.get(screen.screenId);
+      if (imageUrl === undefined) {
         throw new FigmaRestFetchError({
-          errorClass: "request_invalid",
-          message: "screenId is required",
+          errorClass: "not_found",
+          message: `Figma image export returned no renderable screenshot for screen '${screen.screenId}'`,
           retryable: false,
         });
       }
-      const imageUrl = await fetchFigmaRenderableImageUrl({
-        fileKey,
-        screenId,
-        accessToken: input.accessToken,
-        fetchImpl,
-        timeoutMs,
-        maxResponseBytes,
-        scale,
-      });
       const pngBytes = await fetchFigmaScreenshotBytes({
         imageUrl,
         fetchImpl,
@@ -396,7 +438,7 @@ export const fetchFigmaScreenCapturesForTestIntelligence = async (
       });
       const dimensions = parsePngPixelDimensions(pngBytes);
       return {
-        screenId,
+        screenId: screen.screenId,
         ...(screen.screenName !== undefined
           ? { screenName: screen.screenName }
           : {}),
@@ -424,11 +466,11 @@ const buildFigmaRestUrl = (input: {
 
 const buildFigmaImageLookupUrl = (input: {
   fileKey: string;
-  screenId: string;
+  screenIds: readonly string[];
   scale: number;
 }): string => {
   const params = new URLSearchParams({
-    ids: input.screenId,
+    ids: input.screenIds.join(","),
     format: "png",
     scale: String(input.scale),
   });
@@ -445,6 +487,91 @@ const resolveFigmaFetch = (
   if (fetchImpl !== undefined) return fetchImpl;
   return createTrustedFigmaFetch(caCertPath);
 };
+
+interface FigmaRateLimitMetadata {
+  retryAfterSeconds?: number;
+  figmaPlanTier?: string;
+  figmaRateLimitType?: string;
+  figmaUpgradeLink?: string;
+}
+
+const buildFigmaRateLimitMetadata = (
+  response: Response,
+): FigmaRateLimitMetadata => {
+  const retryAfterSeconds = parseRetryAfterSeconds(
+    response.headers.get("retry-after"),
+  );
+  const planTier = nonEmptyHeader(response.headers.get("x-figma-plan-tier"));
+  const rateLimitType = nonEmptyHeader(
+    response.headers.get("x-figma-rate-limit-type"),
+  );
+  const upgradeLink = nonEmptyHeader(
+    response.headers.get("x-figma-upgrade-link"),
+  );
+  return {
+    ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}),
+    ...(planTier !== undefined ? { figmaPlanTier: planTier } : {}),
+    ...(rateLimitType !== undefined
+      ? { figmaRateLimitType: rateLimitType }
+      : {}),
+    ...(upgradeLink !== undefined ? { figmaUpgradeLink: upgradeLink } : {}),
+  };
+};
+
+const buildFigmaRateLimitMessage = (
+  metadata: FigmaRateLimitMetadata,
+): string => {
+  const details: string[] = [];
+  if (metadata.retryAfterSeconds !== undefined) {
+    details.push(`retry after ${metadata.retryAfterSeconds}s`);
+  }
+  if (metadata.figmaRateLimitType !== undefined) {
+    details.push(`limit type ${metadata.figmaRateLimitType}`);
+  }
+  if (metadata.figmaPlanTier !== undefined) {
+    details.push(`plan ${metadata.figmaPlanTier}`);
+  }
+  return details.length === 0
+    ? "Figma REST returned 429 (rate limited)"
+    : `Figma REST returned 429 (rate limited; ${details.join("; ")})`;
+};
+
+const parseRetryAfterSeconds = (value: string | null): number | undefined => {
+  const trimmed = value?.trim();
+  if (trimmed === undefined || trimmed.length === 0) return undefined;
+  const numeric = Number(trimmed);
+  if (Number.isFinite(numeric) && numeric >= 0) {
+    return Math.ceil(numeric);
+  }
+  const retryAt = Date.parse(trimmed);
+  if (!Number.isNaN(retryAt)) {
+    return Math.max(0, Math.ceil((retryAt - Date.now()) / 1000));
+  }
+  return undefined;
+};
+
+const nonEmptyHeader = (value: string | null): string | undefined => {
+  const trimmed = value?.trim();
+  return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
+};
+
+const waitBeforeRetryingFigmaRequest = async (
+  error: FigmaRestFetchError,
+): Promise<boolean> => {
+  if (error.errorClass !== "rate_limited") return true;
+  const retryAfterSeconds =
+    error.retryAfterSeconds ?? DEFAULT_FIGMA_RETRY_AFTER_SECONDS;
+  if (retryAfterSeconds > MAX_FIGMA_RETRY_AFTER_SECONDS) {
+    return false;
+  }
+  if (retryAfterSeconds > 0) {
+    await sleep(retryAfterSeconds * 1000);
+  }
+  return true;
+};
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
 
 const headersToRecord = (
   headers: RequestInit["headers"] | undefined,
@@ -669,12 +796,14 @@ const dispatchOnce = async (input: {
       });
     }
     if (status === 429) {
+      const rateLimitMetadata = buildFigmaRateLimitMetadata(response);
       await drainBody(response);
       return new FigmaRestFetchError({
         errorClass: "rate_limited",
-        message: "Figma REST returned 429 (rate limited)",
+        message: buildFigmaRateLimitMessage(rateLimitMetadata),
         retryable: true,
         status,
+        ...rateLimitMetadata,
       });
     }
     if (status >= 500 && status <= 599) {
@@ -811,18 +940,18 @@ const interpretFigmaResponse = (input: {
   };
 };
 
-const fetchFigmaRenderableImageUrl = async (input: {
+const fetchFigmaRenderableImageUrls = async (input: {
   fileKey: string;
-  screenId: string;
+  screenIds: readonly string[];
   accessToken: string;
   fetchImpl: typeof fetch;
   timeoutMs: number;
   maxResponseBytes: number;
   scale: number;
-}): Promise<string> => {
+}): Promise<Map<string, string>> => {
   const url = buildFigmaImageLookupUrl({
     fileKey: input.fileKey,
-    screenId: input.screenId,
+    screenIds: input.screenIds,
     scale: input.scale,
   });
   const parsed = new URL(url);
@@ -866,18 +995,23 @@ const fetchFigmaRenderableImageUrl = async (input: {
       retryable: false,
     });
   }
-  const imageUrl = (
+  const images = (
     (payload as Record<string, unknown>).images as Record<string, unknown>
-  )[input.screenId];
-  if (typeof imageUrl !== "string" || imageUrl.trim().length === 0) {
-    throw new FigmaRestFetchError({
-      errorClass: "not_found",
-      message: `Figma image export returned no renderable screenshot for screen '${input.screenId}'`,
-      retryable: false,
-    });
+  );
+  const imageUrls = new Map<string, string>();
+  for (const screenId of input.screenIds) {
+    const imageUrl = images[screenId];
+    if (typeof imageUrl !== "string" || imageUrl.trim().length === 0) {
+      throw new FigmaRestFetchError({
+        errorClass: "not_found",
+        message: `Figma image export returned no renderable screenshot for screen '${screenId}'`,
+        retryable: false,
+      });
+    }
+    assertFigmaCdnUrlIsSafe(imageUrl);
+    imageUrls.set(screenId, imageUrl);
   }
-  assertFigmaCdnUrlIsSafe(imageUrl);
-  return imageUrl;
+  return imageUrls;
 };
 
 const fetchFigmaScreenshotBytes = async (input: {
@@ -943,6 +1077,9 @@ const dispatchHttpRequest = async (input: {
       if (!handled.retryable || attempt === 2) {
         throw handled;
       }
+      if (!(await waitBeforeRetryingFigmaRequest(handled))) {
+        throw handled;
+      }
     } catch (err) {
       const normalized =
         err instanceof FigmaRestFetchError
@@ -961,6 +1098,9 @@ const dispatchHttpRequest = async (input: {
             });
       lastError = normalized;
       if (!normalized.retryable || attempt === 2) {
+        throw normalized;
+      }
+      if (!(await waitBeforeRetryingFigmaRequest(normalized))) {
         throw normalized;
       }
     } finally {
@@ -1001,12 +1141,14 @@ const handleHttpStatus = async (
     });
   }
   if (status === 429) {
+    const rateLimitMetadata = buildFigmaRateLimitMetadata(response);
     await drainBody(response);
     return new FigmaRestFetchError({
       errorClass: "rate_limited",
-      message: "Figma REST returned 429 (rate limited)",
+      message: buildFigmaRateLimitMessage(rateLimitMetadata),
       retryable: true,
       status,
+      ...rateLimitMetadata,
     });
   }
   if (status >= 500 && status <= 599) {

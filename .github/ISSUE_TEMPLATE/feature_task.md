@@ -1,67 +1,88 @@
 ---
-name: Product task
-about: Track a product, engineering, documentation, release, or security task
+name: Feature / Task
+about: Propose a new feature, implementation task, or chore
 title: ''
 labels: ['type: task', 'status: ready']
 assignees: ''
 ---
 
-## Objective
+Parent Epic: #<epic_number>
 
-Describe the concrete Test Intelligence outcome this issue must deliver.
+## Purpose
 
-## Product Area
+Describe the goal of this issue and the user, developer, platform, or governance outcome it must create.
 
-- [ ] UI / user workflow
-- [ ] CLI or developer workflow
-- [ ] Core generation engine
-- [ ] Evidence, audit, or compliance artifact
-- [ ] Security or supply chain
-- [ ] Packaging, release, or npm publication
-- [ ] Documentation or repository hygiene
-- [ ] Other:
+## Agent Execution Mode
+
+- [ ] Single-agent
+- [ ] Agent team
+- [ ] Audit-only
+- [ ] Refactor-only
+- [ ] Feature delivery
+- [ ] Audit/verification-heavy
+- [ ] Human-led / agent-assisted
+
+## Agent Routing Hints
+
+- Lead agent: `coordinator | developer | architect | pr-shepherd`.
+- Suggested specialist agents: `explorer | implementor | test-engineer | security-reviewer | performance-engineer | a11y-auditor | docs-editor | docs-writer | verifier | pr-reviewer | pr-shepherd`.
+- Primary area label: `area:...`.
+- Expected write ownership: list files/modules that may be edited, or say `TBD by coordinator`.
+
+## Expected Verification
+
+- [ ] Required GitHub check: `ci`.
+- [ ] Workbench browser quality gate when Workbench UI, local API, or browser behavior changes.
+- [ ] Workbench performance and memory gates when run history, artifact rendering, previews, or large-output behavior changes.
+- [ ] Workbench visual regression when visible UI structure changes.
+- [ ] Markdown link check when documentation changes.
+- [ ] `pnpm run release:check` when release, package, contract, artifact, or publication semantics change.
+- [ ] Package, lockfile, SBOM, license, or supply-chain checks when dependency or package-surface behavior changes.
+- [ ] Security review when trust boundaries, auth/session, secrets, CSP, model access, execution, patch application, or external calls change.
+- [ ] CodeQL/static-analysis review when security-sensitive or shared control-plane code changes.
+
+## Review Settlement and Formal Issue Completion
+
+- [ ] The implementation PR waits for required GitHub checks before merge.
+- [ ] All actionable review findings are fixed or explicitly dispositioned in the PR before merge.
+- [ ] Acceptance Criteria and Expected Verification checkboxes are updated only when evidence exists.
+- [ ] Required documentation, PR evidence, issue comments, migration notes, screenshots, logs, or follow-up issues are completed when requested by this issue.
+- [ ] The issue remains open until implementation is merged, review findings are settled, and closure evidence is recorded.
+
+## Stop Conditions
+
+- [ ] Stop if the implementation would expand beyond this issue's stated scope.
+- [ ] Stop if required acceptance criteria are missing, contradictory, or no longer match the linked epic.
+- [ ] Stop if the work requires secrets, customer data, private runtime logs, or token-bearing artifacts.
+- [ ] Stop if two parallel agents would need to edit the same file scope.
+- [ ] Stop if the change would weaken architecture boundaries, quality gates, security posture, evidence semantics, deterministic verification, or required `ci` guarantees.
+- [ ] Stop after three CI or review-finding repair attempts with different root causes and report the blocker.
+
+## Language and Professional Standard
+
+- All issue work, PR descriptions, code comments, configuration properties, schema fields, README updates, Markdown files, and GitHub comments must be written in professional English.
+- Use accurate enterprise product terminology; when limitations exist, state them precisely without prototype-only, placeholder, fake, or informal framing.
+- Build production-ready, state-of-the-art solutions while keeping implementation simple, maintainable, and focused on the issue scope.
+- Be creative and innovative where it improves product quality, but avoid unnecessary special cases, speculative abstractions, and process overhead.
 
 ## Scope
 
-In scope:
+Clearly define what is in scope. Remember: no implementation happens without an issue.
 
--
+## Out of Scope
 
-Out of scope:
+List items that are explicitly not part of this issue. Use follow-up issues for deferred scope.
 
--
+## Deliverables
 
-## Requirements
-
--
+- [ ] Deliverable 1
+- [ ] Deliverable 2
 
 ## Acceptance Criteria
 
-- [ ]
-- [ ]
+- [ ] Criteria 1
+- [ ] Criteria 2
 
-## Verification Plan
+## Engineering Notes
 
-Required for every implementation PR:
-
-- [ ] GitHub required checks pass before merge.
-- [ ] Relevant local tests or checks are listed in the PR.
-
-Select only what applies:
-
-- [ ] UI behavior manually verified or covered by tests.
-- [ ] CLI behavior verified with command output or tests.
-- [ ] Core logic covered by unit, integration, property, or fixture tests.
-- [ ] Security-sensitive change reviewed for trust boundaries, secrets, external calls, and generated artifacts.
-- [ ] Supply-chain or package-surface change verified with package, license, lockfile, SBOM, or npm dry-run checks.
-- [ ] Documentation or Markdown change verified by the repository link check or a targeted local equivalent.
-- [ ] Release-impacting change verified with `pnpm run release:check` or an explicit rationale.
-- [ ] Not applicable items are explained in the PR.
-
-## Risk Notes
-
-List compatibility, data, security, auditability, migration, or release risks.
-
-## Closure Evidence
-
-Before closing, record the merged PR, final checks, and any follow-up issue that remains intentionally open.
+Add specific constraints, architectural notes, related ADRs, or known implementation risks.
