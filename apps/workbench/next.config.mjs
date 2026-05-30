@@ -7,6 +7,7 @@ const nextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
   typedRoutes: true,
+  serverExternalPackages: ["better-sqlite3"],
   transpilePackages: [
     "@oscharko-dev/ti-agentic-harness",
     "@oscharko-dev/ti-cli",

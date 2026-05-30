@@ -19,13 +19,18 @@ import type {
 
 export type WorkbenchStorageErrorCode =
   | "NESTED_TRANSACTION"
-  | "MIGRATION_SEQUENCE_INVALID";
+  | "MIGRATION_SEQUENCE_INVALID"
+  | "MIGRATION_FAILED";
 
 export class WorkbenchStorageError extends Error {
   readonly code: WorkbenchStorageErrorCode;
 
-  constructor(code: WorkbenchStorageErrorCode, message: string) {
-    super(message);
+  constructor(
+    code: WorkbenchStorageErrorCode,
+    message: string,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
     this.name = "WorkbenchStorageError";
     this.code = code;
   }
