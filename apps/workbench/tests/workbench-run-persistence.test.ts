@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -17,6 +17,7 @@ import {
 import {
   getWorkbenchRunCompletionForTests,
   getWorkbenchRunForClient,
+  readWorkbenchRunFile,
   resetWorkbenchRunStoreForTests,
   startWorkbenchRun,
 } from "@/lib/server/workbench-run-registry";
@@ -173,6 +174,41 @@ describe("Workbench run persistence (Issue #53)", () => {
     // Server-only paths never leak to the client projection after rehydration.
     expect(restored?.artifactDir).toBeUndefined();
     expect(restored?.outputRoot).toBeUndefined();
+  });
+
+  it("rehydrates file-serving paths from the durable row, not mutable run-state JSON", async () => {
+    const env = envFor(repoRoot);
+    const { jobId } = await startSealedRun(env);
+    const row = getWorkbenchStorage().runs.list()[0];
+    if (row === undefined || row.artifactDir === undefined) {
+      throw new Error("expected a persisted row with artifactDir");
+    }
+
+    const hostileDir = path.join(repoRoot, "hostile-output");
+    mkdirSync(hostileDir, { recursive: true });
+    writeFileSync(path.join(hostileDir, "secret.txt"), "do-not-serve", "utf8");
+    const docPath = path.join(
+      repoRoot,
+      ".test-intelligence",
+      "run-state",
+      `${row.id}.json`,
+    );
+    const tampered = JSON.parse(readFileSync(docPath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+    tampered.artifactDir = hostileDir;
+    tampered.outputRoot = hostileDir;
+    writeFileSync(docPath, JSON.stringify(tampered), "utf8");
+
+    resetWorkbenchRunStoreForTests();
+    resetWorkbenchStorageForTests();
+
+    await expect(
+      readWorkbenchRunFile(jobId, "secret.txt", env),
+    ).rejects.toMatchObject({
+      code: "WORKBENCH_FILE_NOT_FOUND",
+    });
   });
 
   it("rebuilds the SQLite artifacts-table rows from disk after a restart (AC#4)", async () => {

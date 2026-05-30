@@ -126,6 +126,7 @@ interface SnapshotStmts {
   selectById: Stmt;
   selectByIdAndTenant: Stmt;
   selectAll: Stmt;
+  selectByTenant: Stmt;
   updateLifecycle: Stmt;
 }
 
@@ -145,10 +146,9 @@ export const createSnapshotRepository = (db: Db): SnapshotRepository => {
       selectByIdAndTenant: db.prepare(
         `SELECT * FROM snapshots WHERE id = ? AND tenant_scope = ?`,
       ),
-      selectAll: db.prepare(
-        `SELECT * FROM snapshots
-           WHERE (@tenantScope IS NULL OR tenant_scope = @tenantScope)
-           ORDER BY rowid`,
+      selectAll: db.prepare(`SELECT * FROM snapshots ORDER BY rowid`),
+      selectByTenant: db.prepare(
+        `SELECT * FROM snapshots WHERE tenant_scope = ? ORDER BY rowid`,
       ),
       updateLifecycle: db.prepare(
         `UPDATE snapshots
@@ -187,8 +187,11 @@ export const createSnapshotRepository = (db: Db): SnapshotRepository => {
       return row ? mapSnapshot(row) : undefined;
     },
     list(filter?: TenantScopeFilter): readonly SnapshotMetadataRecord[] {
-      const params: BindRow = { tenantScope: filter?.tenantScope ?? null };
-      const rows = s().selectAll.all(params) as SnapshotRow[];
+      const handles = s();
+      const rows =
+        filter?.tenantScope !== undefined
+          ? (handles.selectByTenant.all(filter.tenantScope) as SnapshotRow[])
+          : (handles.selectAll.all() as SnapshotRow[]);
       return rows.map(mapSnapshot);
     },
     updateLifecycleState(
@@ -233,6 +236,7 @@ interface RunStmts {
   readonly selectById: Stmt;
   readonly selectByIdAndTenant: Stmt;
   readonly selectAll: Stmt;
+  readonly selectByTenant: Stmt;
   readonly updateStatus: Stmt;
 }
 
@@ -250,10 +254,9 @@ export const createRunRepository = (db: Db): RunRepository => {
       selectByIdAndTenant: db.prepare(
         `SELECT * FROM runs WHERE id = ? AND tenant_scope = ?`,
       ),
-      selectAll: db.prepare(
-        `SELECT * FROM runs
-           WHERE (@tenantScope IS NULL OR tenant_scope = @tenantScope)
-           ORDER BY rowid`,
+      selectAll: db.prepare(`SELECT * FROM runs ORDER BY rowid`),
+      selectByTenant: db.prepare(
+        `SELECT * FROM runs WHERE tenant_scope = ? ORDER BY rowid`,
       ),
       updateStatus: db.prepare(
         `UPDATE runs
@@ -286,8 +289,11 @@ export const createRunRepository = (db: Db): RunRepository => {
       return row ? mapRun(row) : undefined;
     },
     list(filter?: TenantScopeFilter): readonly RunMetadataRecord[] {
-      const params: BindRow = { tenantScope: filter?.tenantScope ?? null };
-      const rows = s().selectAll.all(params) as RunRow[];
+      const handles = s();
+      const rows =
+        filter?.tenantScope !== undefined
+          ? (handles.selectByTenant.all(filter.tenantScope) as RunRow[])
+          : (handles.selectAll.all() as RunRow[]);
       return rows.map(mapRun);
     },
     updateStatus(
@@ -454,6 +460,9 @@ interface ScopeBasketStmts {
   readonly selectById: Stmt;
   readonly selectByIdAndTenant: Stmt;
   readonly selectAll: Stmt;
+  readonly selectByTenant: Stmt;
+  readonly selectBySnapshot: Stmt;
+  readonly selectByTenantAndSnapshot: Stmt;
   readonly update: Stmt;
 }
 
@@ -471,10 +480,16 @@ export const createScopeBasketRepository = (db: Db): ScopeBasketRepository => {
       selectByIdAndTenant: db.prepare(
         `SELECT * FROM scope_baskets WHERE id = ? AND tenant_scope = ?`,
       ),
-      selectAll: db.prepare(
+      selectAll: db.prepare(`SELECT * FROM scope_baskets ORDER BY rowid`),
+      selectByTenant: db.prepare(
+        `SELECT * FROM scope_baskets WHERE tenant_scope = ? ORDER BY rowid`,
+      ),
+      selectBySnapshot: db.prepare(
+        `SELECT * FROM scope_baskets WHERE snapshot_id = ? ORDER BY rowid`,
+      ),
+      selectByTenantAndSnapshot: db.prepare(
         `SELECT * FROM scope_baskets
-           WHERE (@tenantScope IS NULL OR tenant_scope = @tenantScope)
-             AND (@snapshotId IS NULL OR snapshot_id = @snapshotId)
+           WHERE tenant_scope = ? AND snapshot_id = ?
            ORDER BY rowid`,
       ),
       update: db.prepare(
@@ -508,11 +523,20 @@ export const createScopeBasketRepository = (db: Db): ScopeBasketRepository => {
       return row ? mapScopeBasket(row) : undefined;
     },
     list(filter?: ScopeBasketFilter): readonly ScopeBasketRecord[] {
-      const params: BindRow = {
-        tenantScope: filter?.tenantScope ?? null,
-        snapshotId: filter?.snapshotId ?? null,
-      };
-      const rows = s().selectAll.all(params) as ScopeBasketRow[];
+      const handles = s();
+      const rows =
+        filter?.tenantScope !== undefined && filter.snapshotId !== undefined
+          ? (handles.selectByTenantAndSnapshot.all(
+              filter.tenantScope,
+              filter.snapshotId,
+            ) as ScopeBasketRow[])
+          : filter?.tenantScope !== undefined
+            ? (handles.selectByTenant.all(filter.tenantScope) as ScopeBasketRow[])
+            : filter?.snapshotId !== undefined
+              ? (handles.selectBySnapshot.all(
+                  filter.snapshotId,
+                ) as ScopeBasketRow[])
+              : (handles.selectAll.all() as ScopeBasketRow[]);
       return rows.map(mapScopeBasket);
     },
     update(

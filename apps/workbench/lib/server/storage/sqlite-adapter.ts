@@ -195,8 +195,8 @@ class SqliteWorkbenchStorageAdapter implements WorkbenchStorageAdapter {
   /**
    * Takes a pre-migration backup only when there is populated data to lose: a
    * file-backed database already at version ≥ 1. WHY version 0 is skipped: a
-   * fresh first-time bootstrap (v0 → v1) has no prior data, so a backup would be
-   * an empty snapshot of nothing. `:memory:` databases have no file to copy.
+   * fresh first-time bootstrap has no prior data, so a backup would be an empty
+   * snapshot of nothing. `:memory:` databases have no file to copy.
    */
   private backupBeforeMigration(current: number, target: number): void {
     if (this.databaseFile === DEFAULT_DATABASE_FILE || current < 1) return;

@@ -195,6 +195,9 @@ const skipWarning = (id: string, error: unknown): string =>
     error instanceof Error ? error.message : "unreadable",
   )}`;
 
+const persistedSourceKey = (tenantScope: string, source: string): string =>
+  `${tenantScope}\0${source}`;
+
 const classifyAndPersistOneSnapshot = async (
   folder: DiscoveredSnapshotFolder,
   persistedSources: ReadonlySet<string>,
@@ -219,7 +222,8 @@ const classifyAndPersistOneSnapshot = async (
     return;
   }
   const snapshotId = artifacts.manifest.snapshotId;
-  if (persistedSources.has(snapshotId)) {
+  const tenantScope = formatWorkbenchTenantScope(artifacts.manifest.tenantScope);
+  if (persistedSources.has(persistedSourceKey(tenantScope, snapshotId))) {
     recordSnapshotOutcome(
       tally,
       classifications,
@@ -284,7 +288,7 @@ const indexSnapshots = async (
   const persistedSources = new Set<string>(
     getWorkbenchStorage(options)
       .snapshots.list()
-      .map((row) => row.source),
+      .map((row) => persistedSourceKey(row.tenantScope, row.source)),
   );
   for (const folder of folders) {
     await classifyAndPersistOneSnapshot(

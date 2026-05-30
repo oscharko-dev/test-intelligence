@@ -380,6 +380,23 @@ const readRunStateDocument = (
   return isRunState(parsed) ? parsed : undefined;
 };
 
+const trustRunStatePathsFromRow = (
+  state: RunState,
+  row: { readonly artifactDir?: string },
+): RunState => {
+  const {
+    artifactDir: _artifactDir,
+    outputRoot: _outputRoot,
+    ...withoutServerPaths
+  } = state;
+  if (row.artifactDir === undefined) {
+    return withoutServerPaths;
+  }
+
+  const trustedArtifactDir = path.resolve(row.artifactDir);
+  return { ...withoutServerPaths, artifactDir: trustedArtifactDir };
+};
+
 /**
  * Rebuilds run records from persistence after a restart. For each `runs` row it
  * loads `<runStateRoot>/<row.id>.json` (keyed by the server-controlled row id)
@@ -403,7 +420,7 @@ export const rehydrateRunsFromPersistence = (
       if (state === undefined || state.jobId === null) continue;
       out.push({
         jobId: state.jobId,
-        state,
+        state: trustRunStatePathsFromRow(state, row),
         tenantScope: row.tenantScope,
         rowId: row.id,
       });

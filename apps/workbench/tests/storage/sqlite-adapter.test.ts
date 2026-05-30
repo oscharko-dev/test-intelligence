@@ -12,7 +12,11 @@ import type {
 } from "@/lib/server/storage";
 import { WorkbenchStorageError, artifactStorageRef } from "@/lib/server/storage";
 import { createSqliteWorkbenchStorageAdapter } from "@/lib/server/storage/sqlite-adapter";
-import { WORKBENCH_SCHEMA_TABLES } from "@/lib/server/storage/sqlite-schema";
+import {
+  WORKBENCH_SCHEMA_INDEXES,
+  WORKBENCH_SCHEMA_TABLES,
+  WORKBENCH_SCHEMA_VERSION,
+} from "@/lib/server/storage/sqlite-schema";
 
 import { runWorkbenchStorageAdapterContract } from "./adapter-contract";
 
@@ -38,25 +42,34 @@ describe("SqliteWorkbenchStorageAdapter specifics", () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it("creates all eight schema tables on auto-migrate", () => {
+  it("creates all schema tables and lookup indexes on auto-migrate", () => {
     const file = path.join(tempDir, "tables.db");
     const persisted = createSqliteWorkbenchStorageAdapter({
       databaseFile: file,
     });
-    expect(persisted.getSchemaVersion()).toBe(1);
+    expect(persisted.getSchemaVersion()).toBe(WORKBENCH_SCHEMA_VERSION);
     persisted.close();
     const raw = new BetterSqlite3(file);
-    const rows = raw
+    const tableRows = raw
       .prepare(
         "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
       )
       .all() as { name: string }[];
+    const indexRows = raw
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'index' ORDER BY name",
+      )
+      .all() as { name: string }[];
     raw.close();
-    const names = rows.map((row) => row.name);
+    const names = tableRows.map((row) => row.name);
     for (const table of WORKBENCH_SCHEMA_TABLES) {
       expect(names).toContain(table);
     }
     expect(WORKBENCH_SCHEMA_TABLES).toHaveLength(8);
+    const indexNames = indexRows.map((row) => row.name);
+    for (const index of WORKBENCH_SCHEMA_INDEXES) {
+      expect(indexNames).toContain(index);
+    }
   });
 
   it("persists data to a file and re-opens idempotently without data loss", () => {
@@ -72,7 +85,7 @@ describe("SqliteWorkbenchStorageAdapter specifics", () => {
     const reopened = createSqliteWorkbenchStorageAdapter({
       databaseFile: file,
     });
-    expect(reopened.getSchemaVersion()).toBe(1);
+    expect(reopened.getSchemaVersion()).toBe(WORKBENCH_SCHEMA_VERSION);
     expect(reopened.runs.get(created.id, "tenant-a")).toStrictEqual(created);
     expect(reopened.runs.list()).toHaveLength(1);
     reopened.close();
@@ -169,7 +182,7 @@ describe("createSqliteWorkbenchStorageAdapter modes", () => {
   it("auto-migrates the built-in schema when migrations are omitted", () => {
     const adapter: WorkbenchStorageAdapter =
       createSqliteWorkbenchStorageAdapter({ databaseFile: ":memory:" });
-    expect(adapter.getSchemaVersion()).toBe(1);
+    expect(adapter.getSchemaVersion()).toBe(WORKBENCH_SCHEMA_VERSION);
     adapter.close();
   });
 

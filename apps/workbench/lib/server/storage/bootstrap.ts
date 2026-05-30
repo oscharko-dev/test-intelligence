@@ -47,10 +47,29 @@ const resolvePaths = (
   options: BootstrapWorkbenchStorageOptions,
 ): ResolvedBootstrapPaths => {
   const defaults = resolveWorkbenchStoragePaths(options.env ?? process.env);
-  return {
+  const paths = {
     databaseFile: options.databaseFile ?? defaults.databaseFile,
     artifactRoot: options.artifactRoot ?? defaults.artifactRoot,
   };
+  const hasDatabaseOverride = options.databaseFile !== undefined;
+  const hasArtifactOverride = options.artifactRoot !== undefined;
+  if (hasDatabaseOverride !== hasArtifactOverride) {
+    throw new WorkbenchStorageError(
+      "STORAGE_PATH_INVALID",
+      "Workbench storage path overrides must provide both databaseFile and artifactRoot, or neither.",
+    );
+  }
+  if (
+    hasDatabaseOverride &&
+    path.dirname(path.resolve(paths.databaseFile)) !==
+      path.dirname(path.resolve(paths.artifactRoot))
+  ) {
+    throw new WorkbenchStorageError(
+      "STORAGE_PATH_INVALID",
+      "Workbench storage path overrides must share one data root.",
+    );
+  }
+  return paths;
 };
 
 /**
@@ -62,21 +81,22 @@ export const bootstrapWorkbenchStorage = (
   options: BootstrapWorkbenchStorageOptions = {},
 ): WorkbenchStorageAdapter => {
   const paths = resolvePaths(options);
-  // Create directories only; existing database and artifact files are preserved.
-  mkdirSync(path.dirname(paths.databaseFile), { recursive: true });
-  mkdirSync(paths.artifactRoot, { recursive: true });
-
-  const adapter = createDeferredSqliteWorkbenchStorageAdapter({
-    databaseFile: paths.databaseFile,
-    ...(options.schemaSteps !== undefined
-      ? { schemaSteps: options.schemaSteps }
-      : {}),
-  });
-
+  let adapter: WorkbenchStorageAdapter | undefined;
   try {
+    // Create directories only; existing database and artifact files are preserved.
+    mkdirSync(path.dirname(paths.databaseFile), { recursive: true });
+    mkdirSync(paths.artifactRoot, { recursive: true });
+
+    adapter = createDeferredSqliteWorkbenchStorageAdapter({
+      databaseFile: paths.databaseFile,
+      ...(options.schemaSteps !== undefined
+        ? { schemaSteps: options.schemaSteps }
+        : {}),
+    });
     adapter.migrateToLatest();
+    return adapter;
   } catch (cause) {
-    adapter.close();
+    adapter?.close();
     if (
       cause instanceof WorkbenchStorageError &&
       cause.code === "SCHEMA_VERSION_UNSUPPORTED"
@@ -91,8 +111,6 @@ export const bootstrapWorkbenchStorage = (
       { cause },
     );
   }
-
-  return adapter;
 };
 
 const globalForStorage = globalThis as typeof globalThis & {

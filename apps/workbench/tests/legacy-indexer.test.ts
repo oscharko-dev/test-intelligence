@@ -20,6 +20,7 @@ import {
   type FigmaSnapshotManifest,
   type FigmaSnapshotNodeRecord,
   type FigmaSnapshotSourceIdentifier,
+  type TenantScope,
 } from "@oscharko-dev/ti-contracts";
 import {
   buildFigmaSnapshotLocalNodeIndex,
@@ -39,6 +40,7 @@ import {
 } from "@/lib/server/workbench-legacy-indexer";
 import { redactLegacyId } from "@/lib/server/workbench-legacy-indexer-classify";
 import { listWorkbenchSnapshots } from "@/lib/server/workbench-snapshot-vault";
+import { formatWorkbenchTenantScope } from "@/lib/server/workbench-tenant-scope";
 
 const FILE_KEY_HASH = "a".repeat(64);
 const SOURCE_URL_HASH = "b".repeat(64);
@@ -85,10 +87,11 @@ interface WrittenSnapshot {
 const writeValidSnapshotFixture = async (
   repoRoot: string,
   snapshotId: string,
+  tenantScope: TenantScope = DEFAULT_TENANT_SCOPE,
 ): Promise<WrittenSnapshot> => {
   const nodeIndex = buildFigmaSnapshotLocalNodeIndex({
     snapshotId,
-    tenantScope: DEFAULT_TENANT_SCOPE,
+    tenantScope,
     source,
     records,
   });
@@ -99,7 +102,7 @@ const writeValidSnapshotFixture = async (
   const importStatus = withDigest<FigmaSnapshotImportStatus>({
     schemaVersion: FIGMA_SNAPSHOT_IMPORT_STATUS_SCHEMA_VERSION,
     snapshotId,
-    tenantScope: DEFAULT_TENANT_SCOPE,
+    tenantScope,
     source,
     lifecycleState: "completed",
     retry: { attempt: 1, maxAttempts: 3 },
@@ -130,7 +133,7 @@ const writeValidSnapshotFixture = async (
   const manifest = withDigest<FigmaSnapshotManifest>({
     schemaVersion: FIGMA_SNAPSHOT_MANIFEST_SCHEMA_VERSION,
     snapshotId,
-    tenantScope: DEFAULT_TENANT_SCOPE,
+    tenantScope,
     source,
     importStrategy: "hybrid",
     importedAt: "2026-05-29T08:00:00.000Z",
@@ -144,9 +147,7 @@ const writeValidSnapshotFixture = async (
     repoRoot,
     ".test-intelligence",
     "figma-snapshots",
-    "default",
-    "default",
-    "default",
+    ...formatWorkbenchTenantScope(tenantScope).split("/"),
     FILE_KEY_HASH,
     snapshotId,
   );
@@ -358,6 +359,29 @@ describe("workbench legacy indexer (Issue #54)", () => {
       .snapshots.list()
       .filter((r) => r.source === snapshotId);
     expect(rows).toHaveLength(1);
+  });
+
+  it("does not let one tenant's snapshot source suppress another tenant's backfill", async () => {
+    const tenantB: TenantScope = {
+      tenantId: "tenant-b",
+      environmentId: "default",
+      projectId: "default",
+    };
+    const envA = envFor(repoRoot);
+    const envB = envFor(repoRoot, { WORKBENCH_TENANT_ID: "tenant-b" });
+
+    await writeValidSnapshotFixture(repoRoot, "shared-source");
+    await writeValidSnapshotFixture(repoRoot, "shared-source", tenantB);
+
+    expect((await indexLegacyArtifacts({ env: envA })).indexed).toBe(1);
+    const tenantBResult = await indexLegacyArtifacts({ env: envB });
+
+    expect(tenantBResult.indexed).toBe(1);
+    expect(
+      getWorkbenchStorage({ env: envB })
+        .snapshots.list({ tenantScope: "tenant-b/default/default" })
+        .filter((row) => row.source === "shared-source"),
+    ).toHaveLength(1);
   });
 
   it("marks a legacy run output folder as legacy-read-only without fabricating a runs row", async () => {

@@ -116,6 +116,23 @@ const SCHEMA_V1_STATEMENTS: readonly string[] = [
   )`,
 ];
 
+const SCHEMA_V2_INDEX_STATEMENTS: readonly string[] = [
+  `CREATE INDEX IF NOT EXISTS idx_workbench_snapshots_tenant
+     ON snapshots (tenant_scope)`,
+  `CREATE INDEX IF NOT EXISTS idx_workbench_runs_tenant
+     ON runs (tenant_scope)`,
+  `CREATE INDEX IF NOT EXISTS idx_workbench_artifacts_run_tenant
+     ON artifacts (run_id, tenant_scope)`,
+  `CREATE INDEX IF NOT EXISTS idx_workbench_scope_baskets_tenant_snapshot
+     ON scope_baskets (tenant_scope, snapshot_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_workbench_scope_baskets_snapshot
+     ON scope_baskets (snapshot_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_workbench_generated_seeds_run_tenant
+     ON generated_seeds (run_id, tenant_scope)`,
+  `CREATE INDEX IF NOT EXISTS idx_workbench_exports_run_tenant
+     ON exports (run_id, tenant_scope)`,
+];
+
 /**
  * Names of every table the built-in schema creates. Used by tests to assert the
  * full set exists and by future readiness checks.
@@ -131,11 +148,23 @@ export const WORKBENCH_SCHEMA_TABLES: readonly string[] = [
   "audit_events",
 ];
 
+export const WORKBENCH_SCHEMA_VERSION = 2;
+
+export const WORKBENCH_SCHEMA_INDEXES: readonly string[] = [
+  "idx_workbench_snapshots_tenant",
+  "idx_workbench_runs_tenant",
+  "idx_workbench_artifacts_run_tenant",
+  "idx_workbench_scope_baskets_tenant_snapshot",
+  "idx_workbench_scope_baskets_snapshot",
+  "idx_workbench_generated_seeds_run_tenant",
+  "idx_workbench_exports_run_tenant",
+];
+
 /**
- * Builds the built-in schema migrations bound to a live connection. The single
- * version-1 migration runs all DDL via `db.exec`, bypassing the typed `tx`
- * handle. `up` ignores its `tx` argument by design (DDL is not expressible
- * through repositories); the closure over `db` performs the work.
+ * Builds the built-in schema migrations bound to a live connection. Schema
+ * migrations run DDL via `db.exec`, bypassing the typed `tx` handle. `up`
+ * ignores its `tx` argument by design (DDL is not expressible through
+ * repositories); the closure over `db` performs the work.
  */
 export const buildBuiltinSchemaMigrations = (
   db: BetterSqlite3Database.Database,
@@ -145,6 +174,15 @@ export const buildBuiltinSchemaMigrations = (
     description: "Create Workbench metadata and readiness tables.",
     up(): void {
       for (const statement of SCHEMA_V1_STATEMENTS) {
+        db.exec(statement);
+      }
+    },
+  },
+  {
+    version: 2,
+    description: "Add Workbench metadata lookup indexes.",
+    up(): void {
+      for (const statement of SCHEMA_V2_INDEX_STATEMENTS) {
         db.exec(statement);
       }
     },
