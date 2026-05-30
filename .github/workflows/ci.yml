@@ -67,6 +67,16 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # `.npmrc` sets `ignore-scripts=true` for supply-chain hardening, so the
+      # native `prebuild-install` for `better-sqlite3` does not run during
+      # `pnpm install`. The trust allowlist in root `package.json`
+      # (`pnpm.onlyBuiltDependencies`) names `better-sqlite3` as the single
+      # package whose install scripts are permitted; this step operationalises
+      # that allowlist by explicitly rebuilding the native binding required by
+      # the Workbench storage adapter (Issue #52).
+      - name: Build native modules — better-sqlite3
+        run: pnpm rebuild better-sqlite3
+
       - name: Lockfile host allowlist
         run: node scripts/check-lockfile-hosts.mjs
 
