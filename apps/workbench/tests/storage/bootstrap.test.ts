@@ -22,7 +22,10 @@ import {
   resetWorkbenchStorageForTests,
 } from "@/lib/server/storage/bootstrap";
 import { resolveWorkbenchStoragePaths } from "@/lib/server/storage/db-path";
-import { WORKBENCH_SCHEMA_TABLES } from "@/lib/server/storage/sqlite-schema";
+import {
+  WORKBENCH_SCHEMA_TABLES,
+  WORKBENCH_SCHEMA_VERSION,
+} from "@/lib/server/storage/sqlite-schema";
 
 const readUserVersion = (file: string): number => {
   const db = new BetterSqlite3(file);
@@ -41,11 +44,10 @@ const failingSchemaSteps: readonly WorkbenchMigration[] = [
   },
 ];
 
-// WHY a second fixture: the seeded-DB scenario starts at `user_version = 1`, so
-// `migrateToLatest` would filter out a failing v1 step (1 > 1 is false) and
-// never throw. A no-op v1 keeps `validateMigrationSequence`'s contiguous-from-1
-// rule satisfied while the genuinely failing step lives at v2, which is the
-// only version `pending` selects against the seeded DB.
+// WHY a second fixture: the seeded-DB scenario starts at the built-in latest
+// version, so `migrateToLatest` filters out already-applied steps and only
+// throws when a later step is pending. No-op prior steps keep
+// `validateMigrationSequence`'s contiguous-from-1 rule satisfied.
 const failingFollowupSchemaSteps: readonly WorkbenchMigration[] = [
   {
     version: 1,
@@ -54,6 +56,11 @@ const failingFollowupSchemaSteps: readonly WorkbenchMigration[] = [
   },
   {
     version: 2,
+    description: "no-op v2 (already applied on existing database)",
+    up() {},
+  },
+  {
+    version: 3,
     description: "intentionally failing follow-up step",
     up() {
       throw new Error("forced migration failure");
@@ -74,8 +81,12 @@ describe("bootstrapWorkbenchStorage", () => {
 
   beforeEach(() => {
     root = path.join(tmpdir(), `ti-bootstrap-${randomUUID()}`);
-    databaseFile = path.join(root, "db", "workbench.db");
-    artifactRoot = path.join(root, "storage-artifacts");
+    databaseFile = path.join(root, ".test-intelligence", "workbench.db");
+    artifactRoot = path.join(
+      root,
+      ".test-intelligence",
+      "storage-artifacts",
+    );
   });
 
   afterEach(() => {
@@ -88,7 +99,7 @@ describe("bootstrapWorkbenchStorage", () => {
     const adapter = bootstrapWorkbenchStorage({ databaseFile, artifactRoot });
     expect(existsSync(databaseFile)).toBe(true);
     expect(existsSync(artifactRoot)).toBe(true);
-    expect(adapter.getSchemaVersion()).toBe(1);
+    expect(adapter.getSchemaVersion()).toBe(WORKBENCH_SCHEMA_VERSION);
     adapter.close();
 
     const raw = new BetterSqlite3(databaseFile);
@@ -113,7 +124,7 @@ describe("bootstrapWorkbenchStorage", () => {
     first.close();
 
     const second = bootstrapWorkbenchStorage({ databaseFile, artifactRoot });
-    expect(second.getSchemaVersion()).toBe(1);
+    expect(second.getSchemaVersion()).toBe(WORKBENCH_SCHEMA_VERSION);
     expect(second.runs.get(created.id, "tenant-a")).toStrictEqual(created);
     expect(second.runs.list()).toHaveLength(1);
     second.close();
@@ -191,6 +202,28 @@ describe("bootstrapWorkbenchStorage", () => {
       "SCHEMA_VERSION_UNSUPPORTED",
     );
   });
+
+  it("rejects one-sided manual path overrides", () => {
+    expect(() => bootstrapWorkbenchStorage({ databaseFile })).toThrow(
+      WorkbenchStorageError,
+    );
+    try {
+      bootstrapWorkbenchStorage({ artifactRoot });
+    } catch (error) {
+      expect((error as WorkbenchStorageError).code).toBe(
+        "STORAGE_PATH_INVALID",
+      );
+    }
+  });
+
+  it("rejects manual path overrides that split the Workbench data root", () => {
+    expect(() =>
+      bootstrapWorkbenchStorage({
+        databaseFile: path.join(root, "db", "workbench.db"),
+        artifactRoot: path.join(root, "storage-artifacts"),
+      }),
+    ).toThrow(WorkbenchStorageError);
+  });
 });
 
 describe("getWorkbenchStorage singleton", () => {
@@ -206,16 +239,24 @@ describe("getWorkbenchStorage singleton", () => {
   });
 
   it("returns the same cached adapter across calls", () => {
-    const databaseFile = path.join(root, "db", "workbench.db");
-    const artifactRoot = path.join(root, "storage-artifacts");
+    const databaseFile = path.join(root, ".test-intelligence", "workbench.db");
+    const artifactRoot = path.join(
+      root,
+      ".test-intelligence",
+      "storage-artifacts",
+    );
     const first = getWorkbenchStorage({ databaseFile, artifactRoot });
     const second = getWorkbenchStorage({ databaseFile, artifactRoot });
     expect(second).toBe(first);
   });
 
   it("exposes the resolved paths the singleton was bootstrapped with", () => {
-    const databaseFile = path.join(root, "db", "workbench.db");
-    const artifactRoot = path.join(root, "storage-artifacts");
+    const databaseFile = path.join(root, ".test-intelligence", "workbench.db");
+    const artifactRoot = path.join(
+      root,
+      ".test-intelligence",
+      "storage-artifacts",
+    );
     getWorkbenchStorage({ databaseFile, artifactRoot });
     expect(getWorkbenchStoragePaths({ databaseFile, artifactRoot })).toEqual({
       databaseFile,

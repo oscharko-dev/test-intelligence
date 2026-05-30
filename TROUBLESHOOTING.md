@@ -29,6 +29,7 @@ Files:
 
 - **Metadata database:** `.test-intelligence/workbench.db` — SQLite file containing snapshots, runs, artifacts, scope baskets, generated seeds, and exports. WAL mode, so you may also see `workbench.db-wal` and `workbench.db-shm` sidecar files.
 - **Artifact store:** `.test-intelligence/storage-artifacts/` — content-addressed artifacts stored as `.bin` files in a two-level sharded layout (`<aa>/<bb>/<sha256>.bin`).
+- **Run-state sidecars:** `.test-intelligence/run-state/` — restart-rehydration documents keyed by the server-minted SQLite run row id. These files are cache-like sidecars for rebuilding the in-memory run registry and should be preserved with the database during manual recovery.
 - **Automatic backups:** `.test-intelligence/backups/` — transactionally-consistent database snapshots taken before schema migrations.
 
 ### Recover from a migration failure
@@ -36,7 +37,7 @@ Files:
 **Symptom:** On startup, the server logs:
 
 ```
-[workbench] Local storage bootstrap failed; persistence features are unavailable: Failed to initialize the local Workbench database. Existing data was left unchanged.
+[workbench] Local storage bootstrap failed; persistence features are unavailable: WorkbenchStorageError:MIGRATION_FAILED
 ```
 
 Persistence features are unavailable until the issue is resolved, but the database and all artifacts remain intact.
@@ -59,7 +60,7 @@ Persistence features are unavailable until the issue is resolved, but the databa
 
 **Restore from a backup (if needed):**
 
-If a migration logic error corrupted the schema before you fixed the disk issue, restore the database to its pre-migration state:
+If a migration logic error corrupted the schema before you fixed the disk issue, restore the database and keep the matching `run-state/` directory from the same data-root snapshot:
 
 1. Stop the Workbench: `pnpm run local:stop`.
 

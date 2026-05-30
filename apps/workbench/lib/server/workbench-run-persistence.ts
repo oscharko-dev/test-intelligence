@@ -32,6 +32,8 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
+import isPathInside from "is-path-inside";
+
 import {
   verifyArtifact,
   writeArtifact,
@@ -380,6 +382,34 @@ const readRunStateDocument = (
   return isRunState(parsed) ? parsed : undefined;
 };
 
+const isInsideOrEqual = (candidate: string, root: string): boolean =>
+  candidate === root || isPathInside(candidate, root);
+
+const trustRunStatePathsFromRow = (
+  state: RunState,
+  row: { readonly artifactDir?: string },
+): RunState => {
+  const {
+    artifactDir: _artifactDir,
+    outputRoot,
+    ...withoutServerPaths
+  } = state;
+  if (row.artifactDir === undefined) {
+    return withoutServerPaths;
+  }
+
+  const trustedArtifactDir = path.resolve(row.artifactDir);
+  const trustedState = { ...withoutServerPaths, artifactDir: trustedArtifactDir };
+  if (
+    outputRoot !== undefined &&
+    isInsideOrEqual(trustedArtifactDir, path.resolve(outputRoot))
+  ) {
+    return { ...trustedState, outputRoot };
+  }
+
+  return trustedState;
+};
+
 /**
  * Rebuilds run records from persistence after a restart. For each `runs` row it
  * loads `<runStateRoot>/<row.id>.json` (keyed by the server-controlled row id)
@@ -403,7 +433,7 @@ export const rehydrateRunsFromPersistence = (
       if (state === undefined || state.jobId === null) continue;
       out.push({
         jobId: state.jobId,
-        state,
+        state: trustRunStatePathsFromRow(state, row),
         tenantScope: row.tenantScope,
         rowId: row.id,
       });

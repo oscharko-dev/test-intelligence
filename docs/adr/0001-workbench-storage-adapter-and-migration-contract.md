@@ -219,3 +219,9 @@ binds to a factory; the in-memory double does so in
 `apps/workbench/tests/storage/memory-adapter.test.ts`, and path/hash helpers are
 covered by `apps/workbench/tests/storage/db-path.test.ts`. The future SQLite
 adapter reuses the same shared suite to prove parity.
+
+Issue #52 added the concrete SQLite bootstrap under
+`apps/workbench/lib/server/storage/bootstrap.ts` and the built-in schema
+migrations under `apps/workbench/lib/server/storage/sqlite-schema.ts`. The
+current built-in SQLite schema uses `PRAGMA user_version` and includes metadata
+lookup indexes for tenant-scoped and run-scoped repository reads.

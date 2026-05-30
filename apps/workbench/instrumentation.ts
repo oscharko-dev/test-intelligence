@@ -10,6 +10,13 @@
  * operator message so the server still starts and the failure is diagnosable.
  */
 
+const describeStartupError = (error: unknown): string => {
+  if (!(error instanceof Error)) return "unknown startup error";
+  const code =
+    "code" in error && typeof error.code === "string" ? `:${error.code}` : "";
+  return `${error.name}${code}`;
+};
+
 export async function register(): Promise<void> {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
   try {
@@ -22,11 +29,10 @@ export async function register(): Promise<void> {
     // same SQLite file.
     getWorkbenchStorage();
   } catch (error) {
-    const detail =
-      error instanceof Error ? error.message : "unknown bootstrap error";
     console.error(
-      `[workbench] Local storage bootstrap failed; persistence features are unavailable: ${detail}`,
+      `[workbench] Local storage bootstrap failed; persistence features are unavailable: ${describeStartupError(error)}`,
     );
+    return;
   }
   // Best-effort #54 legacy index. Runs AFTER the storage singleton is primed so
   // the indexer's adapter writes land on the same root. WHY a separate try: an
