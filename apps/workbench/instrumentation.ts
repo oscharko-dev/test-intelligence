@@ -13,9 +13,14 @@
 export async function register(): Promise<void> {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
   try {
-    const { bootstrapWorkbenchStorage } =
+    const { getWorkbenchStorage } =
       await import("./lib/server/storage/bootstrap");
-    bootstrapWorkbenchStorage();
+    // Prime the `globalThis` singleton at startup. Calling
+    // `bootstrapWorkbenchStorage()` here would open a connection that is
+    // never recorded in the cache, so the next `getWorkbenchStorage()` from
+    // a Route Handler / Server Action would open a second connection to the
+    // same SQLite file.
+    getWorkbenchStorage();
   } catch (error) {
     const detail =
       error instanceof Error ? error.message : "unknown bootstrap error";
