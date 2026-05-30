@@ -174,20 +174,15 @@ const updateRecord = (
   if (record === undefined) return;
   record.state = updater(record.state);
   // Best-effort durable mirror of every transition. Only runs that were
-  // persisted on create (rowId present) and still have an artifact dir are
-  // mirrored; failure is swallowed inside the persistence module.
+  // persisted on create (rowId present) are mirrored; the run-state document is
+  // keyed by the server-controlled rowId, so the artifact dir is not needed.
+  // Failure is swallowed inside the persistence module.
   const { rowId, repoRoot } = record;
-  const artifactDir = record.state.artifactDir;
-  if (
-    rowId !== undefined &&
-    repoRoot !== undefined &&
-    artifactDir !== undefined
-  ) {
+  if (rowId !== undefined && repoRoot !== undefined) {
     persistRunTransition({
       rowId,
       repoRoot,
       status: record.state.status,
-      artifactDir,
       state: record.state,
     });
   }

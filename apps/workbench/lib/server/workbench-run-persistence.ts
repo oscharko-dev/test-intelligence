@@ -4,8 +4,9 @@
  * The in-memory run registry (`workbench-run-registry.ts`) stays the source of
  * truth for an executing run. This module adds a parallel, restart-durable
  * index: on create and on every state transition it writes the full `RunState`
- * as a JSON run-state document next to the run's artifacts and upserts a `runs`
- * row; on seal it offloads each produced artifact to the content store and
+ * to a server-controlled run-state document (keyed by the durable `runs` row id)
+ * and upserts a `runs` row; on seal it offloads each produced artifact to the
+ * content store and
  * records artifact / export / generated-seed metadata; and on restart it
  * rehydrates the registry map from those documents so a run created before a
  * restart still reports its status, progress, artifact metadata, and source
@@ -48,7 +49,7 @@ import { getWorkbenchStorage } from "@/lib/server/storage/bootstrap";
 import type { WorkbenchStorageAdapter } from "@/lib/server/storage/storage-adapter";
 import type { RunState } from "@/lib/types";
 
-const RUN_STATE_DOCUMENT = "workbench-run-state.json";
+const RUN_STATE_DIRECTORY = "run-state";
 const GENERATED_SEEDS_FILE = "generated-testcases.json";
 
 export interface RehydratedRun {
@@ -86,28 +87,49 @@ export const storageEnvForRepoRoot = (
   env: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv => ({ ...env, WORKBENCH_REPO_ROOT: repoRoot });
 
-const runStateDocumentPath = (artifactDir: string): string =>
-  path.join(artifactDir, RUN_STATE_DOCUMENT);
-
 /**
- * Writes the full run-state document to `<artifactDir>/workbench-run-state.json`,
- * creating the directory if needed. The document carries `jobId` so rehydration
- * can rebuild the registry map key.
+ * Server-controlled run-state-document directory
+ * (`<repoRoot>/.test-intelligence/run-state`). WHY derived only from
+ * `resolveWorkbenchStoragePaths` (reads `process.env`/`WORKBENCH_REPO_ROOT`, never
+ * the run request body): documents written here carry NO user-tainted path
+ * component, so the writes cannot be a path-injection sink, and the rehydration
+ * metadata lives beside the SQLite DB, not inside the operator's output dir (so it
+ * is not exposed by the artifact `/files` route).
  */
-const writeRunStateDocument = (artifactDir: string, state: RunState): void => {
-  mkdirSync(artifactDir, { recursive: true });
+const runStateRoot = (env: NodeJS.ProcessEnv): string =>
+  path.join(
+    path.dirname(resolveWorkbenchStoragePaths(env).databaseFile),
+    RUN_STATE_DIRECTORY,
+  );
+
+// Keyed by the SQLite `runs` row id (`rowId`, an adapter-minted `randomUUID()` —
+// server-controlled), so the full path takes no value from the run config.
+const runStateDocumentPath = (env: NodeJS.ProcessEnv, rowId: string): string =>
+  path.join(runStateRoot(env), `${rowId}.json`);
+
+// Writes the full run-state document to `<runStateRoot>/<rowId>.json` (creating
+// the dir); the document carries `jobId` so rehydration rebuilds the map key.
+const writeRunStateDocument = (
+  env: NodeJS.ProcessEnv,
+  rowId: string,
+  state: RunState,
+): void => {
+  mkdirSync(runStateRoot(env), { recursive: true });
   writeFileSync(
-    runStateDocumentPath(artifactDir),
+    runStateDocumentPath(env, rowId),
     JSON.stringify(state),
     "utf8",
   );
 };
 
 /**
- * Persists a newly created run: writes its run-state document and inserts a
- * `runs` row, returning the row id to hold on the in-memory record. Best-effort:
- * on failure it logs an operator-safe note and returns `undefined`, so the run
- * proceeds without persistence rather than failing.
+ * Persists a newly created run: inserts the `runs` row FIRST to obtain the
+ * server-minted `rowId`, then writes the run-state document keyed by it. Returns
+ * the row id to hold on the in-memory record. Best-effort: a failure before the
+ * row exists returns `undefined` so the run proceeds without persistence; a
+ * doc-write failure after the row exists is tolerated (rehydration skips rows
+ * whose document is missing) and the row id is still returned so later
+ * transitions can rewrite the document.
  */
 export const persistRunCreated = (input: {
   readonly repoRoot: string;
@@ -117,43 +139,48 @@ export const persistRunCreated = (input: {
   readonly artifactDir: string;
   readonly state: RunState;
 }): string | undefined => {
+  const env = storageEnvForRepoRoot(input.repoRoot);
+  let rowId: string;
   try {
-    writeRunStateDocument(input.artifactDir, input.state);
-    const row = getWorkbenchStorage({
-      env: storageEnvForRepoRoot(input.repoRoot),
-    }).runs.create({
+    rowId = getWorkbenchStorage({ env }).runs.create({
       tenantScope: input.tenantScope,
       status: input.status,
       ...(input.snapshotId !== undefined
         ? { snapshotId: input.snapshotId }
         : {}),
       artifactDir: input.artifactDir,
-    });
-    return row.id;
+    }).id;
   } catch (error) {
     console.error(
       `[workbench] Run persistence skipped on create; durable index not updated: ${describeStorageError(error)}`,
     );
     return undefined;
   }
+  try {
+    writeRunStateDocument(env, rowId, input.state);
+  } catch (error) {
+    console.error(
+      `[workbench] Run-state document not written on create; rehydration will skip this run: ${describeStorageError(error)}`,
+    );
+  }
+  return rowId;
 };
 
 /**
- * Persists a run state transition: rewrites the run-state document and updates
+ * Persists a run state transition: rewrites the run-state document (keyed by the
+ * server-minted `rowId`, under the server-controlled run-state root) and updates
  * the `runs` row status. Best-effort and failure-isolated.
  */
 export const persistRunTransition = (input: {
   readonly rowId: string;
   readonly repoRoot: string;
   readonly status: WorkbenchRunStatus;
-  readonly artifactDir: string;
   readonly state: RunState;
 }): void => {
   try {
-    writeRunStateDocument(input.artifactDir, input.state);
-    getWorkbenchStorage({
-      env: storageEnvForRepoRoot(input.repoRoot),
-    }).runs.updateStatus(input.rowId, input.status);
+    const env = storageEnvForRepoRoot(input.repoRoot);
+    writeRunStateDocument(env, input.rowId, input.state);
+    getWorkbenchStorage({ env }).runs.updateStatus(input.rowId, input.status);
   } catch (error) {
     console.error(
       `[workbench] Run persistence skipped on transition; durable index may be stale: ${describeStorageError(error)}`,
@@ -291,15 +318,23 @@ export const persistSealedRunArtifacts = (input: {
         customerFacing: input.customerFacingPaths.has(absolute),
       });
     }
-    const seedPath = path.join(resolvedArtifactDir, GENERATED_SEEDS_FILE);
-    if (input.artifactPaths.some((p) => path.resolve(p) === seedPath)) {
+    // WHY read the seed from a validated `artifactPaths` element, not a path
+    // reconstructed from `artifactDir`: `artifactPaths` is the registry's
+    // already-resolved produced-file list (same safe source as
+    // `recordSingleArtifact` above), so the read carries no user-tainted path
+    // component. The `path.join` below is only a comparison string, not an fs sink.
+    const seedTarget = path.join(resolvedArtifactDir, GENERATED_SEEDS_FILE);
+    const seedEntry = input.artifactPaths.find(
+      (p) => path.resolve(p) === seedTarget,
+    );
+    if (seedEntry !== undefined) {
       recordSeedFile({
         storage,
         paths,
         rowId: input.rowId,
         tenantScope: input.tenantScope,
         status: input.status,
-        bytes: Uint8Array.from(readFileSync(seedPath)),
+        bytes: Uint8Array.from(readFileSync(seedEntry)),
       });
     }
   } catch (error) {
@@ -317,10 +352,15 @@ const isRunState = (value: unknown): value is RunState =>
   Array.isArray((value as { artifacts?: unknown }).artifacts) &&
   typeof (value as { stages?: unknown }).stages === "object";
 
-const readRunStateDocument = (artifactDir: string): RunState | undefined => {
+// Reads `<runStateRoot>/<rowId>.json` (server-controlled path); a
+// missing/unreadable/invalid document yields `undefined`.
+const readRunStateDocument = (
+  env: NodeJS.ProcessEnv,
+  rowId: string,
+): RunState | undefined => {
   let raw: string;
   try {
-    raw = readFileSync(runStateDocumentPath(artifactDir), "utf8");
+    raw = readFileSync(runStateDocumentPath(env, rowId), "utf8");
   } catch {
     return undefined;
   }
@@ -329,12 +369,12 @@ const readRunStateDocument = (artifactDir: string): RunState | undefined => {
 };
 
 /**
- * Rebuilds run records from persistence after a restart. Reads each `runs` row,
- * loads its run-state document, and yields a record keyed by the document's
- * `jobId` with the rowId and tenant scope restored. Rows with a missing or
- * unreadable/invalid state document are skipped (nothing is reported for them).
- * Synchronous: better-sqlite3 and `readFileSync` are synchronous, so the caller
- * can rehydrate inside the synchronous store getter.
+ * Rebuilds run records from persistence after a restart. For each `runs` row it
+ * loads `<runStateRoot>/<row.id>.json` (keyed by the server-controlled row id)
+ * and yields a record keyed by the document's `jobId`, with the rowId and tenant
+ * scope restored. Rows whose document is missing/unreadable/invalid are skipped.
+ * Synchronous (better-sqlite3 + `readFileSync`), so the caller can rehydrate
+ * inside the synchronous store getter.
  */
 export const rehydrateRunsFromPersistence = (
   env: NodeJS.ProcessEnv = process.env,
@@ -342,10 +382,9 @@ export const rehydrateRunsFromPersistence = (
   const out: RehydratedRun[] = [];
   try {
     for (const row of getWorkbenchStorage({ env }).runs.list()) {
-      if (row.artifactDir === undefined) continue;
       let state: RunState | undefined;
       try {
-        state = readRunStateDocument(row.artifactDir);
+        state = readRunStateDocument(env, row.id);
       } catch {
         state = undefined;
       }

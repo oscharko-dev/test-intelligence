@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { mkdirSync, writeFileSync } from "node:fs";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -286,5 +286,33 @@ describe("Workbench run persistence (Issue #53)", () => {
     );
     expect(tempEntries).toContain("workbench.db");
     expect(tempEntries).toContain("storage-artifacts");
+    // The run-state documents live beside the DB under the data root, never in
+    // the operator's output directory.
+    expect(tempEntries).toContain("run-state");
+  });
+
+  it("writes the run-state document under the server-controlled run-state root, not inside artifactDir", async () => {
+    const env = envFor(repoRoot);
+    await startSealedRun(env);
+
+    const row = getWorkbenchStorage().runs.list()[0];
+    if (row === undefined) throw new Error("expected a persisted runs row");
+    if (row.artifactDir === undefined) {
+      throw new Error("expected the persisted row to carry an artifactDir");
+    }
+
+    // The document is keyed by the server-minted rowId under the data root.
+    const runStateRoot = path.join(repoRoot, ".test-intelligence", "run-state");
+    const runStateEntries = await readdir(runStateRoot);
+    expect(runStateEntries).toContain(`${row.id}.json`);
+
+    // Nothing was written into the (possibly hostile) artifactDir: neither the
+    // rowId-keyed document nor the legacy `<artifactDir>/workbench-run-state.json`.
+    const artifactEntries = await readdir(row.artifactDir);
+    expect(artifactEntries).not.toContain(`${row.id}.json`);
+    expect(artifactEntries).not.toContain("workbench-run-state.json");
+    await expect(
+      stat(path.join(row.artifactDir, "workbench-run-state.json")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
