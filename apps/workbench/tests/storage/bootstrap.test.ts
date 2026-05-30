@@ -207,13 +207,12 @@ describe("bootstrapWorkbenchStorage", () => {
     expect(() => bootstrapWorkbenchStorage({ databaseFile })).toThrow(
       WorkbenchStorageError,
     );
-    try {
-      bootstrapWorkbenchStorage({ artifactRoot });
-    } catch (error) {
-      expect((error as WorkbenchStorageError).code).toBe(
-        "STORAGE_PATH_INVALID",
-      );
-    }
+    expect(() => bootstrapWorkbenchStorage({ artifactRoot })).toThrow(
+      WorkbenchStorageError,
+    );
+    expect(() => bootstrapWorkbenchStorage({ artifactRoot })).toThrow(
+      /databaseFile and artifactRoot/,
+    );
   });
 
   it("rejects manual path overrides that split the Workbench data root", () => {
@@ -223,6 +222,20 @@ describe("bootstrapWorkbenchStorage", () => {
         artifactRoot: path.join(root, "storage-artifacts"),
       }),
     ).toThrow(WorkbenchStorageError);
+  });
+
+  it("normalizes manual path overrides before checking the shared data root", () => {
+    const adapter = bootstrapWorkbenchStorage({
+      databaseFile: path.join(root, ".test-intelligence", ".", "workbench.db"),
+      artifactRoot: path.join(
+        root,
+        ".test-intelligence",
+        "storage-artifacts",
+        "..",
+        "storage-artifacts",
+      ),
+    });
+    adapter.close();
   });
 });
 

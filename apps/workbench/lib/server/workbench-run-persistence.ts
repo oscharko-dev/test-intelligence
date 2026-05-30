@@ -32,8 +32,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
-import isPathInside from "is-path-inside";
-
 import {
   verifyArtifact,
   writeArtifact,
@@ -382,16 +380,13 @@ const readRunStateDocument = (
   return isRunState(parsed) ? parsed : undefined;
 };
 
-const isInsideOrEqual = (candidate: string, root: string): boolean =>
-  candidate === root || isPathInside(candidate, root);
-
 const trustRunStatePathsFromRow = (
   state: RunState,
   row: { readonly artifactDir?: string },
 ): RunState => {
   const {
     artifactDir: _artifactDir,
-    outputRoot,
+    outputRoot: _outputRoot,
     ...withoutServerPaths
   } = state;
   if (row.artifactDir === undefined) {
@@ -399,15 +394,7 @@ const trustRunStatePathsFromRow = (
   }
 
   const trustedArtifactDir = path.resolve(row.artifactDir);
-  const trustedState = { ...withoutServerPaths, artifactDir: trustedArtifactDir };
-  if (
-    outputRoot !== undefined &&
-    isInsideOrEqual(trustedArtifactDir, path.resolve(outputRoot))
-  ) {
-    return { ...trustedState, outputRoot };
-  }
-
-  return trustedState;
+  return { ...withoutServerPaths, artifactDir: trustedArtifactDir };
 };
 
 /**

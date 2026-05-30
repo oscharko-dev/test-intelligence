@@ -61,7 +61,8 @@ const resolvePaths = (
   }
   if (
     hasDatabaseOverride &&
-    path.dirname(paths.databaseFile) !== path.dirname(paths.artifactRoot)
+    path.dirname(path.resolve(paths.databaseFile)) !==
+      path.dirname(path.resolve(paths.artifactRoot))
   ) {
     throw new WorkbenchStorageError(
       "STORAGE_PATH_INVALID",

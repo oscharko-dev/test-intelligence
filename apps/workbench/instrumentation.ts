@@ -10,11 +10,19 @@
  * operator message so the server still starts and the failure is diagnosable.
  */
 
-const describeStartupError = (error: unknown): string => {
-  if (!(error instanceof Error)) return "unknown startup error";
+const describeErrorKind = (error: Error): string => {
   const code =
     "code" in error && typeof error.code === "string" ? `:${error.code}` : "";
   return `${error.name}${code}`;
+};
+
+const describeStartupError = (error: unknown): string => {
+  if (!(error instanceof Error)) return "unknown startup error";
+  const cause =
+    "cause" in error && error.cause instanceof Error
+      ? ` cause=${describeErrorKind(error.cause)}`
+      : "";
+  return `${describeErrorKind(error)}${cause}`;
 };
 
 export async function register(): Promise<void> {
