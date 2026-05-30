@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { createMemoryWorkbenchStorageAdapter } from "@/lib/server/storage";
+import {
+  WorkbenchStorageError,
+  createMemoryWorkbenchStorageAdapter,
+} from "@/lib/server/storage";
 
 import { runWorkbenchStorageAdapterContract } from "./adapter-contract";
 
@@ -31,5 +34,21 @@ describe("MemoryWorkbenchStorageAdapter specifics", () => {
     adapter.close();
     expect(adapter.runs.list()).toStrictEqual([]);
     expect(adapter.snapshots.list()).toStrictEqual([]);
+  });
+
+  it("rejects a stored schema version newer than the known migrations", () => {
+    const adapter = createMemoryWorkbenchStorageAdapter({
+      initialSchemaVersion: 2,
+      migrations: [{ version: 1, description: "known", up() {} }],
+    });
+
+    expect(() => adapter.migrateToLatest()).toThrow(WorkbenchStorageError);
+    try {
+      adapter.migrateToLatest();
+    } catch (error) {
+      expect((error as WorkbenchStorageError).code).toBe(
+        "SCHEMA_VERSION_UNSUPPORTED",
+      );
+    }
   });
 });

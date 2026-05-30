@@ -16,6 +16,7 @@ export type Sha256Hex = string;
  * Reference to a binary stored in the content-addressed artifact store rather
  * than inline in SQLite. Large node graphs, generated-seed JSON, and export
  * binaries are persisted as files and referenced by their content hash.
+ * `storageRef` must be the canonical sharded path derived from `sha256`.
  */
 export interface ContentRef {
   readonly sha256: Sha256Hex;
@@ -210,6 +211,10 @@ export interface RunIdFilter {
   readonly runId: string;
 }
 
+export interface RunTenantFilter extends RunIdFilter {
+  readonly tenantScope: string;
+}
+
 export interface ScopeBasketFilter {
   readonly tenantScope?: string;
   readonly snapshotId?: string;
@@ -222,54 +227,62 @@ export interface ScopeBasketChanges {
 
 /**
  * Repositories return deep, immutable snapshots of stored state. `get` and
- * `update*` return `undefined` for an absent id; `list` returns an empty array
- * when nothing matches. Methods are synchronous because the concrete SQLite
- * implementation (better-sqlite3) and the in-memory double are both synchronous.
+ * `update*` are tenant scoped and return `undefined` for an absent id or tenant
+ * mismatch; `list` returns an empty array when nothing matches. Run-child
+ * metadata creation validates that the referenced run exists in the same tenant
+ * scope. Methods are synchronous because the concrete SQLite implementation
+ * (better-sqlite3) and the in-memory double are both synchronous.
  */
 export interface SnapshotRepository {
   create(input: CreateSnapshotInput): SnapshotMetadataRecord;
-  get(id: string): SnapshotMetadataRecord | undefined;
+  get(id: string, tenantScope: string): SnapshotMetadataRecord | undefined;
   list(filter?: TenantScopeFilter): readonly SnapshotMetadataRecord[];
   updateLifecycleState(
     id: string,
+    tenantScope: string,
     lifecycleState: string,
   ): SnapshotMetadataRecord | undefined;
 }
 
 export interface RunRepository {
   create(input: CreateRunInput): RunMetadataRecord;
-  get(id: string): RunMetadataRecord | undefined;
+  get(id: string, tenantScope: string): RunMetadataRecord | undefined;
   list(filter?: TenantScopeFilter): readonly RunMetadataRecord[];
   updateStatus(
     id: string,
+    tenantScope: string,
     status: WorkbenchRunStatus,
   ): RunMetadataRecord | undefined;
 }
 
 export interface ArtifactRepository {
   create(input: CreateArtifactInput): ArtifactMetadataRecord;
-  get(id: string): ArtifactMetadataRecord | undefined;
-  list(filter: RunIdFilter): readonly ArtifactMetadataRecord[];
+  get(id: string, tenantScope: string): ArtifactMetadataRecord | undefined;
+  list(filter: RunTenantFilter): readonly ArtifactMetadataRecord[];
 }
 
 export interface ScopeBasketRepository {
   create(input: CreateScopeBasketInput): ScopeBasketRecord;
-  get(id: string): ScopeBasketRecord | undefined;
+  get(id: string, tenantScope: string): ScopeBasketRecord | undefined;
   list(filter?: ScopeBasketFilter): readonly ScopeBasketRecord[];
   update(
     id: string,
+    tenantScope: string,
     changes: ScopeBasketChanges,
   ): ScopeBasketRecord | undefined;
 }
 
 export interface GeneratedSeedRepository {
   create(input: CreateGeneratedSeedInput): GeneratedSeedMetadataRecord;
-  get(id: string): GeneratedSeedMetadataRecord | undefined;
-  list(filter: RunIdFilter): readonly GeneratedSeedMetadataRecord[];
+  get(
+    id: string,
+    tenantScope: string,
+  ): GeneratedSeedMetadataRecord | undefined;
+  list(filter: RunTenantFilter): readonly GeneratedSeedMetadataRecord[];
 }
 
 export interface ExportRepository {
   create(input: CreateExportInput): ExportMetadataRecord;
-  get(id: string): ExportMetadataRecord | undefined;
-  list(filter: RunIdFilter): readonly ExportMetadataRecord[];
+  get(id: string, tenantScope: string): ExportMetadataRecord | undefined;
+  list(filter: RunTenantFilter): readonly ExportMetadataRecord[];
 }

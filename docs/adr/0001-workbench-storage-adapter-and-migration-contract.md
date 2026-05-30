@@ -90,10 +90,17 @@ interface WorkbenchStorageAdapter {
 ```
 
 Repository methods are **synchronous**, matching better-sqlite3 (and the
-in-memory double). `get` and `update*` return `undefined` for an absent id
-(never throw); `list` returns `[]` when empty. Every returned record is a deep,
-immutable snapshot — mutating a returned value cannot alter stored state.
-Create-input types omit server-assigned `id`, `createdAt`, and `updatedAt`.
+in-memory double). Single-record `get` and `update*` methods are tenant scoped
+and return `undefined` for an absent id or tenant mismatch (never throw); `list`
+returns `[]` when empty. Run-child metadata (`ArtifactMetadataRecord`,
+`GeneratedSeedMetadataRecord`, and `ExportMetadataRecord`) must reference an
+existing run in the same tenant scope before it can be created. `snapshotId`
+fields remain workflow snapshot identifiers: they may refer to the storage row
+id or the engine snapshot id carried in `SnapshotMetadataRecord.source`, and
+callers must still tenant-scope reads and updates. Every returned record is a
+deep, immutable snapshot — mutating a returned value cannot alter stored state or
+later writes. Create-input types omit server-assigned `id`, `createdAt`, and
+`updatedAt`.
 
 ### Forward-only migration rule
 
@@ -104,10 +111,12 @@ versions are integers, each at least 1, strictly increasing, and **contiguous
 from 1** (`[1, 2, 3, ...]`). `migrateToLatest` validates the sequence, applies
 each migration whose version exceeds the stored schema version in ascending
 order, advances the stored version, and returns it; re-running applies nothing
-(idempotent). Each migration runs inside transaction semantics, so a failing
-migration leaves the schema unchanged (atomic). The concrete store persists the
-applied version in SQLite `PRAGMA user_version`; the in-memory double keeps it in
-a field. There are intentionally no reversible (down) migrations.
+(idempotent). Startup fails closed with `SCHEMA_VERSION_UNSUPPORTED` when the
+stored version is newer than the running code's known migration set. Each
+migration runs inside transaction semantics, so a failing migration leaves the
+schema unchanged (atomic). The concrete store persists the applied version in
+SQLite `PRAGMA user_version`; the in-memory double keeps it in a field. There
+are intentionally no reversible (down) migrations.
 
 ### Transaction semantics
 
@@ -115,18 +124,23 @@ a field. There are intentionally no reversible (down) migrations.
 Writes are atomic (all-or-nothing); a thrown error rolls back every change,
 including updates to pre-existing records, and rethrows. Reads observe prior
 writes within the same transaction (read-your-writes). Nesting is forbidden: a
-nested call throws `WorkbenchStorageError` with code `NESTED_TRANSACTION`. The
-in-memory double passes itself as the handle (its repositories already mutate the
-guarded live state); the concrete store will bind a distinct handle whose
-repositories execute against the active better-sqlite3 transaction.
+nested call throws `WorkbenchStorageError` with code `NESTED_TRANSACTION`.
+Transaction-scoped handles also reject lifecycle methods (`migrateToLatest` and
+`close`) with the same code, so ordinary work callbacks cannot trigger schema or
+connection side effects. Both the in-memory double and concrete store bind a
+restricted transaction handle whose repositories execute against the active
+transaction.
 
 ### Content addressing and paths
 
 Artifacts are content-addressed by SHA-256. `artifactStorageRef(hash)` returns a
 two-level sharded relative path `<aa>/<bb>/<hash>.bin`, keeping directory sizes
-bounded. The artifact root is `<repoRoot>/.test-intelligence/storage-artifacts`
-and the database is `<repoRoot>/.test-intelligence/workbench.db`. Repo-root
-resolution mirrors `resolveRepoRoot` in
+bounded. Any `ContentRef` persisted through the adapter must use that canonical
+storage ref for its lowercase SHA-256 hash and a non-negative byte size; adapters
+reject non-canonical refs with `CONTENT_REF_INVALID`. The artifact root is
+`<repoRoot>/.test-intelligence/storage-artifacts` and the database is
+`<repoRoot>/.test-intelligence/workbench.db`. Repo-root resolution mirrors
+`resolveRepoRoot` in
 [`apps/workbench/lib/server/workbench-run-validation.ts`](../../apps/workbench/lib/server/workbench-run-validation.ts):
 `WORKBENCH_REPO_ROOT` is resolved when set, otherwise the current working
 directory is used with a trailing `apps/workbench` segment stripped. Paths are

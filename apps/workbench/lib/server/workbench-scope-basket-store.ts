@@ -133,10 +133,14 @@ export const saveScopeBasketSelection = (
     .list({ tenantScope, snapshotId })
     .find((record) => record.tenantScope === tenantScope);
   if (existing !== undefined) {
-    const updated = storage.scopeBaskets.update(existing.id, {
-      label: input.label,
-      selection,
-    });
+    const updated = storage.scopeBaskets.update(
+      existing.id,
+      tenantScope,
+      {
+        label: input.label,
+        selection,
+      },
+    );
     if (updated !== undefined) return updated;
   }
   return storage.scopeBaskets.create({

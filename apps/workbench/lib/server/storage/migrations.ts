@@ -50,3 +50,22 @@ export const validateMigrationSequence = (
     }
   });
 };
+
+/**
+ * Fails closed when local data was written by a newer Workbench build. A
+ * forward-only migration strategy cannot safely downgrade or reinterpret future
+ * rows, so startup must stop before repository calls run against unknown schema.
+ */
+export const assertSchemaVersionSupported = (
+  currentVersion: number,
+  migrations: readonly WorkbenchMigration[],
+): void => {
+  validateMigrationSequence(migrations);
+  const latestKnownVersion = migrations.length;
+  if (currentVersion > latestKnownVersion) {
+    throw new WorkbenchStorageError(
+      "SCHEMA_VERSION_UNSUPPORTED",
+      `Stored Workbench schema version ${currentVersion} is newer than the latest supported version ${latestKnownVersion}.`,
+    );
+  }
+};

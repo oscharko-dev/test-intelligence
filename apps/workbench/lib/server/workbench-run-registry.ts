@@ -182,6 +182,7 @@ const updateRecord = (
     persistRunTransition({
       rowId,
       repoRoot,
+      tenantScope: record.tenantScope,
       status: record.state.status,
       state: record.state,
     });

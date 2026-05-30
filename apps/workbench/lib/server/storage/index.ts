@@ -26,6 +26,7 @@ export type {
   RunIdFilter,
   RunMetadataRecord,
   RunRepository,
+  RunTenantFilter,
   ScopeBasketChanges,
   ScopeBasketFilter,
   ScopeBasketRecord,
@@ -45,7 +46,11 @@ export type {
 export { WorkbenchStorageError } from "./storage-adapter";
 
 export type { WorkbenchMigration } from "./migrations";
-export { WORKBENCH_MIGRATIONS, validateMigrationSequence } from "./migrations";
+export {
+  WORKBENCH_MIGRATIONS,
+  assertSchemaVersionSupported,
+  validateMigrationSequence,
+} from "./migrations";
 
 export type { WorkbenchStoragePaths } from "./db-path";
 export {

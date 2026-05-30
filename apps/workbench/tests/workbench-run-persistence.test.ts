@@ -105,7 +105,10 @@ describe("Workbench run persistence (Issue #53)", () => {
     expect(row?.snapshotId).toBe(SNAPSHOT_ID);
     if (row === undefined) throw new Error("expected a persisted runs row");
 
-    const artifacts = getWorkbenchStorage().artifacts.list({ runId: row.id });
+    const artifacts = getWorkbenchStorage().artifacts.list({
+      runId: row.id,
+      tenantScope: row.tenantScope,
+    });
     // Mock seal produces the 10 default JSON artifacts plus customer md/pdf/txt.
     expect(artifacts.length).toBeGreaterThan(10);
     const byName = new Map(artifacts.map((a) => [a.name, a]));
@@ -115,7 +118,10 @@ describe("Workbench run persistence (Issue #53)", () => {
     expect(byName.get("coverage-plan.json")?.kind).toBe("json");
     expect(byName.get("coverage-plan.json")?.customerFacing).toBe(false);
 
-    const exports = getWorkbenchStorage().exports.list({ runId: row.id });
+    const exports = getWorkbenchStorage().exports.list({
+      runId: row.id,
+      tenantScope: row.tenantScope,
+    });
     const formats = exports.map((e) => e.format).sort();
     // Customer markdown (combined + 2 per-case) and pdf become exports; the
     // customer .txt files map to no export format and stay artifacts only.
@@ -129,7 +135,7 @@ describe("Workbench run persistence (Issue #53)", () => {
     ]);
 
     // Every recorded artifact reference verifies against the content store.
-    const report = verifyRunArtifacts(env, row.id);
+    const report = verifyRunArtifacts(env, row.id, row.tenantScope);
     expect(report.length).toBe(artifacts.length);
     expect(report.every((entry) => entry.present && entry.checksumValid)).toBe(
       true,
@@ -176,7 +182,10 @@ describe("Workbench run persistence (Issue #53)", () => {
     const rowBefore = getWorkbenchStorage().runs.list()[0];
     if (rowBefore === undefined) throw new Error("expected a persisted row");
     const artifactsBefore = getWorkbenchStorage()
-      .artifacts.list({ runId: rowBefore.id })
+      .artifacts.list({
+        runId: rowBefore.id,
+        tenantScope: rowBefore.tenantScope,
+      })
       .map((a) => ({
         name: a.name,
         kind: a.kind,
@@ -194,7 +203,10 @@ describe("Workbench run persistence (Issue #53)", () => {
     if (rowAfter === undefined)
       throw new Error("expected the runs row to survive the restart");
     const artifactsAfter = getWorkbenchStorage()
-      .artifacts.list({ runId: rowAfter.id })
+      .artifacts.list({
+        runId: rowAfter.id,
+        tenantScope: rowAfter.tenantScope,
+      })
       .map((a) => ({
         name: a.name,
         kind: a.kind,
@@ -215,7 +227,10 @@ describe("Workbench run persistence (Issue #53)", () => {
     const row = getWorkbenchStorage().runs.list()[0];
     if (row === undefined) throw new Error("expected a persisted runs row");
 
-    const artifacts = getWorkbenchStorage().artifacts.list({ runId: row.id });
+    const artifacts = getWorkbenchStorage().artifacts.list({
+      runId: row.id,
+      tenantScope: row.tenantScope,
+    });
     const target = artifacts.find(
       (a) => a.name === "customer-markdown/testfaelle.md",
     );
@@ -227,7 +242,7 @@ describe("Workbench run persistence (Issue #53)", () => {
     });
 
     // verifyRunArtifacts must report the gap explicitly and never throw.
-    const report = verifyRunArtifacts(env, row.id);
+    const report = verifyRunArtifacts(env, row.id, row.tenantScope);
     const reported = report.find((entry) => entry.name === target.name);
     expect(reported).toBeDefined();
     expect(reported?.present).toBe(false);
@@ -272,6 +287,7 @@ describe("Workbench run persistence (Issue #53)", () => {
 
     const seeds = getWorkbenchStorage({ env }).generatedSeeds.list({
       runId: row.id,
+      tenantScope: row.tenantScope,
     });
     expect(seeds).toHaveLength(1);
     expect(seeds[0]?.count).toBe(3);
@@ -279,6 +295,7 @@ describe("Workbench run persistence (Issue #53)", () => {
     // The seed file is also recorded as a json artifact.
     const artifacts = getWorkbenchStorage({ env }).artifacts.list({
       runId: row.id,
+      tenantScope: row.tenantScope,
     });
     expect(artifacts.some((a) => a.name === "generated-testcases.json")).toBe(
       true,

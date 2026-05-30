@@ -14,12 +14,10 @@
  * and strings; INTEGER for counts, byte sizes, and booleans (0/1). Optional DTO
  * fields are nullable columns; a NULL maps back to an ABSENT key in the adapter.
  *
- * WHY no enforced FOREIGN KEY constraints: the in-memory reference double is
- * permissive — it accepts an artifact for any `runId` string with no parent row.
- * Enforced FKs would reject those writes and diverge from the shared contract
- * suite, so referential integrity is left to the application layer. Schema
- * version tracking uses `PRAGMA user_version` (per the ADR); there is no separate
- * version table.
+ * WHY no enforced FOREIGN KEY constraints: run-child referential integrity is
+ * enforced in the repository layer so it stays identical to the in-memory
+ * reference double and can include same-tenant checks. Schema version tracking
+ * uses `PRAGMA user_version` (per the ADR); there is no separate version table.
  */
 
 import type BetterSqlite3Database from "better-sqlite3";
