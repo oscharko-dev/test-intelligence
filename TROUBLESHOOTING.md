@@ -19,6 +19,78 @@ script does not switch ports automatically.
 lsof -nP -iTCP:1983 -sTCP:LISTEN
 ```
 
+## Recover Local Persistence
+
+### Where local state lives
+
+The Workbench stores all metadata, artifacts, and backups under `.test-intelligence/` in the monorepo root (or the directory specified by `WORKBENCH_REPO_ROOT` if set). This directory is gitignored.
+
+Files:
+
+- **Metadata database:** `.test-intelligence/workbench.db` — SQLite file containing snapshots, runs, artifacts, scope baskets, generated seeds, and exports. WAL mode, so you may also see `workbench.db-wal` and `workbench.db-shm` sidecar files.
+- **Artifact store:** `.test-intelligence/storage-artifacts/` — content-addressed artifacts stored as `.bin` files in a two-level sharded layout (`<aa>/<bb>/<sha256>.bin`).
+- **Automatic backups:** `.test-intelligence/backups/` — transactionally-consistent database snapshots taken before schema migrations.
+
+### Recover from a migration failure
+
+**Symptom:** On startup, the server logs:
+
+```
+[workbench] Local storage bootstrap failed; persistence features are unavailable: Failed to initialize the local Workbench database. Existing data was left unchanged.
+```
+
+Persistence features are unavailable until the issue is resolved, but the database and all artifacts remain intact.
+
+**Diagnosis and recovery:**
+
+1. Identify the root cause — typically disk space or permission issues.
+    - Disk full: `df -h` to check free space in `.test-intelligence/` parent.
+    - Permissions: `ls -ld .test-intelligence/ .test-intelligence/backups/` to verify the Workbench process can write.
+    - Check the full server logs in `.test-intelligence/local-runtime/workbench.log` for additional detail.
+
+2. Fix the root cause.
+
+3. Restart the Workbench so bootstrap retries:
+
+    ```bash
+    pnpm run local:stop
+    pnpm run local:start
+    ```
+
+**Restore from a backup (if needed):**
+
+If a migration logic error corrupted the schema before you fixed the disk issue, restore the database to its pre-migration state:
+
+1. Stop the Workbench: `pnpm run local:stop`.
+
+2. Choose a backup from `.test-intelligence/backups/` — backups are named `workbench-v<from>-to-v<to>-<timestamp>.db`, where `<from>` is the schema version you want to return to.
+
+3. Replace the current database:
+
+    ```bash
+    cd .test-intelligence
+    cp backups/workbench-v1-to-v2-2026-05-30T16-54-17-000Z.db workbench.db
+    rm -f workbench.db-wal workbench.db-shm
+    ```
+
+    (Adjust the backup filename to match your backup's timestamp and versions.)
+
+4. Restart the Workbench: `pnpm run local:start`.
+
+### Recover from an indexing failure
+
+**Symptom:** On startup, the server logs:
+
+```
+[workbench] Legacy artifact index skipped at startup: <error name>
+```
+
+This is non-fatal. The Workbench boots normally and all newly created runs persist correctly. Only the one-time backfill of pre-existing local artifacts was skipped.
+
+**Recovery:**
+
+Resolve the underlying cause (e.g., unreadable legacy artifact directory, permission issue) and restart the Workbench. The index runs again at startup.
+
 ## Dependency Install Fails
 
 Use the committed package manager:
