@@ -697,9 +697,23 @@ const readSnapshotArtifacts = async (
       message: "Snapshot ID is invalid.",
     });
   }
-  const matches = (await discoverSnapshotArtifacts(env)).filter(
-    (candidate) => candidate.manifest.snapshotId === snapshotId,
+  const directMatches = await findSnapshotArtifactsByDirectoryName(
+    snapshotId,
+    env,
   );
+  const matches =
+    directMatches.length > 0
+      ? [
+          ...directMatches,
+          ...(await findLegacySnapshotArtifactsByManifestId(
+            snapshotId,
+            env,
+            new Set(directMatches.map((match) => match.vaultPath)),
+          )),
+        ]
+      : (await discoverSnapshotArtifacts(env)).filter(
+          (candidate) => candidate.manifest.snapshotId === snapshotId,
+        );
   if (matches.length === 0) {
     throw new WorkbenchSnapshotVaultError({
       status: 404,
@@ -715,6 +729,88 @@ const readSnapshotArtifacts = async (
     });
   }
   return matches[0]!;
+};
+
+const findSnapshotArtifactsByDirectoryName = async (
+  snapshotId: string,
+  env: NodeJS.ProcessEnv,
+): Promise<SnapshotArtifacts[]> => {
+  const repoRoot = resolveRepoRoot(env);
+  const tenantScope = resolveWorkbenchTenantScope(env);
+  const tenantRoot = snapshotTenantRoot(repoRoot, tenantScope);
+  const exists = await stat(tenantRoot)
+    .then((info) => info.isDirectory())
+    .catch(() => false);
+  if (!exists) return [];
+  const realRepoRoot = await realpath(repoRoot);
+  const realTenantRoot = await realpath(tenantRoot);
+  if (!isPathInside(realTenantRoot, realRepoRoot)) return [];
+  const matches: SnapshotArtifacts[] = [];
+  for (const fileKeyEntry of await readdir(realTenantRoot, {
+    withFileTypes: true,
+  })) {
+    if (!fileKeyEntry.isDirectory()) continue;
+    const vaultPath = path.join(realTenantRoot, fileKeyEntry.name, snapshotId);
+    const info = await lstat(vaultPath).catch(() => null);
+    if (info === null || !info.isDirectory() || info.isSymbolicLink()) continue;
+    const snapshot = await readArtifactsAtVaultPath(vaultPath).catch(
+      () => undefined,
+    );
+    if (snapshot?.manifest.snapshotId === snapshotId) {
+      matches.push(snapshot);
+    }
+  }
+  return matches;
+};
+
+const findLegacySnapshotArtifactsByManifestId = async (
+  snapshotId: string,
+  env: NodeJS.ProcessEnv,
+  excludedVaultPaths: ReadonlySet<string>,
+): Promise<SnapshotArtifacts[]> => {
+  const repoRoot = resolveRepoRoot(env);
+  const tenantScope = resolveWorkbenchTenantScope(env);
+  const tenantRoot = snapshotTenantRoot(repoRoot, tenantScope);
+  const exists = await stat(tenantRoot)
+    .then((info) => info.isDirectory())
+    .catch(() => false);
+  if (!exists) return [];
+  const realRepoRoot = await realpath(repoRoot);
+  const realTenantRoot = await realpath(tenantRoot);
+  if (!isPathInside(realTenantRoot, realRepoRoot)) return [];
+  const matches: SnapshotArtifacts[] = [];
+  for (const fileKeyEntry of await readdir(realTenantRoot, {
+    withFileTypes: true,
+  })) {
+    if (!fileKeyEntry.isDirectory()) continue;
+    const fileKeyPath = path.join(realTenantRoot, fileKeyEntry.name);
+    for (const snapshotEntry of await readdir(fileKeyPath, {
+      withFileTypes: true,
+    }).catch(() => [])) {
+      if (!snapshotEntry.isDirectory() || snapshotEntry.name === snapshotId) {
+        continue;
+      }
+      const vaultPath = path.join(fileKeyPath, snapshotEntry.name);
+      const realVaultPath = await realpath(vaultPath).catch(() => undefined);
+      if (
+        realVaultPath === undefined ||
+        excludedVaultPaths.has(realVaultPath)
+      ) {
+        continue;
+      }
+      const manifest = await readSnapshotJson(
+        realVaultPath,
+        MANIFEST_FILENAME,
+        validateFigmaSnapshotManifest,
+      ).catch(() => undefined);
+      if (manifest?.snapshotId !== snapshotId) continue;
+      const snapshot = await readArtifactsAtVaultPath(realVaultPath).catch(
+        () => undefined,
+      );
+      if (snapshot !== undefined) matches.push(snapshot);
+    }
+  }
+  return matches;
 };
 
 /**

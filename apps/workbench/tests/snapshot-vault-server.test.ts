@@ -85,7 +85,10 @@ const withDigest = <T extends { contentDigest: string }>(
   };
 };
 
-async function writeSnapshotFixture(repoRoot: string): Promise<void> {
+async function writeSnapshotFixture(
+  repoRoot: string,
+  options: { snapshotDirectoryName?: string } = {},
+): Promise<void> {
   const nodeIndex = buildFigmaSnapshotLocalNodeIndex({
     snapshotId: SNAPSHOT_ID,
     tenantScope: DEFAULT_TENANT_SCOPE,
@@ -154,7 +157,7 @@ async function writeSnapshotFixture(repoRoot: string): Promise<void> {
     "default",
     "default",
     FILE_KEY_HASH,
-    SNAPSHOT_ID,
+    options.snapshotDirectoryName ?? SNAPSHOT_ID,
   );
   await mkdir(vaultPath, { recursive: true });
   await Promise.all([
@@ -308,6 +311,25 @@ describe("Workbench Snapshot Vault adapter", () => {
     expect(preview.resolvedNodeCount).toBe(1);
     expect(preview.scopeDigest).toMatch(/^[a-f0-9]{64}$/u);
     expect(preview.traceAnchors[0]?.nodeId).toBe("mask-iban");
+  });
+
+  it("preserves ambiguity detection when a direct snapshot has a legacy duplicate", async () => {
+    const repoRoot = await tempRepo();
+    await writeSnapshotFixture(repoRoot);
+    await writeSnapshotFixture(repoRoot, {
+      snapshotDirectoryName: "legacy-renamed-snapshot",
+    });
+
+    await expect(
+      searchWorkbenchSnapshot({
+        snapshotId: SNAPSHOT_ID,
+        query: "IBAN",
+        env: envFor(repoRoot),
+      }),
+    ).rejects.toMatchObject({
+      code: "SNAPSHOT_ID_AMBIGUOUS",
+      status: 409,
+    });
   });
 
   it("rejects import start without exposing the raw Figma URL", async () => {

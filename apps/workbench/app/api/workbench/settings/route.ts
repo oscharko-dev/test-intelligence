@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import {
   readWorkbenchSettings,
+  redactWorkbenchSettingsForClient,
   writeWorkbenchSettings,
 } from "@/lib/server/workbench-settings-store";
 
@@ -34,7 +35,9 @@ const jsonError = ({
 
 export async function GET(): Promise<NextResponse> {
   try {
-    return settingsJson({ settings: await readWorkbenchSettings() });
+    return settingsJson({
+      settings: redactWorkbenchSettingsForClient(await readWorkbenchSettings()),
+    });
   } catch {
     return jsonError({
       status: 500,
@@ -62,7 +65,9 @@ export async function PUT(request: NextRequest): Promise<NextResponse> {
         ? (body as { settings?: unknown }).settings
         : body;
     return settingsJson({
-      settings: await writeWorkbenchSettings(settings),
+      settings: redactWorkbenchSettingsForClient(
+        await writeWorkbenchSettings(settings),
+      ),
     });
   } catch {
     return jsonError({

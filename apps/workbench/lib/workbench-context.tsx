@@ -14,7 +14,6 @@ import { INITIAL_RUN, isTerminal, runReducer } from "./run-state";
 import {
   SETTINGS_BASELINE,
   diffSettings,
-  extractSettingsOverrides,
   settingsReducer,
   validateSettings,
   type Settings,
@@ -119,10 +118,6 @@ export function WorkbenchProvider({
   const settingsDirty = useMemo(
     () => diffSettings(settings, savedSettings).length > 0,
     [settings, savedSettings],
-  );
-  const settingsPayload = useMemo(
-    () => extractSettingsOverrides(settings),
-    [settings],
   );
   const settingsIssues = useMemo(
     () =>
@@ -339,13 +334,14 @@ export function WorkbenchProvider({
     setStartingRun(true);
     setRunError(null);
     try {
+      if (settingsDirty) {
+        const saved = await saveSettings();
+        if (!saved) return;
+      }
       const response = await fetch("/api/workbench/runs", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          ...config,
-          settings: settingsPayload,
-        }),
+        body: JSON.stringify(config),
       });
       const payload = await readApiResponse(response);
       if (!response.ok || payload.run === undefined) {
@@ -367,7 +363,7 @@ export function WorkbenchProvider({
     } finally {
       setStartingRun(false);
     }
-  }, [runForm, settings, settingsPayload]);
+  }, [runForm, saveSettings, settings, settingsDirty]);
 
   const resetRun = useCallback(() => {
     setRunError(null);

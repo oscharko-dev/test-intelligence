@@ -219,26 +219,28 @@ describe("prepareWorkbenchRun", () => {
     expect(prepared.env.ictRegisterRef).toBe("test-intelligence-local-ict");
   });
 
-  test("accepts LLM API key from UI settings payload", async () => {
+  test("ignores caller-supplied settings payload when env and persisted settings are absent", async () => {
     const repoRoot = await tempWorkspace();
     vi.stubEnv("WORKBENCH_REPO_ROOT", repoRoot);
-    const prepared = await prepareWorkbenchRun({
-      body: {
-        ...baseRunBody,
-        settings: {
-          TEST_INTELLIGENCE_LLM_GATEWAY_API_KEY: "ui-gateway-key",
-          TEST_INTELLIGENCE_FIGMA_ACCESS_TOKEN: "ui-figma-token",
-          TEST_INTELLIGENCE_MODEL_ENDPOINT: "https://ui.test/model",
-          TEST_INTELLIGENCE_VISUAL_MODEL_ENDPOINT: "https://ui.test/visual",
-          TEST_INTELLIGENCE_REGION_ATTESTATION_SIGNING_KEY: "ui-signing-key",
+    await expect(
+      prepareWorkbenchRun({
+        body: {
+          ...baseRunBody,
+          settings: {
+            TEST_INTELLIGENCE_LLM_GATEWAY_API_KEY: "ui-gateway-key",
+            TEST_INTELLIGENCE_FIGMA_ACCESS_TOKEN: "ui-figma-token",
+            TEST_INTELLIGENCE_MODEL_ENDPOINT: "https://ui.test/model",
+            TEST_INTELLIGENCE_VISUAL_MODEL_ENDPOINT: "https://ui.test/visual",
+            TEST_INTELLIGENCE_REGION_ATTESTATION_SIGNING_KEY: "ui-signing-key",
+          },
         },
-      },
-      env: env({}),
-      now: new Date("2026-05-25T10:15:30.000Z"),
+        env: env({}),
+        now: new Date("2026-05-25T10:15:30.000Z"),
+      }),
+    ).rejects.toMatchObject({
+      code: "WORKBENCH_RUNNER_UNCONFIGURED",
+      status: 503,
     });
-    expect(prepared.env.apiKey).toBe("ui-gateway-key");
-    expect(prepared.env.figmaToken).toBe("ui-figma-token");
-    expect(prepared.env.endpoint).toBe("https://ui.test/model");
   });
 
   test("uses persisted Workbench settings when the run request has no settings payload", async () => {
@@ -361,6 +363,24 @@ describe("prepareWorkbenchRun", () => {
     ).rejects.toThrow(/relative to the Workbench workspace/u);
   });
 
+  test("rejects .env path import through a workspace symlink", async () => {
+    const repoRoot = await tempWorkspace();
+    const outside = path.join(await tempWorkspace(), "customer.env");
+    await writeFile(
+      outside,
+      "TEST_INTELLIGENCE_LLM_API_KEY=outside-key",
+      "utf8",
+    );
+    await symlink(outside, path.join(repoRoot, "linked.env"));
+
+    await expect(
+      importWorkbenchSettingsFromEnvPath(
+        "linked.env",
+        env({ WORKBENCH_REPO_ROOT: repoRoot }),
+      ),
+    ).rejects.toThrow(/not a file/u);
+  });
+
   test("does not override env with unchanged baseline settings", async () => {
     const repoRoot = await tempWorkspace();
     vi.stubEnv("WORKBENCH_REPO_ROOT", repoRoot);
@@ -383,7 +403,7 @@ describe("prepareWorkbenchRun", () => {
     expect(prepared.env.figmaToken).toBe("env-figma-token");
   });
 
-  test("requires request settings to provide an API key when env is absent", async () => {
+  test("does not use request settings to satisfy a missing API key", async () => {
     const repoRoot = await tempWorkspace();
     vi.stubEnv("WORKBENCH_REPO_ROOT", repoRoot);
     await expect(
@@ -391,6 +411,7 @@ describe("prepareWorkbenchRun", () => {
         body: {
           ...baseRunBody,
           settings: {
+            TEST_INTELLIGENCE_LLM_GATEWAY_API_KEY: "ui-gateway-key",
             TEST_INTELLIGENCE_FIGMA_ACCESS_TOKEN: "ui-figma-token",
             TEST_INTELLIGENCE_MODEL_ENDPOINT: "https://ui.test/model",
             TEST_INTELLIGENCE_VISUAL_MODEL_ENDPOINT: "https://ui.test/visual",
@@ -399,6 +420,9 @@ describe("prepareWorkbenchRun", () => {
         },
         env: env({
           FIGMAPIPE_WORKSPACE_TEST_INTELLIGENCE: "1",
+          TEST_INTELLIGENCE_MODEL_ENDPOINT: "https://env.test/model",
+          FIGMA_ACCESS_TOKEN: "env-figma-token",
+          TEST_INTELLIGENCE_REGION_ATTESTATION_SIGNING_KEY: "env-signing-key",
         }),
         now: new Date("2026-05-25T10:15:30.000Z"),
       }),
@@ -447,14 +471,13 @@ describe("prepareWorkbenchRun", () => {
       "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n",
       "utf8",
     );
+    await importWorkbenchSettingsFromEnvContent(
+      `NODE_EXTRA_CA_CERTS=${caRelativePath}`,
+      env({ WORKBENCH_REPO_ROOT: repoRoot }),
+    );
 
     const prepared = await prepareWorkbenchRun({
-      body: {
-        ...baseRunBody,
-        settings: {
-          NODE_EXTRA_CA_CERTS: caRelativePath,
-        },
-      },
+      body: baseRunBody,
       env: env({
         FIGMAPIPE_WORKSPACE_TEST_INTELLIGENCE: "1",
         TEST_INTELLIGENCE_MODEL_ENDPOINT: "https://env.test/model",
@@ -565,6 +588,34 @@ describe("prepareWorkbenchRun", () => {
       now: new Date("2026-05-25T10:15:30.000Z"),
     });
     expect(prepared.customContextMarkdown).toContain("# Story");
+  });
+
+  test("rejects custom context symlinks that escape the workspace", async () => {
+    const repoRoot = await tempWorkspace();
+    vi.stubEnv("WORKBENCH_REPO_ROOT", repoRoot);
+    const outside = path.join(await tempWorkspace(), "JIRA_STORY.md");
+    await writeFile(outside, "# Outside Story\n", "utf8");
+    await mkdir(path.join(repoRoot, "test-case", "case-a"), {
+      recursive: true,
+    });
+    await symlink(
+      outside,
+      path.join(repoRoot, "test-case", "case-a", "JIRA_STORY.md"),
+    );
+
+    await expect(
+      prepareWorkbenchRun({
+        body: {
+          ...baseRunBody,
+          customContext: "test-case/case-a/JIRA_STORY.md",
+        },
+        env: env({ WORKBENCH_RUNNER_MODE: "mock" }),
+        now: new Date("2026-05-25T10:15:30.000Z"),
+      }),
+    ).rejects.toMatchObject({
+      code: "CUSTOM_CONTEXT_NOT_ALLOWED",
+      status: 400,
+    });
   });
 
   test("mock runner tolerates missing local custom context fixtures", async () => {
