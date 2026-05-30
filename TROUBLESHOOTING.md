@@ -34,11 +34,14 @@ Files:
 
 ### Recover from a migration failure
 
-**Symptom:** On startup, the server logs:
+**Symptom:** On startup, the server logs a storage bootstrap failure such as:
 
 ```
 [workbench] Local storage bootstrap failed; persistence features are unavailable: WorkbenchStorageError:MIGRATION_FAILED
 ```
+
+The line can include a sanitized `cause=...` suffix. Use the
+`WorkbenchStorageError:MIGRATION_FAILED` marker as the stable search token.
 
 Persistence features are unavailable until the issue is resolved, but the database and all artifacts remain intact.
 
@@ -60,7 +63,16 @@ Persistence features are unavailable until the issue is resolved, but the databa
 
 **Restore from a backup (if needed):**
 
-If a migration logic error corrupted the schema before you fixed the disk issue, restore the database and keep the matching `run-state/` directory from the same data-root snapshot:
+Automatic pre-migration backups are database-only snapshots. They are created
+for file-backed databases that already have a stored schema version before a
+pending migration runs. No automatic backup is created for a fresh first-time
+database, an in-memory database, or a startup where no migration is pending.
+Each backup is a full SQLite copy and normally needs free disk space comparable
+to the current `workbench.db` size. If the copy cannot be created, startup fails
+closed before the migration mutates the live database; free space or remove
+older, already-validated backups before retrying.
+
+If a migration logic error corrupted the schema before you fixed the disk issue, restore the database. Keep `storage-artifacts/` and `run-state/` from the same `.test-intelligence/` data-root snapshot when you have one; if you only have the automatic DB backup, restore the DB and leave the current sidecar directories in place.
 
 1. Stop the Workbench: `pnpm run local:stop`.
 
@@ -77,6 +89,23 @@ If a migration logic error corrupted the schema before you fixed the disk issue,
     (Adjust the backup filename to match your backup's timestamp and versions.)
 
 4. Restart the Workbench: `pnpm run local:start`.
+
+### Verify offline package and persistence gates
+
+For release or air-gapped operator evidence, run the package and Workbench
+persistence checks before shipping:
+
+```bash
+pnpm run test:airgap-install
+pnpm run test:workbench-airgap
+pnpm run release:check
+```
+
+`test:airgap-install` verifies the packed package can install offline and load
+its ESM/CJS/server entry points. `test:workbench-airgap` verifies an already
+installed Workbench operator checkout can load the native SQLite dependency and
+round-trip run plus artifact metadata with outbound network disabled.
+`release:check` includes both air-gap checks as required, non-skippable gates.
 
 ### Recover from an indexing failure
 

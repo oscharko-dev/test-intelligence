@@ -10,8 +10,8 @@
  *
  * It spawns the TypeScript round-trip (`workbench-airgap-roundtrip.mts`) under
  * `tsx`, which can import the real storage modules directly. The round-trip
- * installs hard network kill-switches before touching anything, so a hidden
- * egress fails the run.
+ * is preloaded after a network/subprocess kill-switch, so loader-time and
+ * storage-time egress fail the run.
  *
  * Exits 0 on success, non-zero on any failure.
  */
@@ -22,14 +22,24 @@ import { fileURLToPath } from "node:url";
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
 const roundTrip = resolve(scriptDir, "workbench-airgap-roundtrip.mts");
+const networkBlock = resolve(scriptDir, "workbench-airgap-network-block.mjs");
 
-// `--import tsx` registers the TS loader for the .mts round-trip. Networking is
-// blocked inside the round-trip itself, so no env flag is required here.
-const child = spawn(process.execPath, ["--import", "tsx", roundTrip], {
-  cwd: repoRoot,
-  stdio: "inherit",
-  env: { ...process.env },
-});
+// Keep the child deterministic: no inherited Node preloads or module lookup
+// overrides may run before the airgap kill-switch.
+const childEnv = { ...process.env };
+for (const key of ["NODE_OPTIONS", "NODE_PATH", "npm_config_node_options"]) {
+  delete childEnv[key];
+}
+
+const child = spawn(
+  process.execPath,
+  ["--import", networkBlock, "--import", "tsx", roundTrip],
+  {
+    cwd: repoRoot,
+    stdio: "inherit",
+    env: childEnv,
+  },
+);
 
 child.once("error", (error) => {
   process.stderr.write(

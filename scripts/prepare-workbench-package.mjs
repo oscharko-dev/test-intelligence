@@ -66,11 +66,18 @@ await cp(
 const sourceManifest = JSON.parse(
   await readFile(path.join(workbenchRoot, "package.json"), "utf8"),
 );
+const betterSqlite3Version = sourceManifest.dependencies?.["better-sqlite3"];
+if (typeof betterSqlite3Version !== "string" || betterSqlite3Version === "") {
+  throw new Error("apps/workbench must declare dependencies.better-sqlite3.");
+}
 const runtimeManifest = {
   name: sourceManifest.name,
   version: sourceManifest.version,
   private: true,
   type: "module",
+  dependencies: {
+    "better-sqlite3": betterSqlite3Version,
+  },
 };
 await writeFile(
   path.join(targetRoot, "package.json"),

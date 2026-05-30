@@ -16,7 +16,7 @@
  * Server-only callers import it directly from `@/lib/server/storage/bootstrap`.
  */
 
-import { mkdirSync } from "node:fs";
+import { chmodSync, mkdirSync } from "node:fs";
 import path from "node:path";
 
 import { resolveWorkbenchStoragePaths } from "./db-path";
@@ -84,8 +84,11 @@ export const bootstrapWorkbenchStorage = (
   let adapter: WorkbenchStorageAdapter | undefined;
   try {
     // Create directories only; existing database and artifact files are preserved.
-    mkdirSync(path.dirname(paths.databaseFile), { recursive: true });
-    mkdirSync(paths.artifactRoot, { recursive: true });
+    const dataRoot = path.dirname(paths.databaseFile);
+    mkdirSync(dataRoot, { recursive: true, mode: 0o700 });
+    chmodSync(dataRoot, 0o700);
+    mkdirSync(paths.artifactRoot, { recursive: true, mode: 0o700 });
+    chmodSync(paths.artifactRoot, 0o700);
 
     adapter = createDeferredSqliteWorkbenchStorageAdapter({
       databaseFile: paths.databaseFile,

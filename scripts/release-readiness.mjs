@@ -14,9 +14,10 @@
  * Required gates (block the report on failure):
  *
  *   typecheck, lint, test, build, check:publint, check:attw,
- *   check:package-shape, check:installable-package, check:license-policy, check:lockfile-hosts,
- *   check:no-telemetry, check:supply-chain-iocs, sbom:cyclonedx,
- *   sbom:spdx, check:sbom-parity.
+ *   check:package-shape, check:installable-package, test:airgap-install,
+ *   test:workbench-airgap, check:license-policy, check:lockfile-hosts,
+ *   check:no-telemetry, check:supply-chain-iocs, sbom:cyclonedx, sbom:spdx,
+ *   check:sbom-parity.
  *
  * Optional gates (recorded as `skipped` when the corresponding
  * environment is unavailable, never block):
@@ -61,6 +62,14 @@ const REQUIRED_GATES = Object.freeze([
     command: ["pnpm", "run", "check:installable-package"],
   },
   {
+    id: "test:airgap-install",
+    command: ["pnpm", "run", "test:airgap-install"],
+  },
+  {
+    id: "test:workbench-airgap",
+    command: ["pnpm", "run", "test:workbench-airgap"],
+  },
+  {
     id: "check:license-policy",
     command: ["pnpm", "run", "check:license-policy"],
   },
@@ -96,6 +105,9 @@ const OPTIONAL_GATES = Object.freeze([
       "GITHUB_REPOSITORY is not set; scorecard threshold only runs in CI on dev.",
   },
 ]);
+
+const REQUIRED_GATE_IDS = new Set(REQUIRED_GATES.map((gate) => gate.id));
+const OPTIONAL_GATE_IDS = new Set(OPTIONAL_GATES.map((gate) => gate.id));
 
 const parseArgs = () => {
   const args = process.argv.slice(2);
@@ -173,23 +185,29 @@ const runGate = (gate) =>
 
 const main = async () => {
   const { reportPath, skipSet } = parseArgs();
+  const skippedUnknownGates = [...skipSet].filter(
+    (gateId) =>
+      !REQUIRED_GATE_IDS.has(gateId) && !OPTIONAL_GATE_IDS.has(gateId),
+  );
+  if (skippedUnknownGates.length > 0) {
+    throw new Error(
+      `Unknown release gate(s) in --skip: ${skippedUnknownGates.sort().join(", ")}`,
+    );
+  }
+  const skippedRequiredGates = [...skipSet].filter((gateId) =>
+    REQUIRED_GATE_IDS.has(gateId),
+  );
+  if (skippedRequiredGates.length > 0) {
+    throw new Error(
+      `Required release gate(s) cannot be skipped: ${skippedRequiredGates.sort().join(", ")}`,
+    );
+  }
+
   const startedAt = new Date().toISOString();
   const results = [];
 
   console.log("[release-readiness] Required gates:");
   for (const gate of REQUIRED_GATES) {
-    if (skipSet.has(gate.id)) {
-      console.log(`[release-readiness]   ${gate.id} ... SKIPPED (--skip)`);
-      results.push({
-        id: gate.id,
-        status: "skipped",
-        durationMs: 0,
-        exitCode: 0,
-        error: null,
-        skipReason: "operator-requested via --skip",
-      });
-      continue;
-    }
     console.log(`[release-readiness]   ${gate.id} ...`);
     const result = await runGate(gate);
     results.push({ ...result, required: true });
@@ -237,9 +255,12 @@ const main = async () => {
   }
 
   const requiredFailures = results.filter(
-    (entry) => entry.required && entry.status === "failed",
+    (entry) => entry.required && entry.status !== "passed",
   );
   const passed = requiredFailures.length === 0;
+  const requiredPassed = results.filter(
+    (entry) => entry.required && entry.status === "passed",
+  ).length;
 
   const report = {
     schemaVersion: "1.0.0",
@@ -259,7 +280,7 @@ const main = async () => {
   await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
 
   console.log(
-    `[release-readiness] ${passed ? "PASS" : "FAIL"} — required ${report.summary.passed - results.filter((entry) => !entry.required && entry.status === "passed").length}/${REQUIRED_GATES.length - skipSet.size} passed; report ${reportPath}`,
+    `[release-readiness] ${passed ? "PASS" : "FAIL"} — required ${requiredPassed}/${REQUIRED_GATES.length} passed; report ${reportPath}`,
   );
 
   process.exit(passed ? 0 : 1);
