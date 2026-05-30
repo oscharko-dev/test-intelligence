@@ -57,6 +57,12 @@ import {
   formatWorkbenchTenantScope,
   resolveWorkbenchTenantScope,
 } from "./workbench-tenant-scope";
+import {
+  persistImportedSnapshot,
+  readPersistedSnapshotIndex,
+  resolvePersistedSummaryForSnapshot,
+  synthesizePersistedCatalogRow,
+} from "./workbench-snapshot-persistence";
 
 const SNAPSHOT_ROOT_SEGMENT = ".test-intelligence";
 const SNAPSHOT_DIRNAME = "figma-snapshots";
@@ -149,7 +155,25 @@ export const listWorkbenchSnapshots = async (
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<WorkbenchSnapshotCatalogRow[]> => {
   const artifacts = await discoverSnapshotArtifacts(env);
-  return artifacts.map(toCatalogRow).sort((a, b) => {
+  // Reconcile the disk vault (authoritative for rows/bytes) with the durable
+  // SQLite index so persisted-but-evicted snapshots survive a restart and every
+  // row reports its persisted node-index integrity. Joined by engine snapshotId.
+  const persisted = readPersistedSnapshotIndex(
+    storageEnvForRepoRoot(resolveRepoRoot(env)),
+    formatWorkbenchTenantScope(resolveWorkbenchTenantScope(env)),
+  );
+  const diskRows = artifacts.map((snapshot) => ({
+    ...toCatalogRow(snapshot),
+    persistedNodeIndex: resolvePersistedSummaryForSnapshot(
+      persisted,
+      snapshot.manifest.snapshotId,
+    ),
+  }));
+  const onDisk = new Set(diskRows.map((row) => row.snapshotId));
+  const persistedOnly = [...persisted.bySnapshotId.values()]
+    .filter((record) => !onDisk.has(record.source))
+    .map((record) => synthesizePersistedCatalogRow(persisted, record));
+  return [...diskRows, ...persistedOnly].sort((a, b) => {
     const byTime = b.importedAt.localeCompare(a.importedAt);
     return byTime === 0 ? a.snapshotId.localeCompare(b.snapshotId) : byTime;
   });
@@ -353,6 +377,17 @@ const executeSnapshotImport = async ({
         : {}),
       message: `Snapshot ${result.snapshotId} is available in the local vault.`,
     };
+    // Best-effort durable index write AFTER a successful import only; failures
+    // are logged operator-safely inside and never reach this success path. WHY
+    // pin WORKBENCH_REPO_ROOT to the resolved import root: the content store
+    // (writeArtifact) and the storage adapter must resolve to the same artifact
+    // root the engine just wrote under.
+    persistImportedSnapshot({
+      manifest: result.manifest,
+      nodeIndex: result.nodeIndex,
+      importStatus: result.importStatus,
+      env: storageEnvForRepoRoot(input.repoRoot),
+    });
   } catch (error) {
     const importError =
       error instanceof FigmaStagedImportError ? error : undefined;
@@ -586,6 +621,17 @@ const resolveOptionalWorkspacePath = async ({
   }
   return { caCertPath: realCandidate };
 };
+
+/**
+ * Pins `WORKBENCH_REPO_ROOT` to the resolved import root so the durable
+ * persistence layer (content store + SQLite adapter) resolves to the SAME
+ * artifact root the engine wrote the snapshot under, in both production and the
+ * hermetic temp-root tests.
+ */
+const storageEnvForRepoRoot = (repoRoot: string): NodeJS.ProcessEnv => ({
+  ...process.env,
+  WORKBENCH_REPO_ROOT: repoRoot,
+});
 
 const discoverSnapshotArtifacts = async (
   env: NodeJS.ProcessEnv,

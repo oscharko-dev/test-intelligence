@@ -29,6 +29,7 @@ import {
   importWorkbenchSettingsFromEnvContent,
   readWorkbenchSettings,
 } from "@/lib/server/workbench-settings-store";
+import { resetWorkbenchStorageForTests } from "@/lib/server/storage/bootstrap";
 
 const validFigmaUrl =
   "https://www.figma.com/design/9hKpQ2X0fileKey0/Onboarding?node-id=128-4421";
@@ -60,6 +61,12 @@ async function tempWorkspace(): Promise<string> {
 }
 
 afterEach(() => {
+  // WHY reset storage here: starting a run now triggers best-effort persistence
+  // that lazily bootstraps the SQLite singleton from the (stubbed) temp
+  // WORKBENCH_REPO_ROOT. Closing and clearing the singleton between cases keeps
+  // each test bound to its own temp root and prevents writes from leaking into
+  // the real `.test-intelligence/` once `vi.unstubAllEnvs()` restores the env.
+  resetWorkbenchStorageForTests();
   vi.unstubAllEnvs();
   resetWorkbenchRunStoreForTests();
 });

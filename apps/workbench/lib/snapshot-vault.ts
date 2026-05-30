@@ -57,6 +57,22 @@ export type WorkbenchSnapshotFailureClass =
   | "not_found"
   | "persistence_failed";
 
+/**
+ * Integrity of a snapshot's node-index reference in the durable persistence
+ * index (SQLite + content store), reconciled against the disk vault on read.
+ * `status`:
+ *  - `verified`  — a persisted node-index payload exists and its checksum/byte
+ *    length match the stored `ContentRef`.
+ *  - `unverified` — a persisted payload reference exists but the bytes are
+ *    missing or corrupt in the content store.
+ *  - `absent`    — the snapshot has no persistence record yet (e.g. imported
+ *    before persistence was wired, or persistence failed best-effort).
+ */
+export interface WorkbenchSnapshotPersistedIndexSummary {
+  status: "verified" | "unverified" | "absent";
+  byteSize?: number;
+}
+
 export interface WorkbenchSnapshotCatalogRow {
   snapshotId: string;
   tenantScope: string;
@@ -78,6 +94,12 @@ export interface WorkbenchSnapshotCatalogRow {
   credential?: WorkbenchSnapshotCredentialSummary;
   budget?: WorkbenchSnapshotBudgetSummary;
   failureClass?: WorkbenchSnapshotFailureClass;
+  /**
+   * Durable-index reconciliation status for this row's node-index payload.
+   * Optional and operator-facing only; the disk vault remains the source of
+   * truth for detail/search/bytes, so the UI renders without this field.
+   */
+  persistedNodeIndex?: WorkbenchSnapshotPersistedIndexSummary;
 }
 
 export interface WorkbenchSnapshotPageSummary {

@@ -35,6 +35,13 @@ import type {
   Stages,
 } from "@/lib/types";
 import {
+  persistRunCreated,
+  persistRunTransition,
+  persistSealedRunArtifacts,
+  rehydrateRunsFromPersistence,
+} from "./workbench-run-persistence";
+import {
+  resolveRepoRoot,
   safeRelativePath,
   type PreparedWorkbenchRun,
 } from "./workbench-run-validation";
@@ -47,6 +54,11 @@ interface WorkbenchRunRecord {
   state: RunState;
   tenantScope: string;
   promise?: Promise<void>;
+  // Server-only persistence linkage; never surfaced by `toClientRunState`
+  // (which operates on `RunState`, not the record). `rowId` is the durable
+  // `runs` row id; `repoRoot` pins the storage root for transition writes.
+  rowId?: string;
+  repoRoot?: string;
 }
 
 interface WorkbenchRunStore {
@@ -86,19 +98,31 @@ const globalForRuns = globalThis as typeof globalThis & {
 
 const getStore = (): WorkbenchRunStore => {
   if (globalForRuns.__TI_WORKBENCH_RUN_STORE__ === undefined) {
-    globalForRuns.__TI_WORKBENCH_RUN_STORE__ = {
-      activeJobId: null,
-      jobs: new Map<string, WorkbenchRunRecord>(),
-    };
+    const jobs = new Map<string, WorkbenchRunRecord>();
+    // Restart rehydration: rebuild records from the durable index the first time
+    // the singleton is created. No run is executing after a restart, so neither
+    // `activeJobId` nor a `promise` is restored.
+    for (const restored of rehydrateRunsFromPersistence()) {
+      jobs.set(restored.jobId, {
+        state: restored.state,
+        tenantScope: restored.tenantScope,
+        rowId: restored.rowId,
+        // The durable index that produced this row lives under the data root
+        // resolved from the current env, so later transitions persist there.
+        repoRoot: resolveRepoRoot(),
+      });
+    }
+    globalForRuns.__TI_WORKBENCH_RUN_STORE__ = { activeJobId: null, jobs };
   }
   return globalForRuns.__TI_WORKBENCH_RUN_STORE__;
 };
 
 export const resetWorkbenchRunStoreForTests = (): void => {
-  globalForRuns.__TI_WORKBENCH_RUN_STORE__ = {
-    activeJobId: null,
-    jobs: new Map<string, WorkbenchRunRecord>(),
-  };
+  // WHY delete rather than assign a fresh empty store: clearing the key restores
+  // the absent state the lazy `getStore()` checks for, so the next access runs
+  // restart rehydration from the durable index — a faithful process-restart for
+  // tests. Assigning an empty store would suppress rehydration entirely.
+  delete globalForRuns.__TI_WORKBENCH_RUN_STORE__;
 };
 
 const cloneStages = (stages: Stages): Stages => ({
@@ -149,6 +173,19 @@ const updateRecord = (
   const record = getStore().jobs.get(jobId);
   if (record === undefined) return;
   record.state = updater(record.state);
+  // Best-effort durable mirror of every transition. Only runs that were
+  // persisted on create (rowId present) are mirrored; the run-state document is
+  // keyed by the server-controlled rowId, so the artifact dir is not needed.
+  // Failure is swallowed inside the persistence module.
+  const { rowId, repoRoot } = record;
+  if (rowId !== undefined && repoRoot !== undefined) {
+    persistRunTransition({
+      rowId,
+      repoRoot,
+      status: record.state.status,
+      state: record.state,
+    });
+  }
 };
 
 const updateStage = ({
@@ -586,6 +623,22 @@ const finishWithArtifacts = async ({
       customerTxt,
     };
   });
+  // Record produced-artifact / seed / export metadata for a successfully sealed
+  // run only. The transition above already mirrored status + the run-state doc.
+  if (!blocked) {
+    const record = getStore().jobs.get(jobId);
+    if (record?.rowId !== undefined && record.repoRoot !== undefined) {
+      persistSealedRunArtifacts({
+        rowId: record.rowId,
+        repoRoot: record.repoRoot,
+        tenantScope: record.tenantScope,
+        artifactDir,
+        status: record.state.status,
+        artifactPaths: dedupedPaths,
+        customerFacingPaths: customerFacingSet,
+      });
+    }
+  }
 };
 
 const sanitizeErrorMessage = (
@@ -841,15 +894,15 @@ const executeMockRun = async (
     }),
   );
   const perCaseBodies = perCase.map((_, index) =>
-      [
-        `# Testfall ${index + 1}`,
-        "",
+    [
+      `# Testfall ${index + 1}`,
+      "",
       `Quelle: ${
         prepared.config.sourceMode === "snapshot"
           ? `Figma snapshot ${prepared.config.snapshotId}`
           : prepared.config.figmaUrl
       }`,
-        "",
+      "",
       "## Erwartung",
       "",
       "Der fachliche Ablauf ist auditierbar dokumentiert.",
@@ -948,10 +1001,24 @@ export const startWorkbenchRun = (prepared: PreparedWorkbenchRun): RunState => {
   const record: WorkbenchRunRecord = {
     state: createQueuedRun(prepared),
     tenantScope: prepared.tenantScopeKey,
+    repoRoot: prepared.repoRoot,
   };
   const initialState = record.state;
   store.jobs.set(prepared.jobId, record);
   store.activeJobId = prepared.jobId;
+  // Durable mirror of the queued run; rowId links later transitions to the row.
+  // Best-effort: a persistence failure returns undefined and the run still runs.
+  const rowId = persistRunCreated({
+    repoRoot: prepared.repoRoot,
+    tenantScope: prepared.tenantScopeKey,
+    status: initialState.status,
+    ...(prepared.config.sourceMode === "snapshot"
+      ? { snapshotId: prepared.config.snapshotId }
+      : {}),
+    artifactDir: prepared.artifactDir,
+    state: initialState,
+  });
+  if (rowId !== undefined) record.rowId = rowId;
   record.promise = executeRun(prepared);
   return initialState;
 };
@@ -965,7 +1032,10 @@ export const getWorkbenchRunForClient = (
 ): RunState | undefined => {
   const record = getStore().jobs.get(jobId);
   if (record === undefined) return undefined;
-  if (record.tenantScope !== formatWorkbenchTenantScope(resolveWorkbenchTenantScope(env))) {
+  if (
+    record.tenantScope !==
+    formatWorkbenchTenantScope(resolveWorkbenchTenantScope(env))
+  ) {
     return undefined;
   }
   return toClientRunState(record.state);
@@ -998,7 +1068,10 @@ export const readWorkbenchRunFile = async (
       message: "Workbench run not found.",
     });
   }
-  if (record.tenantScope !== formatWorkbenchTenantScope(resolveWorkbenchTenantScope(env))) {
+  if (
+    record.tenantScope !==
+    formatWorkbenchTenantScope(resolveWorkbenchTenantScope(env))
+  ) {
     throw new WorkbenchRunRegistryError({
       status: 404,
       code: "WORKBENCH_RUN_NOT_FOUND",

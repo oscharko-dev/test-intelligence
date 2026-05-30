@@ -139,62 +139,62 @@ describe("SnapshotVaultScreen", () => {
         const url = String(input);
         const method =
           init?.method ?? (input instanceof Request ? input.method : "GET");
-	        if (url === "/api/workbench/snapshots") {
-	          if (method === "GET") {
-	            return Response.json(catalog);
-	          }
-	          const requestBody =
-	            typeof init?.body === "string"
-	              ? (JSON.parse(init.body) as { figmaUrl?: string })
-	              : {};
-	          const figmaUrl = requestBody.figmaUrl ?? "";
-	          const failureClass = figmaUrl.includes("invalid-credential")
-	            ? "invalid_credential"
-	            : figmaUrl.includes("unsupported-auth")
-	              ? "unsupported_auth_mode"
-	              : figmaUrl.includes("budget-exhausted")
-	                ? "budget_exhausted"
-	                : "throttled";
-	          return Response.json(
-	            {
-	              job: {
-	                jobId: "ti-snapshot-rate-limit",
-	                action: "import",
-	                status: "failed",
-	                queueState: "idle",
-	                sourceUrlHash: "e".repeat(64),
-	                tenantScope: "default/default/default",
-	                queuedAt: "2026-05-29T08:10:00.000Z",
-	                completedAt: "2026-05-29T08:10:01.000Z",
-	                failureClass,
-	                credential: {
-	                  authMode: "personal_access_token",
-	                },
-	                budget: {
-	                  policyVersion: "figma-import-budget/v1",
-	                  resourceType: "node_batch",
-	                  windowSeconds: 60,
-	                  maxRequestsPerWindow: 1,
-	                  usedRequests: 1,
-	                  remainingRequests: 0,
-	                },
-	                ...(failureClass === "throttled"
-	                  ? {
-	                      rateLimit: {
-	                        retryAfterSeconds: 90,
-	                        figmaPlanTier: "starter",
-	                        figmaRateLimitType: "low_limit",
-	                        remediation: {
-	                          scenario: "low_limit",
-	                          guidance:
-	                            "Observed Figma throttling is consistent with a low-limit plan or narrow quota bucket. Wait for the retry window, reduce the selected node scope, or use an enterprise-governed credential for scheduled imports.",
-	                        },
-	                      },
-	                    }
-	                  : {}),
-	                message: `Snapshot import failed: ${failureClass}.`,
-	              },
-	            },
+        if (url === "/api/workbench/snapshots") {
+          if (method === "GET") {
+            return Response.json(catalog);
+          }
+          const requestBody =
+            typeof init?.body === "string"
+              ? (JSON.parse(init.body) as { figmaUrl?: string })
+              : {};
+          const figmaUrl = requestBody.figmaUrl ?? "";
+          const failureClass = figmaUrl.includes("invalid-credential")
+            ? "invalid_credential"
+            : figmaUrl.includes("unsupported-auth")
+              ? "unsupported_auth_mode"
+              : figmaUrl.includes("budget-exhausted")
+                ? "budget_exhausted"
+                : "throttled";
+          return Response.json(
+            {
+              job: {
+                jobId: "ti-snapshot-rate-limit",
+                action: "import",
+                status: "failed",
+                queueState: "idle",
+                sourceUrlHash: "e".repeat(64),
+                tenantScope: "default/default/default",
+                queuedAt: "2026-05-29T08:10:00.000Z",
+                completedAt: "2026-05-29T08:10:01.000Z",
+                failureClass,
+                credential: {
+                  authMode: "personal_access_token",
+                },
+                budget: {
+                  policyVersion: "figma-import-budget/v1",
+                  resourceType: "node_batch",
+                  windowSeconds: 60,
+                  maxRequestsPerWindow: 1,
+                  usedRequests: 1,
+                  remainingRequests: 0,
+                },
+                ...(failureClass === "throttled"
+                  ? {
+                      rateLimit: {
+                        retryAfterSeconds: 90,
+                        figmaPlanTier: "starter",
+                        figmaRateLimitType: "low_limit",
+                        remediation: {
+                          scenario: "low_limit",
+                          guidance:
+                            "Observed Figma throttling is consistent with a low-limit plan or narrow quota bucket. Wait for the retry window, reduce the selected node scope, or use an enterprise-governed credential for scheduled imports.",
+                        },
+                      },
+                    }
+                  : {}),
+                message: `Snapshot import failed: ${failureClass}.`,
+              },
+            },
             { status: 202 },
           );
         }
@@ -211,6 +211,12 @@ describe("SnapshotVaultScreen", () => {
             },
             { status: 500 },
           );
+        }
+        if (url.includes("/api/workbench/scope-baskets")) {
+          // No persisted basket by default, so hydration leaves the basket empty
+          // and the existing assertions about the ephemeral selection hold. PUTs
+          // (best-effort persistence) are acknowledged without a stored record.
+          return Response.json({ basket: null });
         }
         if (url.includes("/selection-preview")) {
           return Response.json({
@@ -351,7 +357,67 @@ describe("SnapshotVaultScreen", () => {
     expect(
       await screen.findByText(`failure class ${failureClass}`),
     ).toBeInTheDocument();
-    expect(screen.getByText(/credential personal access token/u)).toBeInTheDocument();
-    expect(screen.getByText(/node batch budget 1\/1 used/u)).toBeInTheDocument();
+    expect(
+      screen.getByText(/credential personal access token/u),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/node batch budget 1\/1 used/u),
+    ).toBeInTheDocument();
+  });
+
+  it("does not PUT the scope basket when the hydration GET fails (no clobber)", async () => {
+    const scopeBasketPuts: unknown[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method =
+          init?.method ?? (input instanceof Request ? input.method : "GET");
+        if (url === "/api/workbench/snapshots" && method === "GET") {
+          return Response.json(catalog);
+        }
+        if (url === "/api/workbench/snapshots/snapshot-ui-test") {
+          return Response.json(detail);
+        }
+        if (url.includes("/api/workbench/scope-baskets")) {
+          if (method === "PUT") {
+            scopeBasketPuts.push(
+              typeof init?.body === "string" ? JSON.parse(init.body) : null,
+            );
+            return Response.json({ ok: true });
+          }
+          // Simulate a failed hydration GET: the stored basket must be preserved,
+          // so the effect must NOT write an empty selection back.
+          return Response.json(
+            { error: { code: "SCOPE_BASKET_READ_FAILED", message: "boom" } },
+            { status: 500 },
+          );
+        }
+        return Response.json({}, { status: 404 });
+      }),
+    );
+
+    render(<SnapshotVaultScreen />);
+
+    expect(await screen.findByText("snapshot-ui-test")).toBeInTheDocument();
+    expect(await screen.findAllByText("IBAN input mask")).not.toHaveLength(0);
+
+    const scopeBasketCalls = (): number =>
+      (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.filter(
+        ([calledUrl]) =>
+          String(calledUrl).includes("/api/workbench/scope-baskets"),
+      ).length;
+
+    // The hydration GET must have fired. In the buggy path the persist effect
+    // would issue a PUT off the same selection commit, so wait until the
+    // scope-baskets traffic stops growing before asserting no PUT was sent.
+    await waitFor(() => {
+      expect(scopeBasketCalls()).toBeGreaterThan(0);
+    });
+    const settled = scopeBasketCalls();
+    await waitFor(() => {
+      expect(scopeBasketCalls()).toBe(settled);
+    });
+    expect(scopeBasketPuts).toHaveLength(0);
   });
 });
