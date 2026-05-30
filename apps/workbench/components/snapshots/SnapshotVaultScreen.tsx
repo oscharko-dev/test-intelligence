@@ -20,6 +20,7 @@ import {
   useCallback,
   useDeferredValue,
   useEffect,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -68,11 +69,64 @@ interface PreviewResponse extends ApiError {
   preview?: WorkbenchSnapshotSelectionPreview;
 }
 
+interface BasketResponse extends ApiError {
+  basket?: {
+    selection?: Partial<SnapshotRunSelection>;
+  } | null;
+}
+
 const emptySelection = (): SnapshotRunSelection => ({
   nodeIds: [],
   pageIds: [],
   frameIds: [],
 });
+
+const idList = (value: readonly string[] | undefined): string[] =>
+  Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === "string")
+    : [];
+
+/**
+ * Best-effort hydration of a persisted scope basket. Returns the empty selection
+ * on any error or absent basket so the basket degrades to ephemeral and the UI
+ * is unaffected (no thrown error, no error surface).
+ */
+const fetchPersistedSelection = async (
+  snapshotId: string,
+  signal: AbortSignal,
+): Promise<SnapshotRunSelection> => {
+  try {
+    const response = await fetch(
+      `/api/workbench/scope-baskets?snapshotId=${encodeURIComponent(
+        snapshotId,
+      )}`,
+      { cache: "no-store", signal },
+    );
+    const payload = await readJson<BasketResponse>(response);
+    const selection = payload.basket?.selection;
+    if (!response.ok || selection === undefined) return emptySelection();
+    return {
+      nodeIds: idList(selection.nodeIds),
+      pageIds: idList(selection.pageIds),
+      frameIds: idList(selection.frameIds),
+    };
+  } catch {
+    return emptySelection();
+  }
+};
+
+/** Fire-and-forget persistence of the basket; client-side best-effort only. */
+const persistSelection = (
+  snapshotId: string,
+  selection: SnapshotRunSelection,
+): void => {
+  void fetch("/api/workbench/scope-baskets", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ snapshotId, selection }),
+    cache: "no-store",
+  }).catch(() => undefined);
+};
 
 const countSelection = (selection: SnapshotRunSelection): number =>
   selection.nodeIds.length +
@@ -145,6 +199,11 @@ export function SnapshotVaultScreen(): ReactNode {
     useState<WorkbenchSnapshotNodeSummary | null>(null);
   const [selection, setSelection] =
     useState<SnapshotRunSelection>(emptySelection);
+  // Gates basket persistence: holds the snapshotId whose persisted basket has
+  // been hydrated. Until hydration completes for the active snapshot, selection
+  // changes are not persisted, so the stored basket is never overwritten with an
+  // empty placeholder before it is read back.
+  const hydratedSnapshotRef = useRef<string | null>(null);
   const [selectionPreview, setSelectionPreview] =
     useState<WorkbenchSnapshotSelectionPreview | null>(null);
   const [selectionError, setSelectionError] = useState<string | null>(null);
@@ -199,22 +258,29 @@ export function SnapshotVaultScreen(): ReactNode {
     if (selectedSnapshotId === null) {
       return;
     }
+    const snapshotId = selectedSnapshotId;
+    // Suspend persistence until this snapshot's basket has been hydrated, so the
+    // initial empty selection below is never written back over the stored basket.
+    hydratedSnapshotRef.current = null;
     const controller = new AbortController();
+    const resetEvidence = (): void => {
+      setDetail(null);
+      setSearchResults([]);
+      setSelectedNode(null);
+      setSelection(emptySelection());
+      setSelectionPreview(null);
+      setSelectionError(null);
+    };
     const loadDetail = async (): Promise<void> => {
       try {
         const response = await fetch(
-          `/api/workbench/snapshots/${encodeURIComponent(selectedSnapshotId)}`,
+          `/api/workbench/snapshots/${encodeURIComponent(snapshotId)}`,
           { cache: "no-store", signal: controller.signal },
         );
         const payload = await readJson<DetailResponse>(response);
         if (!response.ok || payload.detail === undefined) {
           setDetailError(messageFrom(payload, "Snapshot detail failed."));
-          setDetail(null);
-          setSearchResults([]);
-          setSelectedNode(null);
-          setSelection(emptySelection());
-          setSelectionPreview(null);
-          setSelectionError(null);
+          resetEvidence();
           return;
         }
         setDetail(payload.detail);
@@ -224,17 +290,20 @@ export function SnapshotVaultScreen(): ReactNode {
         setSelection(emptySelection());
         setSelectionPreview(null);
         setSelectionError(null);
+        const restored = await fetchPersistedSelection(
+          snapshotId,
+          controller.signal,
+        );
+        if (controller.signal.aborted) return;
+        setSelection(restored);
+        // Enable persistence only after the read-back so add/remove are durable.
+        hydratedSnapshotRef.current = snapshotId;
       } catch (error) {
         if (controller.signal.aborted) return;
         setDetailError(
           error instanceof Error ? error.message : "Snapshot detail failed.",
         );
-        setDetail(null);
-        setSearchResults([]);
-        setSelectedNode(null);
-        setSelection(emptySelection());
-        setSelectionPreview(null);
-        setSelectionError(null);
+        resetEvidence();
       }
     };
     void loadDetail();
@@ -242,6 +311,16 @@ export function SnapshotVaultScreen(): ReactNode {
       controller.abort();
     };
   }, [selectedSnapshotId]);
+
+  useEffect(() => {
+    if (
+      selectedSnapshotId === null ||
+      hydratedSnapshotRef.current !== selectedSnapshotId
+    ) {
+      return;
+    }
+    persistSelection(selectedSnapshotId, selection);
+  }, [selectedSnapshotId, selection]);
 
   useEffect(() => {
     if (selectedSnapshotId === null) return;
