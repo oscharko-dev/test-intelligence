@@ -56,3 +56,14 @@ export {
 } from "./db-path";
 
 export { createMemoryWorkbenchStorageAdapter } from "./memory-adapter";
+
+export type {
+  ArtifactStoreErrorCode,
+  ArtifactVerification,
+} from "./artifact-store";
+export {
+  ArtifactStoreError,
+  readArtifact,
+  verifyArtifact,
+  writeArtifact,
+} from "./artifact-store";
