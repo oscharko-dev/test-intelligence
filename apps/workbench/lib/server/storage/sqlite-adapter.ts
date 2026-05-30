@@ -108,6 +108,7 @@ class SqliteWorkbenchStorageAdapter implements WorkbenchStorageAdapter {
     // OFF because repositories enforce same-tenant parent checks at the contract
     // layer for parity with the in-memory adapter.
     this.db.pragma("journal_mode = WAL");
+    this.db.pragma("busy_timeout = 5000");
     this.db.pragma("foreign_keys = OFF");
 
     this.snapshots = createSnapshotRepository(this.db);
@@ -217,7 +218,10 @@ class SqliteWorkbenchStorageAdapter implements WorkbenchStorageAdapter {
     }
     this.inTransaction = true;
     try {
-      return this.db.transaction(() => work(this.txHandle))();
+      // BEGIN IMMEDIATE takes the SQLite write reservation before any
+      // read-then-write repository logic runs, so independent connections cannot
+      // observe the same "absent" row and both persist it.
+      return this.db.transaction(() => work(this.txHandle)).immediate();
     } finally {
       this.inTransaction = false;
     }

@@ -84,6 +84,11 @@ type SnapshotArtifacts = {
   vaultPath: string;
 };
 
+const sameTenantScope = (
+  left: FigmaSnapshotManifest["tenantScope"],
+  right: FigmaSnapshotManifest["tenantScope"],
+): boolean => formatWorkbenchTenantScope(left) === formatWorkbenchTenantScope(right);
+
 type WorkbenchSnapshotImportStore = {
   activeJobIdsByTenant: Map<string, string>;
   jobs: Map<string, WorkbenchSnapshotImportRecord>;
@@ -853,6 +858,8 @@ export const readArtifactsAtVaultPath = async (
   if (
     manifest.snapshotId !== nodeIndex.snapshotId ||
     manifest.snapshotId !== importStatus.snapshotId ||
+    !sameTenantScope(manifest.tenantScope, nodeIndex.tenantScope) ||
+    !sameTenantScope(manifest.tenantScope, importStatus.tenantScope) ||
     manifest.source.fileKeyHash !== nodeIndex.source.fileKeyHash ||
     manifest.source.fileKeyHash !== importStatus.source.fileKeyHash ||
     manifest.artifactDigests.nodeIndexDigest !== nodeIndex.contentDigest ||
@@ -867,6 +874,7 @@ export const readArtifactsAtVaultPath = async (
   if (
     previewManifest !== undefined &&
     (previewManifest.snapshotId !== manifest.snapshotId ||
+      !sameTenantScope(manifest.tenantScope, previewManifest.tenantScope) ||
       manifest.artifactDigests.previewManifestDigest !==
         previewManifest.contentDigest)
   ) {

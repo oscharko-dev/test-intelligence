@@ -116,6 +116,16 @@ const createSnapshotRepository = (state: MemoryState): SnapshotRepository => ({
     const record = state.snapshots.get(id);
     return isSameTenant(record, tenantScope) ? snapshot(record) : undefined;
   },
+  findBySource(
+    tenantScope: string,
+    source: string,
+  ): SnapshotMetadataRecord | undefined {
+    const record = [...state.snapshots.values()].find(
+      (candidate) =>
+        candidate.tenantScope === tenantScope && candidate.source === source,
+    );
+    return record === undefined ? undefined : snapshot(record);
+  },
   list(filter?: TenantScopeFilter): readonly SnapshotMetadataRecord[] {
     return [...state.snapshots.values()]
       .filter((record) =>

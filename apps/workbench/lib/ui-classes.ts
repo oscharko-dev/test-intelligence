@@ -78,7 +78,8 @@ export const ui = {
     info: "info border-[hsl(200_60%_30%)] bg-[hsl(200_60%_14%_/_0.6)] text-info",
     success:
       "success border-[hsl(142_40%_26%)] bg-[hsl(142_40%_12%_/_0.6)] text-success",
-    warn: "warn border-[hsl(38_60%_28%)] bg-[hsl(38_60%_12%_/_0.6)] text-warn",
+    warn:
+      "warn border-[hsl(38_60%_34%)] bg-[hsl(38_60%_8%)] text-[hsl(38_100%_68%)]",
     danger:
       "danger border-[hsl(0_50%_30%)] bg-[hsl(0_50%_14%_/_0.5)] text-danger",
     accent:

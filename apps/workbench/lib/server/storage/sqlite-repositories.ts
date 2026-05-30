@@ -125,6 +125,7 @@ interface SnapshotStmts {
   insert: Stmt;
   selectById: Stmt;
   selectByIdAndTenant: Stmt;
+  selectByTenantAndSource: Stmt;
   selectAll: Stmt;
   selectByTenant: Stmt;
   updateLifecycle: Stmt;
@@ -145,6 +146,12 @@ export const createSnapshotRepository = (db: Db): SnapshotRepository => {
       selectById: db.prepare(`SELECT * FROM snapshots WHERE id = ?`),
       selectByIdAndTenant: db.prepare(
         `SELECT * FROM snapshots WHERE id = ? AND tenant_scope = ?`,
+      ),
+      selectByTenantAndSource: db.prepare(
+        `SELECT * FROM snapshots
+          WHERE tenant_scope = ? AND source = ?
+          ORDER BY rowid
+          LIMIT 1`,
       ),
       selectAll: db.prepare(`SELECT * FROM snapshots ORDER BY rowid`),
       selectByTenant: db.prepare(
@@ -184,6 +191,16 @@ export const createSnapshotRepository = (db: Db): SnapshotRepository => {
       const row = s().selectByIdAndTenant.get(id, tenantScope) as
         | SnapshotRow
         | undefined;
+      return row ? mapSnapshot(row) : undefined;
+    },
+    findBySource(
+      tenantScope: string,
+      source: string,
+    ): SnapshotMetadataRecord | undefined {
+      const row = s().selectByTenantAndSource.get(
+        tenantScope,
+        source,
+      ) as SnapshotRow | undefined;
       return row ? mapSnapshot(row) : undefined;
     },
     list(filter?: TenantScopeFilter): readonly SnapshotMetadataRecord[] {
