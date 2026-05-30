@@ -35,6 +35,7 @@ import {
   createScopeBasketRepository,
   createSnapshotRepository,
 } from "./sqlite-repositories";
+import { writePreMigrationBackup } from "./sqlite-backup";
 import { buildBuiltinSchemaMigrations } from "./sqlite-schema";
 import { WorkbenchStorageError } from "./storage-adapter";
 import type { WorkbenchStorageAdapter } from "./storage-adapter";
@@ -94,11 +95,13 @@ class SqliteWorkbenchStorageAdapter implements WorkbenchStorageAdapter {
   readonly exports: ExportRepository;
 
   private readonly db: BetterSqlite3.Database;
+  private readonly databaseFile: string;
   private readonly migrations: readonly WorkbenchMigration[];
   private readonly txHandle: WorkbenchStorageAdapter;
   private inTransaction = false;
 
   constructor(databaseFile: string, schemaInit: SchemaInit) {
+    this.databaseFile = databaseFile;
     this.db = new BetterSqlite3(databaseFile);
     // WAL improves concurrent read/write durability; it must be set before any
     // transaction. `:memory:` databases ignore WAL gracefully. FK enforcement
@@ -163,6 +166,10 @@ class SqliteWorkbenchStorageAdapter implements WorkbenchStorageAdapter {
     );
     if (pending.length === 0) return current;
     const target = pending[pending.length - 1]?.version ?? current;
+    // WHY before the transaction: VACUUM INTO cannot run inside an open
+    // transaction, and the snapshot must capture the PRE-migration state. A
+    // backup failure throws here, so the migration never runs (fail-closed).
+    this.backupBeforeMigration(current, target);
     // WHY one `user_version` write at the very end (not per step): table DDL
     // rolls back with the better-sqlite3 transaction, but a `PRAGMA
     // user_version` write does not roll back here. Writing the version only
@@ -177,6 +184,22 @@ class SqliteWorkbenchStorageAdapter implements WorkbenchStorageAdapter {
     });
     run(pending);
     return readUserVersion(this.db);
+  }
+
+  /**
+   * Takes a pre-migration backup only when there is populated data to lose: a
+   * file-backed database already at version ≥ 1. WHY version 0 is skipped: a
+   * fresh first-time bootstrap (v0 → v1) has no prior data, so a backup would be
+   * an empty snapshot of nothing. `:memory:` databases have no file to copy.
+   */
+  private backupBeforeMigration(current: number, target: number): void {
+    if (this.databaseFile === DEFAULT_DATABASE_FILE || current < 1) return;
+    writePreMigrationBackup({
+      db: this.db,
+      databaseFile: this.databaseFile,
+      fromVersion: current,
+      toVersion: target,
+    });
   }
 
   transaction<T>(work: (tx: WorkbenchStorageAdapter) => T): T {
