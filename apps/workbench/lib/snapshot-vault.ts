@@ -100,6 +100,13 @@ export interface WorkbenchSnapshotCatalogRow {
    * truth for detail/search/bytes, so the UI renders without this field.
    */
   persistedNodeIndex?: WorkbenchSnapshotPersistedIndexSummary;
+  /**
+   * Conservative classification by the #54 legacy indexer: when present and
+   * `true`, this on-disk snapshot is a recognizable pre-persistence artifact
+   * that could not be faithfully promoted to an editable durable row (e.g.
+   * partial manifest, digest mismatch). The UI surfaces a non-editable badge.
+   */
+  legacyReadOnly?: boolean;
 }
 
 export interface WorkbenchSnapshotPageSummary {
