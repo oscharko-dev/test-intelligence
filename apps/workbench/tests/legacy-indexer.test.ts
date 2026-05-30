@@ -5,6 +5,7 @@ import {
   mkdtemp,
   readdir,
   readFile,
+  rename,
   rm,
   stat,
   writeFile,
@@ -28,7 +29,7 @@ import {
   planFigmaSnapshotPreviewCache,
   serializeFigmaSnapshotArtifact,
 } from "@oscharko-dev/ti-core-engine";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { getWorkbenchStorage } from "@/lib/server/storage/bootstrap";
 import { resetWorkbenchStorageForTests } from "@/lib/server/storage/bootstrap";
@@ -361,6 +362,55 @@ describe("workbench legacy indexer (Issue #54)", () => {
     expect(rows).toHaveLength(1);
   });
 
+  it("treats a snapshot inserted after the pre-scan as already indexed", async () => {
+    const env = envFor(repoRoot);
+    const { snapshotId } = await writeValidSnapshotFixture(
+      repoRoot,
+      "snap-race",
+    );
+    const storage = getWorkbenchStorage({ env });
+    const originalList = storage.snapshots.list.bind(storage.snapshots);
+    let injected = false;
+    vi.spyOn(storage.snapshots, "list").mockImplementation((filter) => {
+      const rows = originalList(filter);
+      if (!injected && filter === undefined) {
+        injected = true;
+        storage.snapshots.create({
+          tenantScope: formatWorkbenchTenantScope(DEFAULT_TENANT_SCOPE),
+          source: snapshotId,
+          nodeCount: 10,
+          pageCount: 1,
+          frameCount: 1,
+          lifecycleState: "imported",
+        });
+      }
+      return rows;
+    });
+
+    const summary = await indexLegacyArtifacts({ env });
+
+    expect(summary.indexed).toBe(0);
+    expect(summary.alreadyIndexed).toBe(1);
+    expect(
+      originalList().filter((row) => row.source === snapshotId),
+    ).toHaveLength(1);
+  });
+
+  it("performs one persisted-snapshot source scan per index pass instead of one per discovered snapshot", async () => {
+    const env = envFor(repoRoot);
+    await writeValidSnapshotFixture(repoRoot, "snap-scale-a");
+    await writeValidSnapshotFixture(repoRoot, "snap-scale-b");
+    await writeValidSnapshotFixture(repoRoot, "snap-scale-c");
+    const storage = getWorkbenchStorage({ env });
+    const listSpy = vi.spyOn(storage.snapshots, "list");
+
+    const summary = await indexLegacyArtifacts({ env });
+
+    expect(summary.indexed).toBe(3);
+    expect(listSpy).toHaveBeenCalledTimes(1);
+    expect(listSpy).toHaveBeenCalledWith();
+  });
+
   it("does not let one tenant's snapshot source suppress another tenant's backfill", async () => {
     const tenantB: TenantScope = {
       tenantId: "tenant-b",
@@ -382,6 +432,43 @@ describe("workbench legacy indexer (Issue #54)", () => {
         .snapshots.list({ tenantScope: "tenant-b/default/default" })
         .filter((row) => row.source === "shared-source"),
     ).toHaveLength(1);
+  });
+
+  it("skips a snapshot whose manifest tenant differs from the scanned tenant root", async () => {
+    const tenantB: TenantScope = {
+      tenantId: "tenant-b",
+      environmentId: "default",
+      projectId: "default",
+    };
+    const env = envFor(repoRoot);
+    const written = await writeValidSnapshotFixture(
+      repoRoot,
+      "tenant-poison",
+      tenantB,
+    );
+    const poisonedPath = path.join(
+      repoRoot,
+      ".test-intelligence",
+      "figma-snapshots",
+      ...formatWorkbenchTenantScope(DEFAULT_TENANT_SCOPE).split("/"),
+      FILE_KEY_HASH,
+      "tenant-poison",
+    );
+    await mkdir(path.dirname(poisonedPath), { recursive: true });
+    await rename(written.vaultPath, poisonedPath);
+
+    const summary = await indexLegacyArtifacts({ env });
+
+    expect(summary.indexed).toBe(0);
+    expect(summary.skipped).toBe(1);
+    expect(summary.warnings.join("\n")).toContain(
+      "Snapshot tenant scope does not match",
+    );
+    expect(
+      getWorkbenchStorage({ env })
+        .snapshots.list({ tenantScope: "tenant-b/default/default" })
+        .filter((row) => row.source === "tenant-poison"),
+    ).toHaveLength(0);
   });
 
   it("marks a legacy run output folder as legacy-read-only without fabricating a runs row", async () => {
@@ -443,6 +530,104 @@ describe("workbench legacy indexer (Issue #54)", () => {
     expect(getWorkbenchStorage({ env }).runs.list()).toHaveLength(0);
   });
 
+  it("surfaces a legacy run written directly into the output root when outputRunSubdir was none", async () => {
+    const env = envFor(repoRoot);
+    const directRunDir = path.join(
+      repoRoot,
+      ".test-intelligence",
+      "local-testcases",
+    );
+    await mkdir(directRunDir, { recursive: true });
+    await writeFile(
+      path.join(directRunDir, "generated-testcases.json"),
+      JSON.stringify([{ id: "tc-1", title: "Direct output root" }]),
+      "utf8",
+    );
+
+    const summary = await indexLegacyArtifacts({ env });
+
+    expect(getLegacyClassification("run", "local-testcases")).toBe(
+      "legacy-read-only",
+    );
+    expect(summary.runs.map((r) => r.id)).toContain("local-testcases");
+    expect(getWorkbenchStorage({ env }).runs.list()).toHaveLength(0);
+  });
+
+  it("does not classify arbitrary extension-only folders as legacy run outputs", async () => {
+    const env = envFor(repoRoot);
+    const notesDir = path.join(
+      repoRoot,
+      ".test-intelligence",
+      "local-testcases",
+      "operator-notes",
+    );
+    await mkdir(notesDir, { recursive: true });
+    await writeFile(path.join(notesDir, "notes.md"), "not a Workbench run", "utf8");
+
+    const summary = await indexLegacyArtifacts({ env });
+
+    expect(getLegacyClassification("run", "operator-notes")).toBeUndefined();
+    expect(summary.runs.map((r) => r.id)).not.toContain("operator-notes");
+    expect(summary.legacyReadOnly).toBe(0);
+  });
+
+  it("surfaces legacy runs from absolute WORKBENCH_OUTPUT_ROOTS allowlist entries", async () => {
+    const outsideRoot = await mkdtemp(
+      path.join(os.tmpdir(), "ti-legacy-outside-"),
+    );
+    try {
+      const outsideRunDir = path.join(outsideRoot, "outside-run");
+      await mkdir(outsideRunDir, { recursive: true });
+      await writeFile(
+        path.join(outsideRunDir, "generated-testcases.json"),
+        JSON.stringify([{ id: "tc-outside" }]),
+        "utf8",
+      );
+      const env = envFor(repoRoot, {
+        WORKBENCH_OUTPUT_ROOTS: outsideRoot,
+      });
+
+      const summary = await indexLegacyArtifacts({ env });
+
+      expect(getLegacyClassification("run", "outside-run")).toBe(
+        "legacy-read-only",
+      );
+      expect(summary.runs.map((r) => r.id)).toContain("outside-run");
+      expect(summary.legacyReadOnly).toBe(1);
+    } finally {
+      await rm(outsideRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("surfaces legacy runs from relative WORKBENCH_OUTPUT_ROOTS allowlist entries outside the repository root", async () => {
+    const parentRoot = await mkdtemp(path.join(os.tmpdir(), "ti-legacy-parent-"));
+    const repo = path.join(parentRoot, "repo");
+    const outsideRoot = path.join(parentRoot, "outside");
+    await mkdir(path.join(outsideRoot, "relative-outside-run"), {
+      recursive: true,
+    });
+    await writeFile(
+      path.join(outsideRoot, "relative-outside-run", "generated-testcases.json"),
+      JSON.stringify([{ id: "tc-relative-outside" }]),
+      "utf8",
+    );
+    try {
+      const env = envFor(repo, {
+        WORKBENCH_OUTPUT_ROOTS: "../outside",
+      });
+
+      const summary = await indexLegacyArtifacts({ env });
+
+      expect(getLegacyClassification("run", "relative-outside-run")).toBe(
+        "legacy-read-only",
+      );
+      expect(summary.runs.map((r) => r.id)).toContain("relative-outside-run");
+      expect(summary.legacyReadOnly).toBe(1);
+    } finally {
+      await rm(parentRoot, { recursive: true, force: true });
+    }
+  });
+
   it("excludes a run folder whose artifactDir already matches a persisted runs row", async () => {
     const env = envFor(repoRoot, {
       WORKBENCH_OUTPUT_ROOTS: ".test-intelligence/local-testcases",
@@ -473,6 +658,34 @@ describe("workbench legacy indexer (Issue #54)", () => {
       getLegacyClassification("run", "ti-workbench-persisted-1"),
     ).toBeUndefined();
     expect(summary.legacyReadOnly).toBe(0);
+  });
+
+  it("does not let another tenant's persisted run suppress legacy run visibility", async () => {
+    const env = envFor(repoRoot);
+    const sharedRunDir = path.join(
+      repoRoot,
+      ".test-intelligence",
+      "local-testcases",
+      "ti-workbench-shared-run",
+    );
+    await mkdir(sharedRunDir, { recursive: true });
+    await writeFile(
+      path.join(sharedRunDir, "generated-testcases.json"),
+      JSON.stringify([{ id: "tc-shared" }]),
+      "utf8",
+    );
+    getWorkbenchStorage({ env }).runs.create({
+      tenantScope: "tenant-b/default/default",
+      status: "sealed",
+      artifactDir: sharedRunDir,
+    });
+
+    const summary = await indexLegacyArtifacts({ env });
+
+    expect(getLegacyClassification("run", "ti-workbench-shared-run")).toBe(
+      "legacy-read-only",
+    );
+    expect(summary.runs.map((r) => r.id)).toContain("ti-workbench-shared-run");
   });
 
   it("redacts absolute paths, home dirs, and Figma tokens from every warning", async () => {

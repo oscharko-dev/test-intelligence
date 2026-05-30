@@ -236,6 +236,10 @@ export interface ScopeBasketChanges {
 export interface SnapshotRepository {
   create(input: CreateSnapshotInput): SnapshotMetadataRecord;
   get(id: string, tenantScope: string): SnapshotMetadataRecord | undefined;
+  findBySource(
+    tenantScope: string,
+    source: string,
+  ): SnapshotMetadataRecord | undefined;
   list(filter?: TenantScopeFilter): readonly SnapshotMetadataRecord[];
   updateLifecycleState(
     id: string,

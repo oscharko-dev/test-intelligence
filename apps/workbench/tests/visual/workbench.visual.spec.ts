@@ -497,7 +497,11 @@ test("captures run history with the detail drawer state", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await openWorkbench(page, "/runs/history");
 
-  await page.getByText("ti-workbench-1764950400123").click();
+  await page
+    .getByRole("button", {
+      name: "View legacy index detail for ti-workbench-1764950400123",
+    })
+    .click();
   await expect(
     page.getByText("Detail · ti-workbench-1764950400123"),
   ).toBeVisible();

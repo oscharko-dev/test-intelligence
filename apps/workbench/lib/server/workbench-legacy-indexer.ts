@@ -40,7 +40,10 @@ import {
   discoverLegacySnapshotFolders,
   type DiscoveredSnapshotFolder,
 } from "./workbench-legacy-indexer-discover";
-import { formatWorkbenchTenantScope } from "./workbench-tenant-scope";
+import {
+  formatWorkbenchTenantScope,
+  resolveWorkbenchTenantScope,
+} from "./workbench-tenant-scope";
 import { readArtifactsAtVaultPath } from "./workbench-snapshot-vault";
 
 export type LegacyArtifactKind = "snapshot" | "run";
@@ -88,6 +91,8 @@ const globalForLegacy = globalThis as typeof globalThis & {
   __TI_WORKBENCH_LEGACY_INDEX__?: LegacyIndexCache;
 };
 
+let legacyIndexQueue: Promise<void> = Promise.resolve();
+
 const ensureCache = (): LegacyIndexCache => {
   if (globalForLegacy.__TI_WORKBENCH_LEGACY_INDEX__ === undefined) {
     globalForLegacy.__TI_WORKBENCH_LEGACY_INDEX__ = {
@@ -129,6 +134,7 @@ export const getLegacyClassification = (
  */
 export const resetLegacyIndexForTests = (): void => {
   delete globalForLegacy.__TI_WORKBENCH_LEGACY_INDEX__;
+  legacyIndexQueue = Promise.resolve();
 };
 
 interface SnapshotIndexTally {
@@ -142,11 +148,9 @@ interface SnapshotIndexTally {
 
 /**
  * Returns `true` only when the insert actually ran (the row was created by THIS
- * call). WHY a transaction-scoped re-read: an outer-call `persistedSources`
- * snapshot is racy under concurrent `indexLegacyArtifacts()` invocations — both
- * passes would see the row absent and both would insert. Re-reading inside the
- * adapter's transaction (better-sqlite3 serializes writers) guarantees exactly
- * one insert per `source` even with overlapping callers.
+ * call). The caller performs one list scan per pass for the hot path, while the
+ * transaction re-check below closes races with other persistence writers without
+ * re-listing every persisted snapshot for every folder.
  */
 const persistLegacySnapshot = (
   options: LegacyIndexerOptions,
@@ -158,10 +162,9 @@ const persistLegacySnapshot = (
   const tenantScope = formatWorkbenchTenantScope(manifest.tenantScope);
   const source = manifest.snapshotId;
   return getWorkbenchStorage(options).transaction((tx) => {
-    const existing = tx.snapshots
-      .list({ tenantScope })
-      .some((row) => row.source === source);
-    if (existing) return false;
+    if (tx.snapshots.findBySource(tenantScope, source) !== undefined) {
+      return false;
+    }
     tx.snapshots.create({
       tenantScope,
       source,
@@ -182,7 +185,7 @@ const recordSnapshotOutcome = (
   warning?: string,
 ): void => {
   classifications.set(classificationKey("snapshot", id), classification);
-  tally.snapshots.push({ id, classification });
+  tally.snapshots.push({ id: redactLegacyId(id), classification });
   if (classification === "indexed") tally.indexed += 1;
   else if (classification === "already-indexed") tally.alreadyIndexed += 1;
   else if (classification === "legacy-read-only") tally.legacyReadOnly += 1;
@@ -200,7 +203,7 @@ const persistedSourceKey = (tenantScope: string, source: string): string =>
 
 const classifyAndPersistOneSnapshot = async (
   folder: DiscoveredSnapshotFolder,
-  persistedSources: ReadonlySet<string>,
+  persistedSources: Set<string>,
   options: LegacyIndexerOptions,
   tally: SnapshotIndexTally,
   classifications: Map<string, LegacyClassification>,
@@ -223,6 +226,19 @@ const classifyAndPersistOneSnapshot = async (
   }
   const snapshotId = artifacts.manifest.snapshotId;
   const tenantScope = formatWorkbenchTenantScope(artifacts.manifest.tenantScope);
+  if (tenantScope !== folder.tenantScope) {
+    recordSnapshotOutcome(
+      tally,
+      classifications,
+      snapshotId,
+      "skipped",
+      skipWarning(
+        snapshotId,
+        new Error("Snapshot tenant scope does not match the scanned legacy root."),
+      ),
+    );
+    return;
+  }
   if (persistedSources.has(persistedSourceKey(tenantScope, snapshotId))) {
     recordSnapshotOutcome(
       tally,
@@ -247,6 +263,9 @@ const classifyAndPersistOneSnapshot = async (
       pages.size,
       frames.size,
     );
+    if (inserted) {
+      persistedSources.add(persistedSourceKey(tenantScope, snapshotId));
+    }
     recordSnapshotOutcome(
       tally,
       classifications,
@@ -283,8 +302,9 @@ const indexSnapshots = async (
   if (folders.length === 0) return tally;
   // WHY snapshot the persisted sources once per index pass: it provides the
   // pre-check optimization without serializing each create through a fresh DB
-  // read, and a concurrent double-index resolves to a single row because the
-  // authoritative check happens INSIDE `persistLegacySnapshot`'s transaction.
+  // read. `indexLegacyArtifacts()` serializes full passes process-wide, and this
+  // set is updated after every insert, so repeated/concurrent reindexing remains
+  // idempotent without an O(n²) per-insert list scan.
   const persistedSources = new Set<string>(
     getWorkbenchStorage(options)
       .snapshots.list()
@@ -315,6 +335,7 @@ const indexRuns = async (
   const folders = await discoverLegacyRunFolders(env);
   const tally: RunIndexTally = { legacyReadOnly: 0, runs: [] };
   if (folders.length === 0) return tally;
+  const tenantScope = formatWorkbenchTenantScope(resolveWorkbenchTenantScope(env));
   // Touch the storage paths so the singleton binds the SAME root the adapter
   // sees, mirroring the snapshot/run persistence modules. WHY touch (rather
   // than read): no path is constructed from these values; the call is purely
@@ -322,7 +343,7 @@ const indexRuns = async (
   getWorkbenchStoragePaths(options);
   const persistedDirs = new Set<string>(
     getWorkbenchStorage(options)
-      .runs.list()
+      .runs.list({ tenantScope })
       .map((row) => row.artifactDir)
       .filter((dir): dir is string => dir !== undefined)
       .map((dir) => path.resolve(dir)),
@@ -338,7 +359,7 @@ const indexRuns = async (
       "legacy-read-only",
     );
     tally.runs.push({
-      id: folder.basename,
+      id: redactLegacyId(folder.basename),
       classification: "legacy-read-only",
     });
     tally.legacyReadOnly += 1;
@@ -357,6 +378,20 @@ const indexRuns = async (
  */
 export const indexLegacyArtifacts = async (
   options: LegacyIndexerOptions = {},
+): Promise<LegacyIndexSummary> => {
+  const run = legacyIndexQueue.then(
+    () => runLegacyIndexArtifacts(options),
+    () => runLegacyIndexArtifacts(options),
+  );
+  legacyIndexQueue = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+};
+
+const runLegacyIndexArtifacts = async (
+  options: LegacyIndexerOptions,
 ): Promise<LegacyIndexSummary> => {
   const classifications = new Map<string, LegacyClassification>();
   const snapshotTally = await indexSnapshots(options, classifications);
@@ -392,6 +427,12 @@ export const ensureLegacyIndexAtStartup = async (
   try {
     return await indexLegacyArtifacts(options);
   } catch {
-    return ensureCache().summary;
+    const cache = ensureCache();
+    cache.summary = {
+      ...EMPTY_SUMMARY,
+      warnings: ["Legacy artifact index skipped at startup."],
+    };
+    cache.classifications = new Map();
+    return cache.summary;
   }
 };

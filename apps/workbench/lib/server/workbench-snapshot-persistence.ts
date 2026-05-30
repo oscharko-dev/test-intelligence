@@ -108,15 +108,24 @@ export const persistImportedSnapshot = (input: {
       Buffer.from(JSON.stringify(input.nodeIndex), "utf8"),
     );
     const counts = summarizeSnapshotCounts(input.nodeIndex);
-    getWorkbenchStorage({ env: input.env }).snapshots.create({
-      tenantScope: formatWorkbenchTenantScope(input.manifest.tenantScope),
-      // WHY `source` carries the engine snapshotId: see module docblock.
-      source: input.manifest.snapshotId,
-      nodeCount: counts.nodeCount,
-      pageCount: counts.pageCount,
-      frameCount: counts.frameCount,
-      lifecycleState: input.importStatus.lifecycleState,
-      payload,
+    const tenantScope = formatWorkbenchTenantScope(input.manifest.tenantScope);
+    getWorkbenchStorage({ env: input.env }).transaction((tx) => {
+      if (
+        tx.snapshots.findBySource(tenantScope, input.manifest.snapshotId) !==
+        undefined
+      ) {
+        return;
+      }
+      tx.snapshots.create({
+        tenantScope,
+        // WHY `source` carries the engine snapshotId: see module docblock.
+        source: input.manifest.snapshotId,
+        nodeCount: counts.nodeCount,
+        pageCount: counts.pageCount,
+        frameCount: counts.frameCount,
+        lifecycleState: input.importStatus.lifecycleState,
+        payload,
+      });
     });
   } catch (error) {
     console.error(

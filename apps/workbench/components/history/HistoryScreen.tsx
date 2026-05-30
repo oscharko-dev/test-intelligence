@@ -15,7 +15,20 @@ interface LegacyIndexSummary {
   readonly legacyReadOnly: number;
   readonly skipped: number;
   readonly warnings: readonly string[];
+  readonly snapshots: readonly LegacyIndexEntry[];
+  readonly runs: readonly LegacyIndexEntry[];
 }
+
+interface LegacyIndexEntry {
+  readonly id: string;
+  readonly classification: string;
+}
+
+const isLegacyIndexEntry = (value: unknown): value is LegacyIndexEntry =>
+  typeof value === "object" &&
+  value !== null &&
+  typeof (value as { id?: unknown }).id === "string" &&
+  typeof (value as { classification?: unknown }).classification === "string";
 
 const isLegacySummary = (value: unknown): value is LegacyIndexSummary =>
   typeof value === "object" &&
@@ -24,7 +37,11 @@ const isLegacySummary = (value: unknown): value is LegacyIndexSummary =>
   typeof (value as { alreadyIndexed?: unknown }).alreadyIndexed === "number" &&
   typeof (value as { legacyReadOnly?: unknown }).legacyReadOnly === "number" &&
   typeof (value as { skipped?: unknown }).skipped === "number" &&
-  Array.isArray((value as { warnings?: unknown }).warnings);
+  Array.isArray((value as { warnings?: unknown }).warnings) &&
+  Array.isArray((value as { snapshots?: unknown }).snapshots) &&
+  (value as { snapshots: unknown[] }).snapshots.every(isLegacyIndexEntry) &&
+  Array.isArray((value as { runs?: unknown }).runs) &&
+  (value as { runs: unknown[] }).runs.every(isLegacyIndexEntry);
 
 export function HistoryScreen(): ReactNode {
   const [selected, setSelected] = useState<string | null>(null);
@@ -94,13 +111,7 @@ export function HistoryScreen(): ReactNode {
           </thead>
           <tbody>
             {HISTORY_SEED.map((r) => (
-              <tr
-                key={r.jobId}
-                className={ui.table.rowLink}
-                onClick={() => {
-                  setSelected(r.jobId);
-                }}
-              >
+              <tr key={r.jobId}>
                 <td className={cx(ui.table.td, ui.table.colJob)}>{r.jobId}</td>
                 <td className={cx(ui.table.td, "text-fg-muted")}>
                   {r.started}
@@ -115,7 +126,14 @@ export function HistoryScreen(): ReactNode {
                   {r.artifacts}
                 </td>
                 <td className={cx(ui.table.td, ui.table.colAction)}>
-                  <ChevronRight size={14} aria-hidden focusable={false} />
+                  <IconButton
+                    icon={ChevronRight}
+                    label={`View legacy index detail for ${r.jobId}`}
+                    iconSize={14}
+                    onClick={() => {
+                      setSelected(r.jobId);
+                    }}
+                  />
                 </td>
               </tr>
             ))}
@@ -153,26 +171,70 @@ function LegacyIndexPanel({
 }): ReactNode {
   if (summary === null) {
     return (
-      <div className={ui.detailPlaceholder}>
+      <div
+        className={ui.detailPlaceholder}
+        role={error === null ? "status" : "alert"}
+        aria-live={error === null ? "polite" : "assertive"}
+      >
         {error ?? "Loading legacy index summary…"}
       </div>
     );
   }
   return (
-    <div className="grid gap-3">
+    <div className="grid gap-3" role="status" aria-live="polite">
       <div className="grid grid-cols-2 gap-2 font-mono text-[11px] text-fg-muted md:grid-cols-4">
         <span>indexed {summary.indexed}</span>
         <span>already-indexed {summary.alreadyIndexed}</span>
         <span>legacy read-only {summary.legacyReadOnly}</span>
         <span>skipped {summary.skipped}</span>
       </div>
+      <LegacyArtifactList title="Legacy snapshots" items={summary.snapshots} />
+      <LegacyArtifactList title="Legacy runs" items={summary.runs} />
       {summary.warnings.length > 0 && (
-        <ul className="m-0 grid gap-1 rounded border border-border-subtle bg-bg-input p-2 font-mono text-[11px] text-fg-muted">
-          {summary.warnings.slice(0, 8).map((warning) => (
-            <li key={warning}>{warning}</li>
+        <ul
+          className="m-0 grid gap-1 rounded border border-border-subtle bg-bg-input p-2 font-mono text-[11px] text-fg-muted"
+          role="alert"
+          aria-live="assertive"
+        >
+          {summary.warnings.slice(0, 8).map((warning, index) => (
+            <li key={`${warning}-${index}`}>{warning}</li>
           ))}
         </ul>
       )}
+    </div>
+  );
+}
+
+function LegacyArtifactList({
+  title,
+  items,
+}: {
+  title: string;
+  items: readonly LegacyIndexEntry[];
+}): ReactNode {
+  if (items.length === 0) return null;
+  return (
+    <div className="grid gap-1.5">
+      <h4 className="m-0 font-mono text-[11px] uppercase tracking-[0.08em] text-fg-muted">
+        {title}
+      </h4>
+      <ul className="m-0 grid gap-1 rounded border border-border-subtle bg-bg-input p-2 font-mono text-[11px] text-fg-muted">
+        {items.slice(0, 8).map((item, index) => (
+          <li
+            key={`${item.id}-${item.classification}-${index}`}
+            className="flex min-w-0 items-center gap-2"
+          >
+            <span className="min-w-0 flex-1 break-all">{item.id}</span>
+            <Badge
+              variant={
+                item.classification === "skipped" ? "danger" : "warn"
+              }
+            >
+              {item.classification}
+            </Badge>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

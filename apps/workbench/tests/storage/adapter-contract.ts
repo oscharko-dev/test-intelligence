@@ -131,6 +131,9 @@ export const runWorkbenchStorageAdapterContract = (
 
       it("returns undefined for a missing id and [] when empty", () => {
         expect(adapter.snapshots.get("absent", "tenant-a")).toBeUndefined();
+        expect(
+          adapter.snapshots.findBySource("tenant-a", "missing-source"),
+        ).toBeUndefined();
         expect(adapter.snapshots.list()).toStrictEqual([]);
       });
 
@@ -155,11 +158,18 @@ export const runWorkbenchStorageAdapterContract = (
       });
 
       it("filters by tenant scope", () => {
-        adapter.snapshots.create(snapshotInput({ tenantScope: "tenant-a" }));
-        adapter.snapshots.create(snapshotInput({ tenantScope: "tenant-b" }));
+        adapter.snapshots.create(
+          snapshotInput({ tenantScope: "tenant-a", source: "shared-source" }),
+        );
+        const tenantB = adapter.snapshots.create(
+          snapshotInput({ tenantScope: "tenant-b", source: "shared-source" }),
+        );
         const scoped = adapter.snapshots.list({ tenantScope: "tenant-b" });
         expect(scoped).toHaveLength(1);
         expect(scoped[0]?.tenantScope).toBe("tenant-b");
+        expect(
+          adapter.snapshots.findBySource("tenant-b", "shared-source"),
+        ).toStrictEqual(tenantB);
       });
 
       it("does not read or update snapshots across tenant scopes", () => {
