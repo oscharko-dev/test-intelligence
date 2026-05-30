@@ -47,7 +47,15 @@ export const installWorkbenchAirgapNetworkBlock = () => {
   ]) {
     patchCallable(dns, name);
   }
-  for (const name of ["spawn", "exec", "execFile", "fork"]) {
+  for (const name of [
+    "spawn",
+    "spawnSync",
+    "exec",
+    "execSync",
+    "execFile",
+    "execFileSync",
+    "fork",
+  ]) {
     patchCallable(childProcess, name);
   }
 };
