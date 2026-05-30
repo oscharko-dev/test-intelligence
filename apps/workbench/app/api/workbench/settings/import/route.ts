@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import {
   importWorkbenchSettingsFromEnvContent,
   importWorkbenchSettingsFromEnvPath,
+  redactWorkbenchSettingsForClient,
 } from "@/lib/server/workbench-settings-store";
 
 export const runtime = "nodejs";
@@ -61,12 +62,16 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
     if (envPath.length > 0) {
       return settingsImportJson({
-        settings: await importWorkbenchSettingsFromEnvPath(envPath),
+        settings: redactWorkbenchSettingsForClient(
+          await importWorkbenchSettingsFromEnvPath(envPath),
+        ),
       });
     }
     if (content.trim().length > 0) {
       return settingsImportJson({
-        settings: await importWorkbenchSettingsFromEnvContent(content),
+        settings: redactWorkbenchSettingsForClient(
+          await importWorkbenchSettingsFromEnvContent(content),
+        ),
       });
     }
     return jsonError({

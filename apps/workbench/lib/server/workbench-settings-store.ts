@@ -1,14 +1,17 @@
 import {
   chmod,
+  lstat,
   mkdir,
   readFile,
+  realpath,
   rename,
   rm,
-  stat,
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
 import {
+  REDACTED_SECRET_VALUE,
+  SECRET_SETTINGS_KEYS,
   SETTINGS_BASELINE,
   SETTINGS_KEYS,
   type Settings,
@@ -115,6 +118,15 @@ const resolveWorkspaceLocalPath = (
     );
   }
   return path.join(repoRoot, normalized);
+};
+
+const isPathInside = (candidate: string, root: string): boolean => {
+  const relative = path.relative(root, candidate);
+  return (
+    relative.length > 0 &&
+    !relative.startsWith("..") &&
+    !path.isAbsolute(relative)
+  );
 };
 
 const normalizeSettings = (value: unknown): Partial<Settings> => {
@@ -286,11 +298,33 @@ export const readWorkbenchSettings = async (
   ...(await readPersistedWorkbenchSettingsOverrides(env)),
 });
 
+export const redactWorkbenchSettingsForClient = (
+  settings: Settings,
+): Settings => {
+  const projected = { ...settings };
+  for (const key of SECRET_SETTINGS_KEYS) {
+    if (
+      typeof projected[key] === "string" &&
+      projected[key].trim().length > 0
+    ) {
+      projected[key] = REDACTED_SECRET_VALUE;
+    }
+  }
+  return projected;
+};
+
 export const writeWorkbenchSettings = async (
   value: unknown,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<Settings> => {
-  const settings = { ...SETTINGS_BASELINE, ...normalizeSettings(value) };
+  const persisted = await readPersistedWorkbenchSettingsOverrides(env);
+  const normalized = normalizeSettings(value);
+  const settings = { ...SETTINGS_BASELINE, ...persisted, ...normalized };
+  for (const key of SECRET_SETTINGS_KEYS) {
+    if (normalized[key] === REDACTED_SECRET_VALUE) {
+      settings[key] = persisted[key] ?? SETTINGS_BASELINE[key];
+    }
+  }
   const filePath = settingsFilePath(env);
   const runtimeDir = path.dirname(filePath);
   const tmpFilePath = `${filePath}.tmp`;
@@ -311,7 +345,7 @@ export const writeWorkbenchSettings = async (
     await rm(tmpFilePath, { force: true });
     throw error;
   }
-  return settings;
+  return readWorkbenchSettings(env);
 };
 
 export const importWorkbenchSettingsFromEnvContent = async (
@@ -322,7 +356,10 @@ export const importWorkbenchSettingsFromEnvContent = async (
     throw new Error("Uploaded .env content is too large for Workbench import.");
   }
   const imported = settingsFromEnv(parseDotenv(content));
-  const current = await readWorkbenchSettings(env);
+  const current = {
+    ...SETTINGS_BASELINE,
+    ...(await readPersistedWorkbenchSettingsOverrides(env)),
+  };
   return writeWorkbenchSettings({ ...current, ...imported }, env);
 };
 
@@ -330,16 +367,24 @@ export const importWorkbenchSettingsFromEnvPath = async (
   filePath: string,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<Settings> => {
+  const repoRoot = resolveRepoRootFromEnv(env);
   const resolvedPath = resolveWorkspaceLocalPath(filePath, env);
-  const info = await stat(resolvedPath);
-  if (!info.isFile()) {
+  const info = await lstat(resolvedPath).catch(() => null);
+  if (info === null || !info.isFile() || info.isSymbolicLink()) {
     throw new Error("Selected .env path is not a file.");
+  }
+  const [realRepoRoot, realEnvPath] = await Promise.all([
+    realpath(repoRoot),
+    realpath(resolvedPath),
+  ]);
+  if (!isPathInside(realEnvPath, realRepoRoot)) {
+    throw new Error("Selected .env path must stay inside the workspace.");
   }
   if (info.size > MAX_IMPORT_ENV_BYTES) {
     throw new Error("Selected .env file is too large for Workbench import.");
   }
   return importWorkbenchSettingsFromEnvContent(
-    await readFile(resolvedPath, "utf8"),
+    await readFile(realEnvPath, "utf8"),
     env,
   );
 };

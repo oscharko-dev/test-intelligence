@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { lstat, readFile, realpath, stat } from "node:fs/promises";
+import { lstat, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import isPathInside from "is-path-inside";
 import {
@@ -131,26 +131,6 @@ const readFirstEnv = (
     if (value.length > 0) return value;
   }
   return undefined;
-};
-
-export const readWorkbenchRequestSettings = (
-  value: unknown,
-): Partial<Record<SettingsKey, string | boolean>> => {
-  if (typeof value !== "object" || value === null) return {};
-  const raw = value as Record<string, unknown>;
-  const out: Partial<Record<SettingsKey, string | boolean>> = {};
-  for (const key of SETTINGS_KEYS) {
-    const v = raw[key];
-    if (v === undefined) continue;
-    const baseline = SETTINGS_BASELINE[key];
-    if (v === baseline) continue;
-    if (typeof v === "string") {
-      out[key] = v;
-    } else if (typeof v === "boolean") {
-      out[key] = v;
-    }
-  }
-  return out;
 };
 
 export const mergeWorkbenchEnvWithSettings = (
@@ -503,16 +483,11 @@ const parseConfig = (value: unknown): RunConfig => {
 
 interface WorkbenchRunPayload {
   config: RunConfig;
-  settings: Partial<Record<SettingsKey, string | boolean>>;
 }
 
 const parsePayload = (body: unknown): WorkbenchRunPayload => {
   const config = parseConfig(body);
-  const settings =
-    typeof body === "object" && body !== null && "settings" in body
-      ? readWorkbenchRequestSettings((body as { settings?: unknown }).settings)
-      : {};
-  return { config, settings };
+  return { config };
 };
 
 export const prepareWorkbenchRun = async ({
@@ -527,10 +502,7 @@ export const prepareWorkbenchRun = async ({
   const parsed = parsePayload(body);
   const config = parsed.config;
   const persistedSettings = await readPersistedWorkbenchSettingsOverrides(env);
-  const requestedEnv = mergeWorkbenchEnvWithSettings(
-    mergeWorkbenchEnvWithSettings(env, persistedSettings),
-    parsed.settings,
-  );
+  const requestedEnv = mergeWorkbenchEnvWithSettings(env, persistedSettings);
   const issues: ValidationIssue[] = [];
   if (config.sourceMode === "snapshot") {
     if (
@@ -691,7 +663,14 @@ export const prepareWorkbenchRun = async ({
         message: "Custom context path must stay inside the workspace.",
       });
     }
-    const info = await stat(customContextPath).catch(() => null);
+    const info = await lstat(customContextPath).catch(() => null);
+    if (info?.isSymbolicLink()) {
+      throw new WorkbenchRunValidationError({
+        status: 400,
+        code: "CUSTOM_CONTEXT_NOT_ALLOWED",
+        message: "Custom context path must point to a workspace-local file.",
+      });
+    }
     if (info === null || !info.isFile()) {
       if (mockRunnerMode) {
         customContextMarkdown = undefined;
@@ -702,14 +681,27 @@ export const prepareWorkbenchRun = async ({
           message: "Custom context Markdown file does not exist.",
         });
       }
-    } else if (info.size > MAX_CUSTOM_CONTEXT_BYTES) {
+    }
+    if (info !== null && info.isFile() && info.size > MAX_CUSTOM_CONTEXT_BYTES) {
       throw new WorkbenchRunValidationError({
         status: 400,
         code: "CUSTOM_CONTEXT_TOO_LARGE",
         message: "Custom context Markdown exceeds the 256 KiB limit.",
       });
-    } else {
-      customContextMarkdown = await readFile(customContextPath, "utf8");
+    }
+    if (info !== null && info.isFile() && !info.isSymbolicLink()) {
+      const [realRepoRoot, realCustomContext] = await Promise.all([
+        realpath(repoRoot),
+        realpath(customContextPath),
+      ]);
+      if (!isPathInside(realCustomContext, realRepoRoot)) {
+        throw new WorkbenchRunValidationError({
+          status: 400,
+          code: "CUSTOM_CONTEXT_NOT_ALLOWED",
+          message: "Custom context path must stay inside the workspace.",
+        });
+      }
+      customContextMarkdown = await readFile(realCustomContext, "utf8");
     }
   }
 

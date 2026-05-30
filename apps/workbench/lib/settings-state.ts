@@ -61,6 +61,14 @@ export const REQUIRED_SETTINGS: readonly SettingsKey[] = [
 
 export const SETTINGS_KEYS = Object.keys(SETTINGS_BASELINE) as SettingsKey[];
 
+export const REDACTED_SECRET_VALUE = "<redacted>";
+
+export const SECRET_SETTINGS_KEYS: readonly SettingsKey[] = [
+  "TEST_INTELLIGENCE_LLM_GATEWAY_API_KEY",
+  "TEST_INTELLIGENCE_FIGMA_ACCESS_TOKEN",
+  "TEST_INTELLIGENCE_REGION_ATTESTATION_SIGNING_KEY",
+];
+
 const URL_FIELDS: readonly SettingsKey[] = [
   "TEST_INTELLIGENCE_LLM_GATEWAY_ENDPOINT",
   "TEST_INTELLIGENCE_MODEL_ENDPOINT",
