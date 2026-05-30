@@ -19,6 +19,9 @@ importers:
       '@opentelemetry/api':
         specifier: ^1.9.1
         version: 1.9.1
+      better-sqlite3:
+        specifier: ^12.10.0
+        version: 12.10.0
       lucide-react:
         specifier: ^1.16.0
         version: 1.17.0(react@19.2.6)

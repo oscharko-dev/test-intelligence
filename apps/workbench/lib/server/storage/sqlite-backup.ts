@@ -18,13 +18,52 @@
  * restore could mistake for a complete snapshot (fail-closed).
  */
 
-import { renameSync } from "node:fs";
-import { mkdirSync } from "node:fs";
+import {
+  chmodSync,
+  lstatSync,
+  mkdirSync,
+  realpathSync,
+  renameSync,
+} from "node:fs";
 import path from "node:path";
 
 import type BetterSqlite3 from "better-sqlite3";
 
 const BACKUPS_DIR_SEGMENT = "backups";
+
+const DIRECTORY_MODE_OWNER_ONLY = 0o700;
+const FILE_MODE_OWNER_READ_WRITE = 0o600;
+
+const pathIsInsideOrEqual = (candidate: string, root: string): boolean => {
+  const relative = path.relative(root, candidate);
+  return (
+    relative === "" ||
+    (!relative.startsWith("..") && !path.isAbsolute(relative))
+  );
+};
+
+const ensurePrivateBackupsDirectory = (
+  dataRoot: string,
+  backupsDir: string,
+): void => {
+  mkdirSync(backupsDir, {
+    recursive: true,
+    mode: DIRECTORY_MODE_OWNER_ONLY,
+  });
+  const info = lstatSync(backupsDir);
+  if (info.isSymbolicLink() || !info.isDirectory()) {
+    throw new Error("SQLite backup destination must be a real directory.");
+  }
+  chmodSync(backupsDir, DIRECTORY_MODE_OWNER_ONLY);
+
+  const realDataRoot = realpathSync(dataRoot);
+  const realBackupsDir = realpathSync(backupsDir);
+  if (!pathIsInsideOrEqual(realBackupsDir, realDataRoot)) {
+    throw new Error(
+      "SQLite backup destination must remain inside the data root.",
+    );
+  }
+};
 
 /**
  * Replaces filesystem-hostile characters in an ISO timestamp (`:` and `.`) with
@@ -60,8 +99,9 @@ export const writePreMigrationBackup = (
 ): string => {
   const { db, databaseFile, fromVersion, toVersion } = params;
   const now = params.now ?? new Date();
-  const backupsDir = path.join(path.dirname(databaseFile), BACKUPS_DIR_SEGMENT);
-  mkdirSync(backupsDir, { recursive: true });
+  const dataRoot = path.dirname(databaseFile);
+  const backupsDir = path.join(dataRoot, BACKUPS_DIR_SEGMENT);
+  ensurePrivateBackupsDirectory(dataRoot, backupsDir);
 
   const finalPath = path.join(
     backupsDir,
@@ -72,6 +112,8 @@ export const writePreMigrationBackup = (
   // Parameter binding is supported for VACUUM INTO on this SQLite build, so the
   // path is never interpolated (no injection surface).
   db.prepare("VACUUM INTO ?").run(tempPath);
+  chmodSync(tempPath, FILE_MODE_OWNER_READ_WRITE);
   renameSync(tempPath, finalPath);
+  chmodSync(finalPath, FILE_MODE_OWNER_READ_WRITE);
   return finalPath;
 };

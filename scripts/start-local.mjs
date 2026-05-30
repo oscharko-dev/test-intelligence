@@ -192,7 +192,7 @@ const ensureNodeModules = async (env) => {
   );
 
   if (hasRootModules && hasWorkbenchModules) {
-    return;
+    return false;
   }
 
   process.stdout.write(
@@ -205,6 +205,21 @@ const ensureNodeModules = async (env) => {
   });
   if (install.status !== 0) {
     throw new Error("pnpm install failed.");
+  }
+  return true;
+};
+
+const rebuildNativeDependencies = (env) => {
+  process.stdout.write(
+    "[local-start] Rebuilding native SQLite dependency after install.\n",
+  );
+  const rebuild = spawnSync("pnpm", ["rebuild", "better-sqlite3"], {
+    cwd: repoRoot,
+    env,
+    stdio: "inherit",
+  });
+  if (rebuild.status !== 0) {
+    throw new Error("pnpm rebuild better-sqlite3 failed.");
   }
 };
 
@@ -275,7 +290,9 @@ const main = async () => {
     env.WORKBENCH_RUNNER_MODE = "mock";
   }
 
-  await ensureNodeModules(env);
+  if (await ensureNodeModules(env)) {
+    rebuildNativeDependencies(env);
+  }
   await ensureFrontendBuilt(env);
 
   const command = options.mode === "prod" ? "start" : "dev";

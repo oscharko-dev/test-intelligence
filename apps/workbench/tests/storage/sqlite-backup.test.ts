@@ -2,10 +2,13 @@
 import {
   chmodSync,
   existsSync,
-  mkdirSync,
+  lstatSync,
   mkdtempSync,
   readdirSync,
   rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -53,9 +56,13 @@ const userVersionOf = (databaseFile: string): number => {
 const backupsDirOf = (databaseFile: string): string =>
   path.join(path.dirname(databaseFile), "backups");
 
+const modeOf = (filePath: string): number => statSync(filePath).mode & 0o777;
+
 const listBackups = (databaseFile: string): readonly string[] => {
   const dir = backupsDirOf(databaseFile);
-  return existsSync(dir) ? readdirSync(dir) : [];
+  return existsSync(dir) && lstatSync(dir).isDirectory()
+    ? readdirSync(dir)
+    : [];
 };
 
 describe("SqliteWorkbenchStorageAdapter pre-migration backup", () => {
@@ -68,7 +75,9 @@ describe("SqliteWorkbenchStorageAdapter pre-migration backup", () => {
   afterEach(() => {
     // Restore writability so cleanup never fails on the un-writable-dir case.
     const backups = path.join(tempDir, "backups");
-    if (existsSync(backups)) chmodSync(backups, 0o755);
+    if (existsSync(backups) && !lstatSync(backups).isSymbolicLink()) {
+      chmodSync(backups, 0o755);
+    }
     rmSync(tempDir, { recursive: true, force: true });
   });
 
@@ -98,6 +107,29 @@ describe("SqliteWorkbenchStorageAdapter pre-migration backup", () => {
     expect(readMarker(backupFile)).toBe(seeded);
     // And the live DB advanced.
     expect(userVersionOf(file)).toBe(2);
+  });
+
+  it("writes backups with private directory and file permissions", () => {
+    const file = path.join(tempDir, "private.db");
+    const first = createSqliteWorkbenchStorageAdapter({
+      databaseFile: file,
+      migrations: [noopMigration(1)],
+    });
+    first.migrateToLatest();
+    first.close();
+    seedMarkerRow(file);
+
+    const second = createSqliteWorkbenchStorageAdapter({
+      databaseFile: file,
+      migrations: [noopMigration(1), noopMigration(2)],
+    });
+    second.migrateToLatest();
+    second.close();
+
+    const backups = listBackups(file);
+    expect(backups).toHaveLength(1);
+    expect(modeOf(backupsDirOf(file))).toBe(0o700);
+    expect(modeOf(path.join(backupsDirOf(file), backups[0] ?? ""))).toBe(0o600);
   });
 
   it("takes NO backup on a fresh v0 -> v1 first-time migration", () => {
@@ -162,11 +194,10 @@ describe("SqliteWorkbenchStorageAdapter pre-migration backup", () => {
     first.close();
     const seeded = seedMarkerRow(file);
 
-    // Pre-create backups/ and remove write permission so VACUUM INTO cannot
-    // place its temp file: the backup step must fail before the migration runs.
+    // Pre-create backups as a file so backup-directory validation fails before
+    // the migration runs.
     const backups = backupsDirOf(file);
-    mkdirSync(backups, { recursive: true });
-    chmodSync(backups, 0o500);
+    writeFileSync(backups, "not-a-directory", "utf8");
 
     // WHY v2 is a pure noop: it would succeed on its own, so the ONLY thing that
     // can keep user_version at 1 is the backup throwing first. If the backup were
@@ -178,13 +209,78 @@ describe("SqliteWorkbenchStorageAdapter pre-migration backup", () => {
     expect(() => second.migrateToLatest()).toThrow();
     second.close();
 
-    chmodSync(backups, 0o755);
     // The source DB must be untouched: version still 1, original row intact.
     expect(userVersionOf(file)).toBe(1);
     expect(readMarker(file)).toBe(seeded);
     // No valid backup file was left behind that a restore could mistake for a
     // complete snapshot.
     expect(listBackups(file).filter((n) => n.endsWith(".db"))).toHaveLength(0);
+  });
+
+  it("fails closed when backups/ is a symlink outside the data root", () => {
+    const file = path.join(tempDir, "symlink.db");
+    const first = createSqliteWorkbenchStorageAdapter({
+      databaseFile: file,
+      migrations: [noopMigration(1)],
+    });
+    first.migrateToLatest();
+    first.close();
+    const seeded = seedMarkerRow(file);
+
+    const outsideDir = mkdtempSync(path.join(tmpdir(), "ti-sqlite-outside-"));
+    symlinkSync(outsideDir, backupsDirOf(file), "dir");
+    try {
+      const second = createSqliteWorkbenchStorageAdapter({
+        databaseFile: file,
+        migrations: [noopMigration(1), noopMigration(2)],
+      });
+      expect(() => second.migrateToLatest()).toThrow();
+      second.close();
+
+      expect(userVersionOf(file)).toBe(1);
+      expect(readMarker(file)).toBe(seeded);
+      expect(
+        readdirSync(outsideDir).filter((n) => n.endsWith(".db")),
+      ).toHaveLength(0);
+    } finally {
+      rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  it("captures pre-migration rows while WAL mode has an open connection", () => {
+    const file = path.join(tempDir, "wal.db");
+    const first = createSqliteWorkbenchStorageAdapter({
+      databaseFile: file,
+      migrations: [noopMigration(1)],
+    });
+    first.migrateToLatest();
+    first.close();
+
+    const raw = new BetterSqlite3(file);
+    try {
+      raw.pragma("journal_mode = WAL");
+      raw.exec(
+        "CREATE TABLE IF NOT EXISTS seed_marker (id TEXT PRIMARY KEY, value TEXT NOT NULL)",
+      );
+      raw
+        .prepare("INSERT INTO seed_marker (id, value) VALUES (?, ?)")
+        .run("row-1", "wal-pre-migration-data");
+
+      const second = createSqliteWorkbenchStorageAdapter({
+        databaseFile: file,
+        migrations: [noopMigration(1), noopMigration(2)],
+      });
+      expect(second.migrateToLatest()).toBe(2);
+      second.close();
+    } finally {
+      raw.close();
+    }
+
+    const backups = listBackups(file);
+    expect(backups).toHaveLength(1);
+    expect(readMarker(path.join(backupsDirOf(file), backups[0] ?? ""))).toBe(
+      "wal-pre-migration-data",
+    );
   });
 
   it("writes the backup atomically (no leftover temp on success)", () => {

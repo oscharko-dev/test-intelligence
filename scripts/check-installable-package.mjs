@@ -17,6 +17,12 @@ const fail = (message) => {
 const manifest = JSON.parse(
   await readFile(path.join(repoRoot, "package.json"), "utf8"),
 );
+const betterSqlite3Version = manifest.dependencies?.["better-sqlite3"];
+if (typeof betterSqlite3Version !== "string" || betterSqlite3Version === "") {
+  fail(
+    "Published package must declare dependencies.better-sqlite3 for the bundled Workbench server.",
+  );
+}
 
 const collectFiles = async (dir) => {
   const entries = await readdir(dir, { withFileTypes: true });
@@ -73,6 +79,20 @@ for (const required of [
   if (!files.has(required)) {
     fail(`npm pack output is missing ${required}.`);
   }
+}
+
+const workbenchManifest = JSON.parse(
+  await readFile(
+    path.join(repoRoot, "dist", "workbench", "package.json"),
+    "utf8",
+  ),
+);
+if (
+  workbenchManifest.dependencies?.["better-sqlite3"] !== betterSqlite3Version
+) {
+  fail(
+    "dist/workbench/package.json must carry the same better-sqlite3 runtime dependency as the published package.",
+  );
 }
 
 const workbenchServerDir = path.join(

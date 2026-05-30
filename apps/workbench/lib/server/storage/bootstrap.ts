@@ -16,7 +16,7 @@
  * Server-only callers import it directly from `@/lib/server/storage/bootstrap`.
  */
 
-import { mkdirSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync } from "node:fs";
 import path from "node:path";
 
 import { resolveWorkbenchStoragePaths } from "./db-path";
@@ -72,6 +72,29 @@ const resolvePaths = (
   return paths;
 };
 
+const ensurePrivateStorageDirectory = (directory: string): void => {
+  if (existsSync(directory)) {
+    const entry = lstatSync(directory);
+    if (!entry.isDirectory() || entry.isSymbolicLink()) {
+      throw new WorkbenchStorageError(
+        "STORAGE_PATH_INVALID",
+        "Workbench storage directories must be real directories.",
+      );
+    }
+  } else {
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+  }
+
+  const created = lstatSync(directory);
+  if (!created.isDirectory() || created.isSymbolicLink()) {
+    throw new WorkbenchStorageError(
+      "STORAGE_PATH_INVALID",
+      "Workbench storage directories must be real directories.",
+    );
+  }
+  chmodSync(directory, 0o700);
+};
+
 /**
  * Bootstraps the local SQLite store. Creates required directories, opens the
  * database, and migrates to the latest schema. On migration failure the handle
@@ -84,8 +107,9 @@ export const bootstrapWorkbenchStorage = (
   let adapter: WorkbenchStorageAdapter | undefined;
   try {
     // Create directories only; existing database and artifact files are preserved.
-    mkdirSync(path.dirname(paths.databaseFile), { recursive: true });
-    mkdirSync(paths.artifactRoot, { recursive: true });
+    const dataRoot = path.dirname(paths.databaseFile);
+    ensurePrivateStorageDirectory(dataRoot);
+    ensurePrivateStorageDirectory(paths.artifactRoot);
 
     adapter = createDeferredSqliteWorkbenchStorageAdapter({
       databaseFile: paths.databaseFile,
@@ -99,7 +123,8 @@ export const bootstrapWorkbenchStorage = (
     adapter?.close();
     if (
       cause instanceof WorkbenchStorageError &&
-      cause.code === "SCHEMA_VERSION_UNSUPPORTED"
+      (cause.code === "SCHEMA_VERSION_UNSUPPORTED" ||
+        cause.code === "STORAGE_PATH_INVALID")
     ) {
       throw cause;
     }

@@ -5,8 +5,8 @@
  * It proves that the local SQLite persistence layer functions with NO network
  * access, using the already-installed/prebuilt native `better-sqlite3` binary:
  *
- *   1. Hard-blocks all outbound network (fetch + node:net/http/https). Any
- *      attempt to open a socket throws, so a hidden egress fails the run.
+ *   1. Hard-blocks network and subprocess access before storage imports. Any
+ *      hidden egress or spawned helper fails the run.
  *   2. Bootstraps the storage into a fresh temp data root (WORKBENCH_REPO_ROOT).
  *      Loading the adapter resolves the native binary offline.
  *   3. Persists a run row + artifact metadata, closes, re-bootstraps from the
@@ -18,35 +18,18 @@
  * runtime chain), so `tsx` can load `bootstrap.ts` by file path with no bundler.
  */
 
+import "./workbench-airgap-network-block.mjs";
+
 import { mkdtempSync, rmSync } from "node:fs";
-import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const FAILURE = "[workbench-airgap] FAILED";
 const SUCCESS = "[workbench-airgap] ok";
-
-/**
- * Installs hard network kill-switches. WHY: the airgap guarantee is "touches
- * zero network", so any socket/fetch attempt must throw rather than silently
- * succeed on a connected dev machine.
- */
-const blockNetwork = (): void => {
-  const blocked = (): never => {
-    throw new Error("Network access is forbidden in the airgap round-trip.");
-  };
-  globalThis.fetch = blocked as unknown as typeof fetch;
-  // Permanently block outbound socket connects (no restore — the process is the
-  // airgap sandbox), so any hidden egress in the storage layer throws.
-  net.Socket.prototype.connect = function patchedConnect(): net.Socket {
-    throw new Error("Outbound socket connect is forbidden in airgap mode.");
-  } as typeof net.Socket.prototype.connect;
-};
+const TENANT_SCOPE = "airgap/local/check";
 
 const main = async (): Promise<void> => {
-  blockNetwork();
-
   const dataRoot = mkdtempSync(path.join(tmpdir(), "ti-wb-airgap-"));
   process.env.WORKBENCH_REPO_ROOT = dataRoot;
   process.env.NODE_ENV = "test";
@@ -63,17 +46,30 @@ const main = async (): Promise<void> => {
       "storage",
       "bootstrap.ts",
     );
-    const { bootstrapWorkbenchStorage } = (await import(bootstrapModulePath)) as {
-      bootstrapWorkbenchStorage: (options?: {
-        env?: NodeJS.ProcessEnv;
-      }) => {
+    const dbPathModulePath = path.join(
+      scriptDir,
+      "..",
+      "apps",
+      "workbench",
+      "lib",
+      "server",
+      "storage",
+      "db-path.ts",
+    );
+    const { bootstrapWorkbenchStorage } = (await import(
+      bootstrapModulePath
+    )) as {
+      bootstrapWorkbenchStorage: (options?: { env?: NodeJS.ProcessEnv }) => {
         runs: {
           create: (input: {
             tenantScope: string;
             status: string;
             label?: string;
           }) => { id: string };
-          get: (id: string) => { id: string; label?: string } | undefined;
+          get: (
+            id: string,
+            tenantScope: string,
+          ) => { id: string; label?: string } | undefined;
         };
         artifacts: {
           create: (input: {
@@ -84,7 +80,7 @@ const main = async (): Promise<void> => {
             content: { sha256: string; byteSize: number; storageRef: string };
             customerFacing: boolean;
           }) => { id: string };
-          list: (filter: { runId: string }) => readonly {
+          list: (filter: { runId: string; tenantScope: string }) => readonly {
             name: string;
             content: { sha256: string };
           }[];
@@ -92,29 +88,35 @@ const main = async (): Promise<void> => {
         close: () => void;
       };
     };
+    const { artifactStorageRef } = (await import(dbPathModulePath)) as {
+      artifactStorageRef: (sha256Hex: string) => string;
+    };
 
     const env = { ...process.env, WORKBENCH_REPO_ROOT: dataRoot };
     const first = bootstrapWorkbenchStorage({ env });
     const run = first.runs.create({
-      tenantScope: "airgap/local/check",
+      tenantScope: TENANT_SCOPE,
       status: "sealed",
       label: "airgap-roundtrip",
     });
     const sha256 = "c".repeat(64);
     first.artifacts.create({
       runId: run.id,
-      tenantScope: "airgap/local/check",
+      tenantScope: TENANT_SCOPE,
       name: "airgap-evidence.json",
       kind: "json",
-      content: { sha256, byteSize: 11, storageRef: "cc/cc/x.bin" },
+      content: { sha256, byteSize: 11, storageRef: artifactStorageRef(sha256) },
       customerFacing: false,
     });
     first.close();
 
     // Reopen from the SAME on-disk root: durability proof.
     const second = bootstrapWorkbenchStorage({ env });
-    const restoredRun = second.runs.get(run.id);
-    const restoredArtifacts = second.artifacts.list({ runId: run.id });
+    const restoredRun = second.runs.get(run.id, TENANT_SCOPE);
+    const restoredArtifacts = second.artifacts.list({
+      runId: run.id,
+      tenantScope: TENANT_SCOPE,
+    });
     second.close();
 
     if (restoredRun?.label !== "airgap-roundtrip") {

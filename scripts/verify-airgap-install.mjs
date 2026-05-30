@@ -26,7 +26,16 @@
  *     `start` subcommand (see Issue #30 spec).
  */
 
-import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
@@ -55,9 +64,10 @@ const parseArgs = () => {
   return { tarballPath };
 };
 
-const resolveCommandEnv = () => {
+const resolveCommandEnv = (overrides = {}) => {
   const env = {
     ...process.env,
+    ...overrides,
     npm_config_audit: "false",
     npm_config_fund: "false",
   };
@@ -66,11 +76,11 @@ const resolveCommandEnv = () => {
   return env;
 };
 
-const run = ({ command, args, cwd }) =>
+const run = ({ command, args, cwd, env = {} }) =>
   new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd,
-      env: resolveCommandEnv(),
+      env: resolveCommandEnv(env),
       stdio: "inherit",
     });
     child.once("error", reject);
@@ -215,6 +225,126 @@ const findSingleTarball = async (dir) => {
   return path.join(dir, tgz[0]);
 };
 
+const readJsonFile = async (filePath) =>
+  JSON.parse(await readFile(filePath, "utf8"));
+
+const resolveInstalledPackageDir = async (name, fromDir) => {
+  const requireFrom = createRequire(path.join(fromDir, "package.json"));
+  try {
+    return path.dirname(requireFrom.resolve(`${name}/package.json`));
+  } catch (error) {
+    if (error?.code !== "ERR_PACKAGE_PATH_NOT_EXPORTED") {
+      throw error;
+    }
+  }
+
+  const entrypoint = requireFrom.resolve(name);
+  let dir = path.dirname(entrypoint);
+
+  while (true) {
+    try {
+      const manifest = await readJsonFile(path.join(dir, "package.json"));
+      if (manifest.name === name) return dir;
+    } catch {
+      // Keep walking toward the package root.
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) {
+      throw new Error(`Could not locate package root for '${name}'.`);
+    }
+    dir = parent;
+  }
+};
+
+const collectInstalledRuntimePackageDirs = async () => {
+  const rootManifest = await readJsonFile(
+    path.join(packageRoot, "package.json"),
+  );
+  const queue = Object.keys(rootManifest.dependencies ?? {}).map((name) => ({
+    fromDir: packageRoot,
+    name,
+    optional: false,
+  }));
+  const packageDirs = new Map();
+
+  while (queue.length > 0) {
+    const entry = queue.shift();
+    if (entry === undefined) break;
+
+    let packageDir;
+    try {
+      packageDir = await realpath(
+        await resolveInstalledPackageDir(entry.name, entry.fromDir),
+      );
+    } catch (error) {
+      if (entry.optional) continue;
+      throw new Error(
+        `Runtime dependency '${entry.name}' is not installed; run pnpm install before the airgap verifier.`,
+        { cause: error },
+      );
+    }
+
+    if (packageDirs.has(packageDir)) continue;
+    const manifest = await readJsonFile(path.join(packageDir, "package.json"));
+    packageDirs.set(packageDir, manifest);
+
+    for (const name of Object.keys(manifest.dependencies ?? {})) {
+      queue.push({ fromDir: packageDir, name, optional: false });
+    }
+    for (const name of Object.keys(manifest.optionalDependencies ?? {})) {
+      queue.push({ fromDir: packageDir, name, optional: true });
+    }
+  }
+
+  return [...packageDirs.keys()].sort();
+};
+
+const runQuiet = ({ command, args, cwd, env = {} }) => {
+  const result = spawnSync(command, args, {
+    cwd,
+    encoding: "utf8",
+    env: resolveCommandEnv(env),
+  });
+  if (result.status !== 0) {
+    throw new Error(
+      `Command failed with exit code ${result.status ?? 1}: ${command} ${args.join(" ")}\n${result.stderr || result.stdout}`,
+    );
+  }
+  return result.stdout;
+};
+
+const packInstalledRuntimeDeps = async ({ seedDir }) => {
+  const packageDirs = await collectInstalledRuntimePackageDirs();
+  await mkdir(seedDir, { recursive: true });
+  const tarballs = [];
+
+  for (const packageDir of packageDirs) {
+    const raw = runQuiet({
+      command: "npm",
+      args: [
+        "pack",
+        "--ignore-scripts",
+        "--json",
+        "--pack-destination",
+        seedDir,
+        packageDir,
+      ],
+      cwd: packageRoot,
+    });
+    const packed = JSON.parse(raw);
+    const filename = packed[0]?.filename;
+    if (typeof filename !== "string" || filename.length === 0) {
+      throw new Error(`npm pack did not report a tarball for ${packageDir}.`);
+    }
+    tarballs.push(path.join(seedDir, filename));
+  }
+
+  process.stdout.write(
+    `[airgap] Prepared ${packageDirs.length} local runtime package tarball(s).\n`,
+  );
+  return tarballs.sort();
+};
+
 const main = async () => {
   const { tarballPath: providedTarball } = parseArgs();
   const tmpRoot = await mkdtemp(
@@ -222,6 +352,7 @@ const main = async () => {
   );
   const packDir = path.join(tmpRoot, "pack");
   const installDir = path.join(tmpRoot, "install");
+  const seedDir = path.join(tmpRoot, "seed");
   let serverChild;
   const serverOutput = createBoundedOutput();
 
@@ -254,9 +385,17 @@ const main = async () => {
       "utf8",
     );
 
+    const runtimeTarballs = await packInstalledRuntimeDeps({ seedDir });
+
     await run({
       command: "npm",
-      args: ["install", "--offline", "--ignore-scripts", tarball],
+      args: [
+        "install",
+        "--offline",
+        "--ignore-scripts",
+        tarball,
+        ...runtimeTarballs,
+      ],
       cwd: installDir,
     });
 
