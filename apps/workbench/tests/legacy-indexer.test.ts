@@ -388,6 +388,37 @@ describe("workbench legacy indexer (Issue #54)", () => {
     );
   });
 
+  // Regression guard for Copilot finding on PR #69: the workbench's default UI
+  // launch paths write to `<repoRoot>/.test-intelligence/local-testcases/<batch>`
+  // (RunsForm.tsx placeholder, RunsScreen.tsx seed-demo `outputDir`, and the
+  // SnapshotVaultScreen "Generate from selection" launcher). A normal install
+  // with `WORKBENCH_OUTPUT_ROOTS` unset must still surface these legacy runs.
+  it("surfaces legacy runs under the default `.test-intelligence/local-testcases` even when WORKBENCH_OUTPUT_ROOTS is unset", async () => {
+    const env = envFor(repoRoot);
+    expect(env.WORKBENCH_OUTPUT_ROOTS).toBeUndefined();
+    const defaultRunDir = path.join(
+      repoRoot,
+      ".test-intelligence",
+      "local-testcases",
+      "ti-workbench-default-1",
+    );
+    await mkdir(defaultRunDir, { recursive: true });
+    await writeFile(
+      path.join(defaultRunDir, "generated-testcases.json"),
+      JSON.stringify([{ id: "tc-1", title: "Default" }]),
+      "utf8",
+    );
+
+    const summary = await indexLegacyArtifacts({ env });
+
+    expect(getLegacyClassification("run", "ti-workbench-default-1")).toBe(
+      "legacy-read-only",
+    );
+    expect(summary.runs.map((r) => r.id)).toContain("ti-workbench-default-1");
+    // Still never fabricates a runs row (AC#1 boundary preserved).
+    expect(getWorkbenchStorage({ env }).runs.list()).toHaveLength(0);
+  });
+
   it("excludes a run folder whose artifactDir already matches a persisted runs row", async () => {
     const env = envFor(repoRoot, {
       WORKBENCH_OUTPUT_ROOTS: ".test-intelligence/local-testcases",

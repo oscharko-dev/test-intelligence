@@ -71,6 +71,22 @@ export const discoverLegacySnapshotFolders = async (
   return out;
 };
 
+const LEGACY_DEFAULT_OUTPUT_SEGMENT = path.join(
+  ".test-intelligence",
+  "local-testcases",
+);
+
+/**
+ * WHY the default segment is always scanned: the workbench's UI launch paths
+ * write to `<repoRoot>/.test-intelligence/local-testcases/<batch>` by default
+ * (RunsForm.tsx placeholder, RunsScreen.tsx seed-demo `outputDir`, and the
+ * SnapshotVaultScreen "Generate from selection" launcher). A normal install
+ * without `WORKBENCH_OUTPUT_ROOTS` set would otherwise leave these valid legacy
+ * outputs invisible to the indexer; pre-pending the default segment keeps
+ * configured roots strictly additive while closing that gap. Duplicates (e.g.
+ * an operator who also lists the default in `WORKBENCH_OUTPUT_ROOTS`) are
+ * deduped on the resolved absolute path so a folder is never surfaced twice.
+ */
 const resolveLegacyOutputRoots = (
   env: NodeJS.ProcessEnv,
 ): readonly string[] => {
@@ -79,7 +95,17 @@ const resolveLegacyOutputRoots = (
     env.WORKBENCH_OUTPUT_ROOTS?.split(",")
       .map((entry) => entry.trim())
       .filter(Boolean) ?? [];
-  return configured.map((entry) => path.resolve(repoRoot, entry));
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const candidate of [
+    path.join(repoRoot, LEGACY_DEFAULT_OUTPUT_SEGMENT),
+    ...configured.map((entry) => path.resolve(repoRoot, entry)),
+  ]) {
+    if (seen.has(candidate)) continue;
+    seen.add(candidate);
+    out.push(candidate);
+  }
+  return out;
 };
 
 export const discoverLegacyRunFolders = async (
