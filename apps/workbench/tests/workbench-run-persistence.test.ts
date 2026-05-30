@@ -169,6 +169,46 @@ describe("Workbench run persistence (Issue #53)", () => {
     expect(restored?.outputRoot).toBeUndefined();
   });
 
+  it("rebuilds the SQLite artifacts-table rows from disk after a restart (AC#4)", async () => {
+    const env = envFor(repoRoot);
+    await startSealedRun(env);
+
+    const rowBefore = getWorkbenchStorage().runs.list()[0];
+    if (rowBefore === undefined) throw new Error("expected a persisted row");
+    const artifactsBefore = getWorkbenchStorage()
+      .artifacts.list({ runId: rowBefore.id })
+      .map((a) => ({
+        name: a.name,
+        kind: a.kind,
+        sha256: a.content.sha256,
+        customerFacing: a.customerFacing,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    expect(artifactsBefore.length).toBeGreaterThan(10);
+
+    // Restart: drop the storage singleton so the next read rebuilds the
+    // adapter from the on-disk SQLite file, not from memory.
+    resetWorkbenchStorageForTests();
+
+    const rowAfter = getWorkbenchStorage({ env }).runs.list()[0];
+    if (rowAfter === undefined)
+      throw new Error("expected the runs row to survive the restart");
+    const artifactsAfter = getWorkbenchStorage()
+      .artifacts.list({ runId: rowAfter.id })
+      .map((a) => ({
+        name: a.name,
+        kind: a.kind,
+        sha256: a.content.sha256,
+        customerFacing: a.customerFacing,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    // The artifacts-table rows are durable: same id keys the same set, and the
+    // full metadata (name, kind, content hash, customer-facing flag) round-trips.
+    expect(rowAfter.id).toBe(rowBefore.id);
+    expect(artifactsAfter).toEqual(artifactsBefore);
+  });
+
   it("reports a deleted artifact as missing without throwing (AC#4)", async () => {
     const env = envFor(repoRoot);
     await startSealedRun(env);

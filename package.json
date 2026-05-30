@@ -101,6 +101,7 @@
     "sbom:spdx": "node scripts/generate-spdx.mjs",
     "test:airgap-smoke": "node scripts/run-airgap-smoke.mjs",
     "test:airgap-install": "node scripts/verify-airgap-install.mjs",
+    "test:workbench-airgap": "node scripts/verify-workbench-airgap.mjs",
     "test:fips-smoke": "node scripts/fips-smoke.mjs",
     "release:check": "node scripts/release-readiness.mjs",
     "prepare": "git config core.hooksPath .githooks"
