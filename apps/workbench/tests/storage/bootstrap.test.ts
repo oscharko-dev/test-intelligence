@@ -18,8 +18,10 @@ import type { WorkbenchMigration } from "@/lib/server/storage";
 import {
   bootstrapWorkbenchStorage,
   getWorkbenchStorage,
+  getWorkbenchStoragePaths,
   resetWorkbenchStorageForTests,
 } from "@/lib/server/storage/bootstrap";
+import { resolveWorkbenchStoragePaths } from "@/lib/server/storage/db-path";
 import { WORKBENCH_SCHEMA_TABLES } from "@/lib/server/storage/sqlite-schema";
 
 const readUserVersion = (file: string): number => {
@@ -177,5 +179,81 @@ describe("getWorkbenchStorage singleton", () => {
     const first = getWorkbenchStorage({ databaseFile, artifactRoot });
     const second = getWorkbenchStorage({ databaseFile, artifactRoot });
     expect(second).toBe(first);
+  });
+
+  it("exposes the resolved paths the singleton was bootstrapped with", () => {
+    const databaseFile = path.join(root, "db", "workbench.db");
+    const artifactRoot = path.join(root, "storage-artifacts");
+    getWorkbenchStorage({ databaseFile, artifactRoot });
+    expect(getWorkbenchStoragePaths({ databaseFile, artifactRoot })).toEqual({
+      databaseFile,
+      artifactRoot,
+    });
+  });
+});
+
+describe("getWorkbenchStoragePaths binds one root for content store + adapter", () => {
+  const envFor = (repoRoot: string): NodeJS.ProcessEnv => ({
+    NODE_ENV: "test",
+    WORKBENCH_REPO_ROOT: repoRoot,
+  });
+
+  let firstRoot: string;
+  let secondRoot: string;
+  let previousRepoRoot: string | undefined;
+
+  beforeEach(() => {
+    firstRoot = path.join(tmpdir(), `ti-paths-first-${randomUUID()}`);
+    secondRoot = path.join(tmpdir(), `ti-paths-second-${randomUUID()}`);
+    previousRepoRoot = process.env.WORKBENCH_REPO_ROOT;
+    resetWorkbenchStorageForTests();
+  });
+
+  afterEach(() => {
+    resetWorkbenchStorageForTests();
+    if (previousRepoRoot === undefined) {
+      delete process.env.WORKBENCH_REPO_ROOT;
+    } else {
+      process.env.WORKBENCH_REPO_ROOT = previousRepoRoot;
+    }
+    rmSync(firstRoot, { recursive: true, force: true });
+    rmSync(secondRoot, { recursive: true, force: true });
+  });
+
+  it("bootstraps on first call and returns the env-resolved paths", () => {
+    const env = envFor(firstRoot);
+    // Paths getter alone must bootstrap the singleton (no prior getWorkbenchStorage).
+    const paths = getWorkbenchStoragePaths({ env });
+    expect(paths).toEqual(resolveWorkbenchStoragePaths(env));
+    expect(existsSync(paths.databaseFile)).toBe(true);
+  });
+
+  it("ignores a divergent env on a later call, matching the adapter's single bind", () => {
+    const firstEnv = envFor(firstRoot);
+    const firstAdapter = getWorkbenchStorage({ env: firstEnv });
+    const boundPaths = getWorkbenchStoragePaths({ env: firstEnv });
+
+    // A later call with a DIFFERENT root must return the SAME (first-bound) paths
+    // and the SAME adapter, so artifact bytes and metadata rows never diverge.
+    const secondEnv = envFor(secondRoot);
+    expect(getWorkbenchStoragePaths({ env: secondEnv })).toEqual(boundPaths);
+    expect(getWorkbenchStorage({ env: secondEnv })).toBe(firstAdapter);
+    expect(boundPaths).toEqual(resolveWorkbenchStoragePaths(firstEnv));
+    // The divergent second root was never even created.
+    expect(existsSync(path.join(secondRoot, ".test-intelligence"))).toBe(false);
+  });
+
+  it("clears the cached paths on reset so a new root can bind", () => {
+    const firstEnv = envFor(firstRoot);
+    expect(getWorkbenchStoragePaths({ env: firstEnv })).toEqual(
+      resolveWorkbenchStoragePaths(firstEnv),
+    );
+
+    resetWorkbenchStorageForTests();
+
+    const secondEnv = envFor(secondRoot);
+    expect(getWorkbenchStoragePaths({ env: secondEnv })).toEqual(
+      resolveWorkbenchStoragePaths(secondEnv),
+    );
   });
 });

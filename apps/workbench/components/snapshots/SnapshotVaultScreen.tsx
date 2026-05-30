@@ -817,6 +817,9 @@ function CatalogPanel({
                   <span className="min-w-0 flex-1 break-all font-mono text-xs text-fg-default">
                     {snapshot.snapshotId}
                   </span>
+                  {snapshot.legacyReadOnly === true && (
+                    <Badge variant="warn">Legacy (read-only)</Badge>
+                  )}
                   <Badge variant="neutral">{snapshot.cacheState}</Badge>
                 </div>
                 <div className="grid grid-cols-3 gap-2 font-mono text-[11px] text-fg-muted">

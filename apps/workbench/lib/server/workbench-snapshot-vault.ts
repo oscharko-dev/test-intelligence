@@ -63,6 +63,7 @@ import {
   resolvePersistedSummaryForSnapshot,
   synthesizePersistedCatalogRow,
 } from "./workbench-snapshot-persistence";
+import { getLegacyClassification } from "./workbench-legacy-indexer";
 
 const SNAPSHOT_ROOT_SEGMENT = ".test-intelligence";
 const SNAPSHOT_DIRNAME = "figma-snapshots";
@@ -162,17 +163,32 @@ export const listWorkbenchSnapshots = async (
     storageEnvForRepoRoot(resolveRepoRoot(env)),
     formatWorkbenchTenantScope(resolveWorkbenchTenantScope(env)),
   );
-  const diskRows = artifacts.map((snapshot) => ({
-    ...toCatalogRow(snapshot),
-    persistedNodeIndex: resolvePersistedSummaryForSnapshot(
-      persisted,
-      snapshot.manifest.snapshotId,
-    ),
-  }));
+  const diskRows = artifacts.map((snapshot) => {
+    const row: WorkbenchSnapshotCatalogRow = {
+      ...toCatalogRow(snapshot),
+      persistedNodeIndex: resolvePersistedSummaryForSnapshot(
+        persisted,
+        snapshot.manifest.snapshotId,
+      ),
+    };
+    // WHY only set the flag when explicitly classified legacy-read-only: rows
+    // that the #54 indexer marked `indexed`/`already-indexed` are first-class
+    // editable; rows the indexer never saw must render byte-identical to today.
+    return getLegacyClassification("snapshot", snapshot.manifest.snapshotId) ===
+      "legacy-read-only"
+      ? { ...row, legacyReadOnly: true }
+      : row;
+  });
   const onDisk = new Set(diskRows.map((row) => row.snapshotId));
   const persistedOnly = [...persisted.bySnapshotId.values()]
     .filter((record) => !onDisk.has(record.source))
-    .map((record) => synthesizePersistedCatalogRow(persisted, record));
+    .map((record) => {
+      const row = synthesizePersistedCatalogRow(persisted, record);
+      return getLegacyClassification("snapshot", record.source) ===
+        "legacy-read-only"
+        ? { ...row, legacyReadOnly: true }
+        : row;
+    });
   return [...diskRows, ...persistedOnly].sort((a, b) => {
     const byTime = b.importedAt.localeCompare(a.importedAt);
     return byTime === 0 ? a.snapshotId.localeCompare(b.snapshotId) : byTime;
@@ -701,7 +717,17 @@ const readSnapshotArtifacts = async (
   return matches[0]!;
 };
 
-const readArtifactsAtVaultPath = async (
+/**
+ * Validates the snapshot artifact triple at `vaultPath` (manifest, node-index,
+ * import-status; preview-manifest optional) and cross-checks identity + digests
+ * across files. Returns the parsed artifacts on success; throws
+ * `WorkbenchSnapshotVaultError` on missing/forbidden/corrupt/mismatched input.
+ *
+ * Exported for the legacy indexer (Issue #54) so it can classify pre-persistence
+ * disk artifacts using the SAME validator the live disk vault uses, without
+ * duplicating cross-validation logic.
+ */
+export const readArtifactsAtVaultPath = async (
   vaultPath: string,
 ): Promise<SnapshotArtifacts> => {
   const realVaultPath = await realpath(vaultPath);

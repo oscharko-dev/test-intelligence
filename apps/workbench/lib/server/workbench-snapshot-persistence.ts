@@ -23,17 +23,20 @@
  */
 
 import {
-  resolveWorkbenchStoragePaths,
   verifyArtifact,
   writeArtifact,
   type ContentRef,
   type SnapshotMetadataRecord,
+  type WorkbenchStoragePaths,
 } from "@/lib/server/storage";
-// WHY a separate import path: `getWorkbenchStorage` is intentionally NOT
-// re-exported from the storage barrel because it pulls in the better-sqlite3
-// adapter, which must never reach a client bundle. Server-only callers import
-// it directly (mirrors `instrumentation.ts`).
-import { getWorkbenchStorage } from "@/lib/server/storage/bootstrap";
+// WHY a separate import path: `getWorkbenchStorage`/`getWorkbenchStoragePaths`
+// are intentionally NOT re-exported from the storage barrel because they pull in
+// the better-sqlite3 adapter, which must never reach a client bundle. Server-only
+// callers import them directly (mirrors `instrumentation.ts`).
+import {
+  getWorkbenchStorage,
+  getWorkbenchStoragePaths,
+} from "@/lib/server/storage/bootstrap";
 import type {
   FigmaSnapshotImportStatus,
   FigmaSnapshotManifest,
@@ -94,16 +97,17 @@ export const persistImportedSnapshot = (input: {
   readonly env: NodeJS.ProcessEnv;
 }): void => {
   try {
-    const paths = resolveWorkbenchStoragePaths(input.env);
+    // WHY the singleton's cached paths (not a per-call resolve): the adapter
+    // binds its data root once at first bootstrap and ignores per-call env after
+    // (the #52 contract). Using its cached paths guarantees these artifact bytes
+    // and the metadata row written below land under the SAME root. Passing
+    // `input.env` binds the intended root on the first bootstrap.
+    const paths = getWorkbenchStoragePaths({ env: input.env });
     const payload = writeArtifact(
       paths,
       Buffer.from(JSON.stringify(input.nodeIndex), "utf8"),
     );
     const counts = summarizeSnapshotCounts(input.nodeIndex);
-    // WHY pass the env: the adapter singleton and the content store must resolve
-    // to the same data root. Both derive from `input.env` (the singleton honors
-    // the env only on first bootstrap, the documented #52 behavior), so passing
-    // it keeps first-bootstrap aligned with the content-store bytes above.
     getWorkbenchStorage({ env: input.env }).snapshots.create({
       tenantScope: formatWorkbenchTenantScope(input.manifest.tenantScope),
       // WHY `source` carries the engine snapshotId: see module docblock.
@@ -127,7 +131,7 @@ export const persistImportedSnapshot = (input: {
  * carries. A record with no payload reference is reported `absent`.
  */
 const verifyPersistedRecord = (
-  paths: ReturnType<typeof resolveWorkbenchStoragePaths>,
+  paths: WorkbenchStoragePaths,
   payload: ContentRef | undefined,
 ): WorkbenchSnapshotPersistedIndexSummary => {
   if (payload === undefined) return { status: "absent" };
@@ -143,7 +147,7 @@ const verifyPersistedRecord = (
 export interface PersistedSnapshotIndex {
   /** Persisted record keyed by engine snapshotId (its `source` field). */
   readonly bySnapshotId: ReadonlyMap<string, SnapshotMetadataRecord>;
-  readonly paths: ReturnType<typeof resolveWorkbenchStoragePaths>;
+  readonly paths: WorkbenchStoragePaths;
 }
 
 /**
@@ -159,13 +163,12 @@ export const readPersistedSnapshotIndex = (
   env: NodeJS.ProcessEnv,
   tenantScope: string,
 ): PersistedSnapshotIndex => {
-  const paths = resolveWorkbenchStoragePaths(env);
+  // WHY the singleton's cached paths: payload refs are verified (below, via
+  // `index.paths`) against the content store, so they MUST resolve to the same
+  // root the adapter bound at first bootstrap — not a divergent per-call resolve.
+  const paths = getWorkbenchStoragePaths({ env });
   const bySnapshotId = new Map<string, SnapshotMetadataRecord>();
   try {
-    // WHY pass the env: the adapter singleton and the content store (`paths`
-    // above) must resolve to the same data root; both derive from the same env
-    // (the singleton honors it only on first bootstrap, the documented #52
-    // behavior), so persisted records and their payload refs stay aligned.
     const records = getWorkbenchStorage({ env }).snapshots.list({
       tenantScope,
     });

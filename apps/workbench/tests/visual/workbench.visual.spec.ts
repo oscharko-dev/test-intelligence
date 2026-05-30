@@ -451,7 +451,13 @@ test("captures a completed run detail screen", async ({ page }) => {
 
   await page.getByRole("button", { name: "Seed demo" }).click();
   await page.getByRole("button", { name: "Advanced" }).click();
-  await page.getByLabel("Job ID override").fill("ti-workbench-visual-fixed");
+  // WHY a unique job id per run: #53 persistence rehydrates prior `runs` rows
+  // on boot, so a static job id collides with `WORKBENCH_RUN_JOB_ID_EXISTS`
+  // (registry: workbench-run-registry.ts:994) on every second+ local invocation.
+  // CI starts ephemeral, so this only manifests locally; the dynamic id keeps
+  // the test isolation-safe in both environments.
+  const jobId = `ti-workbench-visual-${Date.now()}`;
+  await page.getByLabel("Job ID override").fill(jobId);
   await expect(page.getByRole("button", { name: "Launch run" })).toBeEnabled();
   const started = page.waitForResponse((response) => {
     return (
@@ -469,9 +475,7 @@ test("captures a completed run detail screen", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Run detail" })).toBeVisible({
     timeout: 15_000,
   });
-  await expect(page.locator(".rd-header")).toContainText(
-    "ti-workbench-visual-fixed",
-  );
+  await expect(page.locator(".rd-header")).toContainText(jobId);
   await expect(page.locator(".rd-header")).toContainText(
     "generatedAt 2026-05-25 10:15:30Z",
   );

@@ -28,4 +28,19 @@ export async function register(): Promise<void> {
       `[workbench] Local storage bootstrap failed; persistence features are unavailable: ${detail}`,
     );
   }
+  // Best-effort #54 legacy index. Runs AFTER the storage singleton is primed so
+  // the indexer's adapter writes land on the same root. WHY a separate try: an
+  // indexing failure must NOT trip the outer bootstrap-failed catch — the
+  // application still boots without legacy backfill.
+  try {
+    const { ensureLegacyIndexAtStartup } =
+      await import("./lib/server/workbench-legacy-indexer");
+    await ensureLegacyIndexAtStartup();
+  } catch (error) {
+    const detail =
+      error instanceof Error ? error.name : "unknown legacy-index error";
+    console.error(
+      `[workbench] Legacy artifact index skipped at startup: ${detail}`,
+    );
+  }
 }
