@@ -364,4 +364,60 @@ describe("SnapshotVaultScreen", () => {
       screen.getByText(/node batch budget 1\/1 used/u),
     ).toBeInTheDocument();
   });
+
+  it("does not PUT the scope basket when the hydration GET fails (no clobber)", async () => {
+    const scopeBasketPuts: unknown[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method =
+          init?.method ?? (input instanceof Request ? input.method : "GET");
+        if (url === "/api/workbench/snapshots" && method === "GET") {
+          return Response.json(catalog);
+        }
+        if (url === "/api/workbench/snapshots/snapshot-ui-test") {
+          return Response.json(detail);
+        }
+        if (url.includes("/api/workbench/scope-baskets")) {
+          if (method === "PUT") {
+            scopeBasketPuts.push(
+              typeof init?.body === "string" ? JSON.parse(init.body) : null,
+            );
+            return Response.json({ ok: true });
+          }
+          // Simulate a failed hydration GET: the stored basket must be preserved,
+          // so the effect must NOT write an empty selection back.
+          return Response.json(
+            { error: { code: "SCOPE_BASKET_READ_FAILED", message: "boom" } },
+            { status: 500 },
+          );
+        }
+        return Response.json({}, { status: 404 });
+      }),
+    );
+
+    render(<SnapshotVaultScreen />);
+
+    expect(await screen.findByText("snapshot-ui-test")).toBeInTheDocument();
+    expect(await screen.findAllByText("IBAN input mask")).not.toHaveLength(0);
+
+    const scopeBasketCalls = (): number =>
+      (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.filter(
+        ([calledUrl]) =>
+          String(calledUrl).includes("/api/workbench/scope-baskets"),
+      ).length;
+
+    // The hydration GET must have fired. In the buggy path the persist effect
+    // would issue a PUT off the same selection commit, so wait until the
+    // scope-baskets traffic stops growing before asserting no PUT was sent.
+    await waitFor(() => {
+      expect(scopeBasketCalls()).toBeGreaterThan(0);
+    });
+    const settled = scopeBasketCalls();
+    await waitFor(() => {
+      expect(scopeBasketCalls()).toBe(settled);
+    });
+    expect(scopeBasketPuts).toHaveLength(0);
+  });
 });

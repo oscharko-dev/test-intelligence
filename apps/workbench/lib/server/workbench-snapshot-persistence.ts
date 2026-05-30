@@ -100,7 +100,11 @@ export const persistImportedSnapshot = (input: {
       Buffer.from(JSON.stringify(input.nodeIndex), "utf8"),
     );
     const counts = summarizeSnapshotCounts(input.nodeIndex);
-    getWorkbenchStorage().snapshots.create({
+    // WHY pass the env: the adapter singleton and the content store must resolve
+    // to the same data root. Both derive from `input.env` (the singleton honors
+    // the env only on first bootstrap, the documented #52 behavior), so passing
+    // it keeps first-bootstrap aligned with the content-store bytes above.
+    getWorkbenchStorage({ env: input.env }).snapshots.create({
       tenantScope: formatWorkbenchTenantScope(input.manifest.tenantScope),
       // WHY `source` carries the engine snapshotId: see module docblock.
       source: input.manifest.snapshotId,
@@ -158,7 +162,13 @@ export const readPersistedSnapshotIndex = (
   const paths = resolveWorkbenchStoragePaths(env);
   const bySnapshotId = new Map<string, SnapshotMetadataRecord>();
   try {
-    const records = getWorkbenchStorage().snapshots.list({ tenantScope });
+    // WHY pass the env: the adapter singleton and the content store (`paths`
+    // above) must resolve to the same data root; both derive from the same env
+    // (the singleton honors it only on first bootstrap, the documented #52
+    // behavior), so persisted records and their payload refs stay aligned.
+    const records = getWorkbenchStorage({ env }).snapshots.list({
+      tenantScope,
+    });
     for (const record of records) bySnapshotId.set(record.source, record);
   } catch (error) {
     console.error(

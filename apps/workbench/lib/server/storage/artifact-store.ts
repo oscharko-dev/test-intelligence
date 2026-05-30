@@ -10,7 +10,15 @@
  * helpers and the `ContentRef` shape. No SQLite, UI, or domain imports.
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 
 import { artifactAbsolutePath, artifactStorageRef, sha256Hex } from "./db-path";
@@ -55,11 +63,19 @@ const isErrnoCode = (error: unknown, code: string): boolean =>
 /**
  * Persists `bytes` under their content hash and returns the reference.
  *
- * WHY `wx` + EEXIST-as-success: the store is content-addressed, so an existing
- * file at the target path is by definition the identical bytes. Treating the
- * exclusive-create collision as success makes writes idempotent and preserves
- * immutable-evidence semantics: an artifact is written once and never
- * overwritten, so concurrent identical writes are safe.
+ * WHY temp-file + atomic rename: `writeFileSync` to the final path is not
+ * atomic — a crash mid-write would leave a truncated shard that a later write
+ * for the same hash would then trust. Instead the bytes are written to a unique
+ * temp file in the SAME shard directory (same filesystem, so `renameSync` is
+ * atomic) and renamed onto `<hash>.bin`. A crash now leaves only an orphan temp
+ * file, never a partial final shard.
+ *
+ * WHY skip when the target exists: the store is content-addressed, so an
+ * existing file at the target path is by definition the identical bytes.
+ * Skipping the rename preserves immutable-evidence semantics (write-once, never
+ * overwritten) and keeps concurrent identical writes safe. The temp file is
+ * cleaned up best-effort so orphans do not accumulate. The temp name is derived
+ * only from the validated hash plus a `randomUUID()` — no user-tainted input.
  */
 export const writeArtifact = (
   paths: WorkbenchStoragePaths,
@@ -69,15 +85,23 @@ export const writeArtifact = (
   const byteSize = bytes.byteLength;
   const storageRef = artifactStorageRef(sha256);
   const absolute = artifactAbsolutePath(paths, sha256);
+  const shardDir = path.dirname(absolute);
+  const ref: ContentRef = { sha256, byteSize, storageRef };
 
-  mkdirSync(path.dirname(absolute), { recursive: true });
+  mkdirSync(shardDir, { recursive: true });
+  if (existsSync(absolute)) return ref;
+
+  const tempPath = path.join(shardDir, `${sha256}.${randomUUID()}.tmp`);
   try {
-    writeFileSync(absolute, bytes, { flag: "wx" });
-  } catch (error: unknown) {
-    if (!isErrnoCode(error, "EEXIST")) throw error;
+    writeFileSync(tempPath, bytes, { flag: "wx" });
+    // `wx` keeps the rename a no-op if a racing write already created the
+    // final shard; that destination is identical content, so the temp is dropped.
+    if (!existsSync(absolute)) renameSync(tempPath, absolute);
+  } finally {
+    rmSync(tempPath, { force: true });
   }
 
-  return { sha256, byteSize, storageRef };
+  return ref;
 };
 
 /**

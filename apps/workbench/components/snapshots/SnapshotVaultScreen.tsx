@@ -86,15 +86,27 @@ const idList = (value: readonly string[] | undefined): string[] =>
     ? value.filter((entry): entry is string => typeof entry === "string")
     : [];
 
+interface HydratedSelection {
+  readonly selection: SnapshotRunSelection;
+  /**
+   * `true` when the GET succeeded — whether or not a basket existed — so the
+   * caller may enable persistence. `false` only when the fetch itself failed
+   * (network/abort/non-OK), so the caller leaves persistence suspended and the
+   * stored basket is never clobbered with an empty placeholder.
+   */
+  readonly ok: boolean;
+}
+
 /**
- * Best-effort hydration of a persisted scope basket. Returns the empty selection
- * on any error or absent basket so the basket degrades to ephemeral and the UI
- * is unaffected (no thrown error, no error surface).
+ * Best-effort hydration of a persisted scope basket. A successful response with
+ * no basket still reports `ok` (legitimately absent) so an empty working
+ * selection is shown; only a failed fetch reports `!ok` so the caller keeps the
+ * stored basket intact. Never throws and never raises an error surface.
  */
 const fetchPersistedSelection = async (
   snapshotId: string,
   signal: AbortSignal,
-): Promise<SnapshotRunSelection> => {
+): Promise<HydratedSelection> => {
   try {
     const response = await fetch(
       `/api/workbench/scope-baskets?snapshotId=${encodeURIComponent(
@@ -102,16 +114,21 @@ const fetchPersistedSelection = async (
       )}`,
       { cache: "no-store", signal },
     );
+    if (!response.ok) return { selection: emptySelection(), ok: false };
     const payload = await readJson<BasketResponse>(response);
     const selection = payload.basket?.selection;
-    if (!response.ok || selection === undefined) return emptySelection();
+    if (selection === undefined)
+      return { selection: emptySelection(), ok: true };
     return {
-      nodeIds: idList(selection.nodeIds),
-      pageIds: idList(selection.pageIds),
-      frameIds: idList(selection.frameIds),
+      selection: {
+        nodeIds: idList(selection.nodeIds),
+        pageIds: idList(selection.pageIds),
+        frameIds: idList(selection.frameIds),
+      },
+      ok: true,
     };
   } catch {
-    return emptySelection();
+    return { selection: emptySelection(), ok: false };
   }
 };
 
@@ -295,9 +312,12 @@ export function SnapshotVaultScreen(): ReactNode {
           controller.signal,
         );
         if (controller.signal.aborted) return;
-        setSelection(restored);
-        // Enable persistence only after the read-back so add/remove are durable.
-        hydratedSnapshotRef.current = snapshotId;
+        setSelection(restored.selection);
+        // Enable persistence only after a SUCCESSFUL read-back so add/remove are
+        // durable. On a failed GET the ref stays unset, so the persist effect
+        // does not fire and the stored basket is preserved (the screen shows an
+        // empty working selection until a later successful hydration).
+        if (restored.ok) hydratedSnapshotRef.current = snapshotId;
       } catch (error) {
         if (controller.signal.aborted) return;
         setDetailError(

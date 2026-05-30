@@ -1,6 +1,13 @@
 // @vitest-environment node
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -77,6 +84,45 @@ describe("artifact-store", () => {
       expect(new Uint8Array(readFileSync(absolute))).toStrictEqual(
         new Uint8Array(before),
       );
+    });
+
+    it("does not replace a pre-existing shard at the target path (immutability)", () => {
+      // Simulate a corrupt/partial shard already present at the final path: a
+      // content-addressed write must never overwrite it, and must still report
+      // the correct ref without throwing.
+      const bytes = bytesOf("content-addressed-payload");
+      const sha256 = sha256Hex(bytes);
+      const absolute = artifactAbsolutePath(paths, sha256);
+      mkdirSync(path.dirname(absolute), { recursive: true });
+      const corrupt = bytesOf("partial-corrupt-shard");
+      writeFileSync(absolute, corrupt);
+
+      const ref = writeArtifact(paths, bytes);
+
+      expect(ref.sha256).toBe(sha256);
+      expect(ref.byteSize).toBe(bytes.byteLength);
+      expect(ref.storageRef).toBe(
+        `${sha256.slice(0, 2)}/${sha256.slice(2, 4)}/${sha256}.bin`,
+      );
+      // The on-disk bytes are untouched (write-once immutability preserved).
+      expect(new Uint8Array(readFileSync(absolute))).toStrictEqual(corrupt);
+      // No leftover temp files accumulate in the shard directory.
+      expect(readdirSync(path.dirname(absolute))).toStrictEqual([
+        `${sha256}.bin`,
+      ]);
+    });
+
+    it("writes atomically with no temp-file residue and round-trips", () => {
+      const bytes = bytesOf("atomic-roundtrip-payload");
+      const ref = writeArtifact(paths, bytes);
+      const absolute = artifactAbsolutePath(paths, ref.sha256);
+
+      expect(new Uint8Array(readFileSync(absolute))).toStrictEqual(bytes);
+      expect(readArtifact(paths, ref)).toStrictEqual(bytes);
+      // Only the final shard remains; the temp file was renamed/cleaned up.
+      expect(readdirSync(path.dirname(absolute))).toStrictEqual([
+        `${ref.sha256}.bin`,
+      ]);
     });
 
     it("is deterministic across content: same bytes match, different bytes differ", () => {
