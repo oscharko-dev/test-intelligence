@@ -61,6 +61,12 @@ const failingFollowupSchemaSteps: readonly WorkbenchMigration[] = [
   },
 ];
 
+const okSchemaStep = (version: number): WorkbenchMigration => ({
+  version,
+  description: `ok schema step ${version}`,
+  up() {},
+});
+
 describe("bootstrapWorkbenchStorage", () => {
   let root: string;
   let databaseFile: string;
@@ -108,7 +114,7 @@ describe("bootstrapWorkbenchStorage", () => {
 
     const second = bootstrapWorkbenchStorage({ databaseFile, artifactRoot });
     expect(second.getSchemaVersion()).toBe(1);
-    expect(second.runs.get(created.id)).toStrictEqual(created);
+    expect(second.runs.get(created.id, "tenant-a")).toStrictEqual(created);
     expect(second.runs.list()).toHaveLength(1);
     second.close();
   });
@@ -156,8 +162,34 @@ describe("bootstrapWorkbenchStorage", () => {
     ).toThrow(WorkbenchStorageError);
 
     const survivor = bootstrapWorkbenchStorage({ databaseFile, artifactRoot });
-    expect(survivor.runs.get(created.id)).toStrictEqual(created);
+    expect(survivor.runs.get(created.id, "t")).toStrictEqual(created);
     survivor.close();
+  });
+
+  it("surfaces an unsupported newer schema version without masking it", () => {
+    const writer = bootstrapWorkbenchStorage({
+      databaseFile,
+      artifactRoot,
+      schemaSteps: [okSchemaStep(1), okSchemaStep(2)],
+    });
+    expect(writer.getSchemaVersion()).toBe(2);
+    writer.close();
+
+    let thrown: unknown;
+    try {
+      bootstrapWorkbenchStorage({
+        databaseFile,
+        artifactRoot,
+        schemaSteps: [okSchemaStep(1)],
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(WorkbenchStorageError);
+    expect((thrown as WorkbenchStorageError).code).toBe(
+      "SCHEMA_VERSION_UNSUPPORTED",
+    );
   });
 });
 

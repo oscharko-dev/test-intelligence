@@ -10,6 +10,7 @@ import type {
   WorkbenchMigration,
   WorkbenchStorageAdapter,
 } from "@/lib/server/storage";
+import { WorkbenchStorageError, artifactStorageRef } from "@/lib/server/storage";
 import { createSqliteWorkbenchStorageAdapter } from "@/lib/server/storage/sqlite-adapter";
 import { WORKBENCH_SCHEMA_TABLES } from "@/lib/server/storage/sqlite-schema";
 
@@ -72,7 +73,7 @@ describe("SqliteWorkbenchStorageAdapter specifics", () => {
       databaseFile: file,
     });
     expect(reopened.getSchemaVersion()).toBe(1);
-    expect(reopened.runs.get(created.id)).toStrictEqual(created);
+    expect(reopened.runs.get(created.id, "tenant-a")).toStrictEqual(created);
     expect(reopened.runs.list()).toHaveLength(1);
     reopened.close();
   });
@@ -88,7 +89,7 @@ describe("SqliteWorkbenchStorageAdapter specifics", () => {
     expect(created).not.toHaveProperty("label");
     expect(created).not.toHaveProperty("snapshotId");
     expect(created).not.toHaveProperty("artifactDir");
-    const fetched = adapter.runs.get(created.id);
+    const fetched = adapter.runs.get(created.id, "tenant-a");
     expect(fetched).toStrictEqual(created);
     expect(fetched).not.toHaveProperty("label");
     adapter.close();
@@ -102,7 +103,7 @@ describe("SqliteWorkbenchStorageAdapter specifics", () => {
     const content = {
       sha256: "a".repeat(64),
       byteSize: 1,
-      storageRef: "aa/bb/x.bin",
+      storageRef: artifactStorageRef("a".repeat(64)),
     };
     const facing = adapter.artifacts.create({
       runId: run.id,
@@ -122,8 +123,8 @@ describe("SqliteWorkbenchStorageAdapter specifics", () => {
     });
     expect(facing.customerFacing).toBe(true);
     expect(internal.customerFacing).toBe(false);
-    expect(adapter.artifacts.get(facing.id)?.customerFacing).toBe(true);
-    expect(adapter.artifacts.get(internal.id)?.customerFacing).toBe(false);
+    expect(adapter.artifacts.get(facing.id, "t")?.customerFacing).toBe(true);
+    expect(adapter.artifacts.get(internal.id, "t")?.customerFacing).toBe(false);
     adapter.close();
   });
 
@@ -141,7 +142,7 @@ describe("SqliteWorkbenchStorageAdapter specifics", () => {
       payload: {
         sha256: "b".repeat(64),
         byteSize: 9,
-        storageRef: "bb/cc/y.bin",
+        storageRef: artifactStorageRef("b".repeat(64)),
       },
     });
     const withoutPayload = adapter.snapshots.create({
@@ -153,9 +154,11 @@ describe("SqliteWorkbenchStorageAdapter specifics", () => {
       lifecycleState: "imported",
     });
     expect(withPayload.payload?.byteSize).toBe(9);
-    expect(adapter.snapshots.get(withPayload.id)).toStrictEqual(withPayload);
+    expect(adapter.snapshots.get(withPayload.id, "t")).toStrictEqual(
+      withPayload,
+    );
     expect(withoutPayload).not.toHaveProperty("payload");
-    expect(adapter.snapshots.get(withoutPayload.id)).toStrictEqual(
+    expect(adapter.snapshots.get(withoutPayload.id, "t")).toStrictEqual(
       withoutPayload,
     );
     adapter.close();
@@ -216,5 +219,38 @@ describe("createSqliteWorkbenchStorageAdapter modes", () => {
     second.close();
 
     rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("fails closed when the stored schema version is newer than this build knows", () => {
+    const tempDir = mkdtempSync(path.join(tmpdir(), "ti-sqlite-ahead-"));
+    const file = path.join(tempDir, "ahead.db");
+    const ok = (version: number): WorkbenchMigration => ({
+      version,
+      description: `ok ${version}`,
+      up() {},
+    });
+
+    const writer = createSqliteWorkbenchStorageAdapter({
+      databaseFile: file,
+      migrations: [ok(1), ok(2)],
+    });
+    expect(writer.migrateToLatest()).toBe(2);
+    writer.close();
+
+    const reader = createSqliteWorkbenchStorageAdapter({
+      databaseFile: file,
+      migrations: [ok(1)],
+    });
+    expect(() => reader.migrateToLatest()).toThrow(WorkbenchStorageError);
+    try {
+      reader.migrateToLatest();
+    } catch (error) {
+      expect((error as WorkbenchStorageError).code).toBe(
+        "SCHEMA_VERSION_UNSUPPORTED",
+      );
+    } finally {
+      reader.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });

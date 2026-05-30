@@ -25,7 +25,7 @@
 
 import BetterSqlite3 from "better-sqlite3";
 
-import { validateMigrationSequence } from "./migrations";
+import { assertSchemaVersionSupported } from "./migrations";
 import type { WorkbenchMigration } from "./migrations";
 import {
   createArtifactRepository,
@@ -104,8 +104,9 @@ class SqliteWorkbenchStorageAdapter implements WorkbenchStorageAdapter {
     this.databaseFile = databaseFile;
     this.db = new BetterSqlite3(databaseFile);
     // WAL improves concurrent read/write durability; it must be set before any
-    // transaction. `:memory:` databases ignore WAL gracefully. FK enforcement
-    // is OFF so the permissive contract (artifacts for any runId) holds.
+    // transaction. `:memory:` databases ignore WAL gracefully. FK enforcement is
+    // OFF because repositories enforce same-tenant parent checks at the contract
+    // layer for parity with the in-memory adapter.
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = OFF");
 
@@ -137,7 +138,12 @@ class SqliteWorkbenchStorageAdapter implements WorkbenchStorageAdapter {
       scopeBaskets: this.scopeBaskets,
       generatedSeeds: this.generatedSeeds,
       exports: this.exports,
-      migrateToLatest: () => this.migrateToLatest(),
+      migrateToLatest: () => {
+        throw new WorkbenchStorageError(
+          "NESTED_TRANSACTION",
+          "migrateToLatest() is not available inside a transaction.",
+        );
+      },
       getSchemaVersion: () => this.getSchemaVersion(),
       transaction: () => {
         throw new WorkbenchStorageError(
@@ -159,8 +165,8 @@ class SqliteWorkbenchStorageAdapter implements WorkbenchStorageAdapter {
   }
 
   migrateToLatest(): number {
-    validateMigrationSequence(this.migrations);
     const current = readUserVersion(this.db);
+    assertSchemaVersionSupported(current, this.migrations);
     const pending = this.migrations.filter(
       (migration) => migration.version > current,
     );

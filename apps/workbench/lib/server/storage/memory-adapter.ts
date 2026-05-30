@@ -12,7 +12,11 @@
 
 import { randomUUID } from "node:crypto";
 
-import { validateMigrationSequence } from "./migrations";
+import {
+  assertCanonicalContentRef,
+  assertSameTenantRun,
+} from "./contract-validation";
+import { assertSchemaVersionSupported } from "./migrations";
 import type { WorkbenchMigration } from "./migrations";
 import { WorkbenchStorageError } from "./storage-adapter";
 import type { WorkbenchStorageAdapter } from "./storage-adapter";
@@ -29,9 +33,9 @@ import type {
   ExportRepository,
   GeneratedSeedMetadataRecord,
   GeneratedSeedRepository,
-  RunIdFilter,
   RunMetadataRecord,
   RunRepository,
+  RunTenantFilter,
   ScopeBasketChanges,
   ScopeBasketFilter,
   ScopeBasketRecord,
@@ -60,13 +64,18 @@ const createEmptyState = (): MemoryState => ({
   exports: new Map(),
 });
 
+const snapshot = <T>(record: T): T => structuredClone(record);
+
+const cloneMap = <T>(records: Map<string, T>): Map<string, T> =>
+  new Map([...records].map(([id, record]) => [id, snapshot(record)]));
+
 const cloneState = (state: MemoryState): MemoryState => ({
-  snapshots: new Map(state.snapshots),
-  runs: new Map(state.runs),
-  artifacts: new Map(state.artifacts),
-  scopeBaskets: new Map(state.scopeBaskets),
-  generatedSeeds: new Map(state.generatedSeeds),
-  exports: new Map(state.exports),
+  snapshots: cloneMap(state.snapshots),
+  runs: cloneMap(state.runs),
+  artifacts: cloneMap(state.artifacts),
+  scopeBaskets: cloneMap(state.scopeBaskets),
+  generatedSeeds: cloneMap(state.generatedSeeds),
+  exports: cloneMap(state.exports),
 });
 
 const restoreState = (target: MemoryState, source: MemoryState): void => {
@@ -78,8 +87,6 @@ const restoreState = (target: MemoryState, source: MemoryState): void => {
   target.exports = source.exports;
 };
 
-const snapshot = <T>(record: T): T => structuredClone(record);
-
 const matchesTenant = (
   recordScope: string,
   filterScope: string | undefined,
@@ -87,19 +94,27 @@ const matchesTenant = (
 
 const nowIso = (): string => new Date().toISOString();
 
+const isSameTenant = (
+  record: { readonly tenantScope: string } | undefined,
+  tenantScope: string,
+): boolean => record !== undefined && record.tenantScope === tenantScope;
+
 const createSnapshotRepository = (state: MemoryState): SnapshotRepository => ({
   create(input: CreateSnapshotInput): SnapshotMetadataRecord {
+    if (input.payload !== undefined) {
+      assertCanonicalContentRef(input.payload, "snapshot payload");
+    }
     const record: SnapshotMetadataRecord = {
       ...input,
       id: randomUUID(),
       createdAt: nowIso(),
     };
-    state.snapshots.set(record.id, record);
+    state.snapshots.set(record.id, snapshot(record));
     return snapshot(record);
   },
-  get(id: string): SnapshotMetadataRecord | undefined {
+  get(id: string, tenantScope: string): SnapshotMetadataRecord | undefined {
     const record = state.snapshots.get(id);
-    return record ? snapshot(record) : undefined;
+    return isSameTenant(record, tenantScope) ? snapshot(record) : undefined;
   },
   list(filter?: TenantScopeFilter): readonly SnapshotMetadataRecord[] {
     return [...state.snapshots.values()]
@@ -110,10 +125,13 @@ const createSnapshotRepository = (state: MemoryState): SnapshotRepository => ({
   },
   updateLifecycleState(
     id: string,
+    tenantScope: string,
     lifecycleState: string,
   ): SnapshotMetadataRecord | undefined {
     const existing = state.snapshots.get(id);
-    if (!existing) return undefined;
+    if (existing === undefined || existing.tenantScope !== tenantScope) {
+      return undefined;
+    }
     const updated: SnapshotMetadataRecord = { ...existing, lifecycleState };
     state.snapshots.set(id, updated);
     return snapshot(updated);
@@ -129,12 +147,12 @@ const createRunRepository = (state: MemoryState): RunRepository => ({
       createdAt: timestamp,
       updatedAt: timestamp,
     };
-    state.runs.set(record.id, record);
+    state.runs.set(record.id, snapshot(record));
     return snapshot(record);
   },
-  get(id: string): RunMetadataRecord | undefined {
+  get(id: string, tenantScope: string): RunMetadataRecord | undefined {
     const record = state.runs.get(id);
-    return record ? snapshot(record) : undefined;
+    return isSameTenant(record, tenantScope) ? snapshot(record) : undefined;
   },
   list(filter?: TenantScopeFilter): readonly RunMetadataRecord[] {
     return [...state.runs.values()]
@@ -145,10 +163,13 @@ const createRunRepository = (state: MemoryState): RunRepository => ({
   },
   updateStatus(
     id: string,
+    tenantScope: string,
     status: WorkbenchRunStatus,
   ): RunMetadataRecord | undefined {
     const existing = state.runs.get(id);
-    if (!existing) return undefined;
+    if (existing === undefined || existing.tenantScope !== tenantScope) {
+      return undefined;
+    }
     const updated: RunMetadataRecord = {
       ...existing,
       status,
@@ -161,21 +182,31 @@ const createRunRepository = (state: MemoryState): RunRepository => ({
 
 const createArtifactRepository = (state: MemoryState): ArtifactRepository => ({
   create(input: CreateArtifactInput): ArtifactMetadataRecord {
+    assertSameTenantRun(
+      state.runs.get(input.runId),
+      input.tenantScope,
+      "artifact runId",
+    );
+    assertCanonicalContentRef(input.content, "artifact content");
     const record: ArtifactMetadataRecord = {
       ...input,
       id: randomUUID(),
       createdAt: nowIso(),
     };
-    state.artifacts.set(record.id, record);
+    state.artifacts.set(record.id, snapshot(record));
     return snapshot(record);
   },
-  get(id: string): ArtifactMetadataRecord | undefined {
+  get(id: string, tenantScope: string): ArtifactMetadataRecord | undefined {
     const record = state.artifacts.get(id);
-    return record ? snapshot(record) : undefined;
+    return isSameTenant(record, tenantScope) ? snapshot(record) : undefined;
   },
-  list(filter: RunIdFilter): readonly ArtifactMetadataRecord[] {
+  list(filter: RunTenantFilter): readonly ArtifactMetadataRecord[] {
     return [...state.artifacts.values()]
-      .filter((record) => record.runId === filter.runId)
+      .filter(
+        (record) =>
+          record.runId === filter.runId &&
+          record.tenantScope === filter.tenantScope,
+      )
       .map(snapshot);
   },
 });
@@ -208,12 +239,12 @@ const createScopeBasketRepository = (
       createdAt: timestamp,
       updatedAt: timestamp,
     };
-    state.scopeBaskets.set(record.id, record);
+    state.scopeBaskets.set(record.id, snapshot(record));
     return snapshot(record);
   },
-  get(id: string): ScopeBasketRecord | undefined {
+  get(id: string, tenantScope: string): ScopeBasketRecord | undefined {
     const record = state.scopeBaskets.get(id);
-    return record ? snapshot(record) : undefined;
+    return isSameTenant(record, tenantScope) ? snapshot(record) : undefined;
   },
   list(filter?: ScopeBasketFilter): readonly ScopeBasketRecord[] {
     return [...state.scopeBaskets.values()]
@@ -229,12 +260,15 @@ const createScopeBasketRepository = (
   },
   update(
     id: string,
+    tenantScope: string,
     changes: ScopeBasketChanges,
   ): ScopeBasketRecord | undefined {
     const existing = state.scopeBaskets.get(id);
-    if (!existing) return undefined;
+    if (existing === undefined || existing.tenantScope !== tenantScope) {
+      return undefined;
+    }
     const updated = applyScopeBasketChanges(existing, changes);
-    state.scopeBaskets.set(id, updated);
+    state.scopeBaskets.set(id, snapshot(updated));
     return snapshot(updated);
   },
 });
@@ -243,48 +277,72 @@ const createGeneratedSeedRepository = (
   state: MemoryState,
 ): GeneratedSeedRepository => ({
   create(input: CreateGeneratedSeedInput): GeneratedSeedMetadataRecord {
+    assertSameTenantRun(
+      state.runs.get(input.runId),
+      input.tenantScope,
+      "generated seed runId",
+    );
+    assertCanonicalContentRef(input.content, "generated seed content");
     const record: GeneratedSeedMetadataRecord = {
       ...input,
       id: randomUUID(),
       createdAt: nowIso(),
     };
-    state.generatedSeeds.set(record.id, record);
+    state.generatedSeeds.set(record.id, snapshot(record));
     return snapshot(record);
   },
-  get(id: string): GeneratedSeedMetadataRecord | undefined {
+  get(
+    id: string,
+    tenantScope: string,
+  ): GeneratedSeedMetadataRecord | undefined {
     const record = state.generatedSeeds.get(id);
-    return record ? snapshot(record) : undefined;
+    return isSameTenant(record, tenantScope) ? snapshot(record) : undefined;
   },
-  list(filter: RunIdFilter): readonly GeneratedSeedMetadataRecord[] {
+  list(filter: RunTenantFilter): readonly GeneratedSeedMetadataRecord[] {
     return [...state.generatedSeeds.values()]
-      .filter((record) => record.runId === filter.runId)
+      .filter(
+        (record) =>
+          record.runId === filter.runId &&
+          record.tenantScope === filter.tenantScope,
+      )
       .map(snapshot);
   },
 });
 
 const createExportRepository = (state: MemoryState): ExportRepository => ({
   create(input: CreateExportInput): ExportMetadataRecord {
+    assertSameTenantRun(
+      state.runs.get(input.runId),
+      input.tenantScope,
+      "export runId",
+    );
+    assertCanonicalContentRef(input.content, "export content");
     const record: ExportMetadataRecord = {
       ...input,
       id: randomUUID(),
       createdAt: nowIso(),
     };
-    state.exports.set(record.id, record);
+    state.exports.set(record.id, snapshot(record));
     return snapshot(record);
   },
-  get(id: string): ExportMetadataRecord | undefined {
+  get(id: string, tenantScope: string): ExportMetadataRecord | undefined {
     const record = state.exports.get(id);
-    return record ? snapshot(record) : undefined;
+    return isSameTenant(record, tenantScope) ? snapshot(record) : undefined;
   },
-  list(filter: RunIdFilter): readonly ExportMetadataRecord[] {
+  list(filter: RunTenantFilter): readonly ExportMetadataRecord[] {
     return [...state.exports.values()]
-      .filter((record) => record.runId === filter.runId)
+      .filter(
+        (record) =>
+          record.runId === filter.runId &&
+          record.tenantScope === filter.tenantScope,
+      )
       .map(snapshot);
   },
 });
 
 interface MemoryAdapterOptions {
   readonly migrations?: readonly WorkbenchMigration[];
+  readonly initialSchemaVersion?: number;
 }
 
 class MemoryWorkbenchStorageAdapter implements WorkbenchStorageAdapter {
@@ -297,18 +355,54 @@ class MemoryWorkbenchStorageAdapter implements WorkbenchStorageAdapter {
 
   private readonly state: MemoryState;
   private readonly migrations: readonly WorkbenchMigration[];
-  private schemaVersion = 0;
+  private readonly txHandle: WorkbenchStorageAdapter;
+  private schemaVersion: number;
   private inTransaction = false;
 
-  constructor(migrations: readonly WorkbenchMigration[]) {
+  constructor(
+    migrations: readonly WorkbenchMigration[],
+    initialSchemaVersion = 0,
+  ) {
     this.state = createEmptyState();
     this.migrations = migrations;
+    this.schemaVersion = initialSchemaVersion;
     this.snapshots = createSnapshotRepository(this.state);
     this.runs = createRunRepository(this.state);
     this.artifacts = createArtifactRepository(this.state);
     this.scopeBaskets = createScopeBasketRepository(this.state);
     this.generatedSeeds = createGeneratedSeedRepository(this.state);
     this.exports = createExportRepository(this.state);
+    this.txHandle = this.buildTxHandle();
+  }
+
+  private buildTxHandle(): WorkbenchStorageAdapter {
+    return {
+      snapshots: this.snapshots,
+      runs: this.runs,
+      artifacts: this.artifacts,
+      scopeBaskets: this.scopeBaskets,
+      generatedSeeds: this.generatedSeeds,
+      exports: this.exports,
+      migrateToLatest: () => {
+        throw new WorkbenchStorageError(
+          "NESTED_TRANSACTION",
+          "migrateToLatest() is not available inside a transaction.",
+        );
+      },
+      getSchemaVersion: () => this.getSchemaVersion(),
+      transaction: () => {
+        throw new WorkbenchStorageError(
+          "NESTED_TRANSACTION",
+          "Nested transactions are not supported.",
+        );
+      },
+      close: () => {
+        throw new WorkbenchStorageError(
+          "NESTED_TRANSACTION",
+          "close() is not available inside a transaction.",
+        );
+      },
+    };
   }
 
   getSchemaVersion(): number {
@@ -316,7 +410,7 @@ class MemoryWorkbenchStorageAdapter implements WorkbenchStorageAdapter {
   }
 
   migrateToLatest(): number {
-    validateMigrationSequence(this.migrations);
+    assertSchemaVersionSupported(this.schemaVersion, this.migrations);
     const pending = this.migrations.filter(
       (migration) => migration.version > this.schemaVersion,
     );
@@ -341,7 +435,7 @@ class MemoryWorkbenchStorageAdapter implements WorkbenchStorageAdapter {
     const backupVersion = this.schemaVersion;
     this.inTransaction = true;
     try {
-      const result = work(this);
+      const result = work(this.txHandle);
       this.inTransaction = false;
       return result;
     } catch (error) {
@@ -365,4 +459,7 @@ class MemoryWorkbenchStorageAdapter implements WorkbenchStorageAdapter {
 export const createMemoryWorkbenchStorageAdapter = (
   options?: MemoryAdapterOptions,
 ): WorkbenchStorageAdapter =>
-  new MemoryWorkbenchStorageAdapter(options?.migrations ?? []);
+  new MemoryWorkbenchStorageAdapter(
+    options?.migrations ?? [],
+    options?.initialSchemaVersion,
+  );

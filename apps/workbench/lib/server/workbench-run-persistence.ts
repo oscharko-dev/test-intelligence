@@ -38,6 +38,7 @@ import {
   type ArtifactKind,
   type ExportFormat,
   type WorkbenchRunStatus,
+  type WorkbenchStorageAdapter,
   type WorkbenchStoragePaths,
 } from "@/lib/server/storage";
 // WHY a separate import path: `getWorkbenchStorage`/`getWorkbenchStoragePaths`
@@ -48,7 +49,6 @@ import {
   getWorkbenchStorage,
   getWorkbenchStoragePaths,
 } from "@/lib/server/storage/bootstrap";
-import type { WorkbenchStorageAdapter } from "@/lib/server/storage/storage-adapter";
 import type { RunState } from "@/lib/types";
 
 const RUN_STATE_DIRECTORY = "run-state";
@@ -177,13 +177,18 @@ export const persistRunCreated = (input: {
 export const persistRunTransition = (input: {
   readonly rowId: string;
   readonly repoRoot: string;
+  readonly tenantScope: string;
   readonly status: WorkbenchRunStatus;
   readonly state: RunState;
 }): void => {
   try {
     const env = storageEnvForRepoRoot(input.repoRoot);
     writeRunStateDocument(env, input.rowId, input.state);
-    getWorkbenchStorage({ env }).runs.updateStatus(input.rowId, input.status);
+    getWorkbenchStorage({ env }).runs.updateStatus(
+      input.rowId,
+      input.tenantScope,
+      input.status,
+    );
   } catch (error) {
     console.error(
       `[workbench] Run persistence skipped on transition; durable index may be stale: ${describeStorageError(error)}`,
@@ -420,6 +425,7 @@ export const rehydrateRunsFromPersistence = (
 export const verifyRunArtifacts = (
   env: NodeJS.ProcessEnv,
   rowId: string,
+  tenantScope: string,
 ): readonly RunArtifactVerification[] => {
   try {
     // WHY the singleton's cached paths: artifact refs are verified against the
@@ -428,6 +434,7 @@ export const verifyRunArtifacts = (
     const paths = getWorkbenchStoragePaths({ env });
     const records = getWorkbenchStorage({ env }).artifacts.list({
       runId: rowId,
+      tenantScope,
     });
     return records.map((record) => {
       const probe = verifyArtifact(paths, record.content);

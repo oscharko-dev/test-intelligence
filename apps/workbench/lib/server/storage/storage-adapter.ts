@@ -19,8 +19,11 @@ import type {
 
 export type WorkbenchStorageErrorCode =
   | "NESTED_TRANSACTION"
+  | "REFERENTIAL_INTEGRITY"
+  | "CONTENT_REF_INVALID"
   | "MIGRATION_SEQUENCE_INVALID"
-  | "MIGRATION_FAILED";
+  | "MIGRATION_FAILED"
+  | "SCHEMA_VERSION_UNSUPPORTED";
 
 export class WorkbenchStorageError extends Error {
   readonly code: WorkbenchStorageErrorCode;
@@ -37,18 +40,12 @@ export class WorkbenchStorageError extends Error {
 }
 
 /**
- * Aggregate persistence boundary. `transaction` receives a handle exposing the
- * same repositories, scoped to the active transaction: writes are atomic
- * (all-or-nothing), reads observe prior writes within the same transaction
- * (read-your-writes), the transaction rolls back when `work` throws, and
- * nesting is forbidden (a nested call throws `WorkbenchStorageError` with code
- * `NESTED_TRANSACTION`).
- *
- * WHY: the in-memory double passes itself as the transaction handle because its
- * repositories already mutate the live maps that the snapshot/restore protocol
- * guards. The concrete SQLite implementation will instead bind a distinct
- * handle whose repositories execute against the active better-sqlite3
- * transaction.
+ * Aggregate persistence boundary. `transaction` receives a restricted handle
+ * exposing the same repositories, scoped to the active transaction: writes are
+ * atomic (all-or-nothing), reads observe prior writes within the same transaction
+ * (read-your-writes), the transaction rolls back when `work` throws, and nesting
+ * plus lifecycle methods (`migrateToLatest`, `close`) are forbidden with
+ * `WorkbenchStorageError` code `NESTED_TRANSACTION`.
  */
 export interface WorkbenchStorageAdapter {
   readonly snapshots: SnapshotRepository;

@@ -77,6 +77,12 @@ export const bootstrapWorkbenchStorage = (
     adapter.migrateToLatest();
   } catch (cause) {
     adapter.close();
+    if (
+      cause instanceof WorkbenchStorageError &&
+      cause.code === "SCHEMA_VERSION_UNSUPPORTED"
+    ) {
+      throw cause;
+    }
     // Operator-facing message carries no paths or secrets; the SQLite DDL
     // transaction already rolled back and artifact files were never touched.
     throw new WorkbenchStorageError(

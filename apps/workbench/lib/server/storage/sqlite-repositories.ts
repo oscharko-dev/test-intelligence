@@ -17,6 +17,10 @@ import { randomUUID } from "node:crypto";
 
 import type BetterSqlite3Database from "better-sqlite3";
 
+import {
+  assertCanonicalContentRef,
+  assertSameTenantRun,
+} from "./contract-validation";
 import type {
   ArtifactMetadataRecord,
   ArtifactRepository,
@@ -31,9 +35,9 @@ import type {
   ExportRepository,
   GeneratedSeedMetadataRecord,
   GeneratedSeedRepository,
-  RunIdFilter,
   RunMetadataRecord,
   RunRepository,
+  RunTenantFilter,
   ScopeBasketChanges,
   ScopeBasketFilter,
   ScopeBasketRecord,
@@ -120,6 +124,7 @@ const mapSnapshot = (row: SnapshotRow): SnapshotMetadataRecord => ({
 interface SnapshotStmts {
   insert: Stmt;
   selectById: Stmt;
+  selectByIdAndTenant: Stmt;
   selectAll: Stmt;
   updateLifecycle: Stmt;
 }
@@ -137,17 +142,25 @@ export const createSnapshotRepository = (db: Db): SnapshotRepository => {
            @payloadSha256, @payloadByteSize, @payloadStorageRef)`,
       ),
       selectById: db.prepare(`SELECT * FROM snapshots WHERE id = ?`),
+      selectByIdAndTenant: db.prepare(
+        `SELECT * FROM snapshots WHERE id = ? AND tenant_scope = ?`,
+      ),
       selectAll: db.prepare(
         `SELECT * FROM snapshots
            WHERE (@tenantScope IS NULL OR tenant_scope = @tenantScope)
            ORDER BY rowid`,
       ),
       updateLifecycle: db.prepare(
-        `UPDATE snapshots SET lifecycle_state = ? WHERE id = ?`,
+        `UPDATE snapshots
+           SET lifecycle_state = ?
+           WHERE id = ? AND tenant_scope = ?`,
       ),
     });
   return {
     create(input: CreateSnapshotInput): SnapshotMetadataRecord {
+      if (input.payload !== undefined) {
+        assertCanonicalContentRef(input.payload, "snapshot payload");
+      }
       const id = randomUUID();
       const params: BindRow = {
         id,
@@ -167,8 +180,10 @@ export const createSnapshotRepository = (db: Db): SnapshotRepository => {
       handles.insert.run(params);
       return mapSnapshot(handles.selectById.get(id) as SnapshotRow);
     },
-    get(id: string): SnapshotMetadataRecord | undefined {
-      const row = s().selectById.get(id) as SnapshotRow | undefined;
+    get(id: string, tenantScope: string): SnapshotMetadataRecord | undefined {
+      const row = s().selectByIdAndTenant.get(id, tenantScope) as
+        | SnapshotRow
+        | undefined;
       return row ? mapSnapshot(row) : undefined;
     },
     list(filter?: TenantScopeFilter): readonly SnapshotMetadataRecord[] {
@@ -178,12 +193,15 @@ export const createSnapshotRepository = (db: Db): SnapshotRepository => {
     },
     updateLifecycleState(
       id: string,
+      tenantScope: string,
       lifecycleState: string,
     ): SnapshotMetadataRecord | undefined {
       const handles = s();
-      const result = handles.updateLifecycle.run(lifecycleState, id);
+      const result = handles.updateLifecycle.run(lifecycleState, id, tenantScope);
       if (result.changes === 0) return undefined;
-      return mapSnapshot(handles.selectById.get(id) as SnapshotRow);
+      return mapSnapshot(
+        handles.selectByIdAndTenant.get(id, tenantScope) as SnapshotRow,
+      );
     },
   };
 };
@@ -213,6 +231,7 @@ const mapRun = (row: RunRow): RunMetadataRecord => ({
 interface RunStmts {
   readonly insert: Stmt;
   readonly selectById: Stmt;
+  readonly selectByIdAndTenant: Stmt;
   readonly selectAll: Stmt;
   readonly updateStatus: Stmt;
 }
@@ -228,17 +247,23 @@ export const createRunRepository = (db: Db): RunRepository => {
            @snapshotId, @label, @artifactDir)`,
       ),
       selectById: db.prepare(`SELECT * FROM runs WHERE id = ?`),
+      selectByIdAndTenant: db.prepare(
+        `SELECT * FROM runs WHERE id = ? AND tenant_scope = ?`,
+      ),
       selectAll: db.prepare(
         `SELECT * FROM runs
            WHERE (@tenantScope IS NULL OR tenant_scope = @tenantScope)
            ORDER BY rowid`,
       ),
       updateStatus: db.prepare(
-        `UPDATE runs SET status = ?, updated_at = ? WHERE id = ?`,
+        `UPDATE runs
+           SET status = ?, updated_at = ?
+           WHERE id = ? AND tenant_scope = ?`,
       ),
     });
   return {
     create(input: CreateRunInput): RunMetadataRecord {
+      const handles = s();
       const id = randomUUID();
       const timestamp = nowIso();
       const params: BindRow = {
@@ -251,12 +276,13 @@ export const createRunRepository = (db: Db): RunRepository => {
         label: input.label ?? null,
         artifactDir: input.artifactDir ?? null,
       };
-      const handles = s();
       handles.insert.run(params);
       return mapRun(handles.selectById.get(id) as RunRow);
     },
-    get(id: string): RunMetadataRecord | undefined {
-      const row = s().selectById.get(id) as RunRow | undefined;
+    get(id: string, tenantScope: string): RunMetadataRecord | undefined {
+      const row = s().selectByIdAndTenant.get(id, tenantScope) as
+        | RunRow
+        | undefined;
       return row ? mapRun(row) : undefined;
     },
     list(filter?: TenantScopeFilter): readonly RunMetadataRecord[] {
@@ -266,12 +292,13 @@ export const createRunRepository = (db: Db): RunRepository => {
     },
     updateStatus(
       id: string,
+      tenantScope: string,
       status: WorkbenchRunStatus,
     ): RunMetadataRecord | undefined {
       const handles = s();
-      const result = handles.updateStatus.run(status, nowIso(), id);
+      const result = handles.updateStatus.run(status, nowIso(), id, tenantScope);
       if (result.changes === 0) return undefined;
-      return mapRun(handles.selectById.get(id) as RunRow);
+      return mapRun(handles.selectByIdAndTenant.get(id, tenantScope) as RunRow);
     },
   };
 };
@@ -307,7 +334,9 @@ const mapArtifact = (row: ArtifactRow): ArtifactMetadataRecord => ({
 interface ArtifactStmts {
   readonly insert: Stmt;
   readonly selectById: Stmt;
+  readonly selectByIdAndTenant: Stmt;
   readonly selectByRun: Stmt;
+  readonly selectRunById: Stmt;
 }
 
 export const createArtifactRepository = (db: Db): ArtifactRepository => {
@@ -321,12 +350,28 @@ export const createArtifactRepository = (db: Db): ArtifactRepository => {
            @contentSha256, @contentByteSize, @contentStorageRef, @customerFacing)`,
       ),
       selectById: db.prepare(`SELECT * FROM artifacts WHERE id = ?`),
-      selectByRun: db.prepare(
-        `SELECT * FROM artifacts WHERE run_id = ? ORDER BY rowid`,
+      selectByIdAndTenant: db.prepare(
+        `SELECT * FROM artifacts WHERE id = ? AND tenant_scope = ?`,
       ),
+      selectByRun: db.prepare(
+        `SELECT * FROM artifacts
+           WHERE run_id = ? AND tenant_scope = ?
+           ORDER BY rowid`,
+      ),
+      selectRunById: db.prepare(`SELECT * FROM runs WHERE id = ?`),
     });
   return {
     create(input: CreateArtifactInput): ArtifactMetadataRecord {
+      const handles = s();
+      const runRow = handles.selectRunById.get(input.runId) as
+        | RunRow
+        | undefined;
+      assertSameTenantRun(
+        runRow ? mapRun(runRow) : undefined,
+        input.tenantScope,
+        "artifact runId",
+      );
+      assertCanonicalContentRef(input.content, "artifact content");
       const id = randomUUID();
       const params: BindRow = {
         id,
@@ -340,16 +385,20 @@ export const createArtifactRepository = (db: Db): ArtifactRepository => {
         contentStorageRef: input.content.storageRef,
         customerFacing: fromBool(input.customerFacing),
       };
-      const handles = s();
       handles.insert.run(params);
       return mapArtifact(handles.selectById.get(id) as ArtifactRow);
     },
-    get(id: string): ArtifactMetadataRecord | undefined {
-      const row = s().selectById.get(id) as ArtifactRow | undefined;
+    get(id: string, tenantScope: string): ArtifactMetadataRecord | undefined {
+      const row = s().selectByIdAndTenant.get(id, tenantScope) as
+        | ArtifactRow
+        | undefined;
       return row ? mapArtifact(row) : undefined;
     },
-    list(filter: RunIdFilter): readonly ArtifactMetadataRecord[] {
-      const rows = s().selectByRun.all(filter.runId) as ArtifactRow[];
+    list(filter: RunTenantFilter): readonly ArtifactMetadataRecord[] {
+      const rows = s().selectByRun.all(
+        filter.runId,
+        filter.tenantScope,
+      ) as ArtifactRow[];
       return rows.map(mapArtifact);
     },
   };
@@ -403,6 +452,7 @@ const countSelection = (selection: ScopeSelection): number =>
 interface ScopeBasketStmts {
   readonly insert: Stmt;
   readonly selectById: Stmt;
+  readonly selectByIdAndTenant: Stmt;
   readonly selectAll: Stmt;
   readonly update: Stmt;
 }
@@ -418,6 +468,9 @@ export const createScopeBasketRepository = (db: Db): ScopeBasketRepository => {
            @snapshotId, @selection, @itemCount)`,
       ),
       selectById: db.prepare(`SELECT * FROM scope_baskets WHERE id = ?`),
+      selectByIdAndTenant: db.prepare(
+        `SELECT * FROM scope_baskets WHERE id = ? AND tenant_scope = ?`,
+      ),
       selectAll: db.prepare(
         `SELECT * FROM scope_baskets
            WHERE (@tenantScope IS NULL OR tenant_scope = @tenantScope)
@@ -427,11 +480,12 @@ export const createScopeBasketRepository = (db: Db): ScopeBasketRepository => {
       update: db.prepare(
         `UPDATE scope_baskets
            SET label = ?, selection = ?, item_count = ?, updated_at = ?
-           WHERE id = ?`,
+           WHERE id = ? AND tenant_scope = ?`,
       ),
     });
   return {
     create(input: CreateScopeBasketInput): ScopeBasketRecord {
+      const handles = s();
       const id = randomUUID();
       const timestamp = nowIso();
       const params: BindRow = {
@@ -444,12 +498,13 @@ export const createScopeBasketRepository = (db: Db): ScopeBasketRepository => {
         selection: JSON.stringify(input.selection),
         itemCount: input.itemCount,
       };
-      const handles = s();
       handles.insert.run(params);
       return mapScopeBasket(handles.selectById.get(id) as ScopeBasketRow);
     },
-    get(id: string): ScopeBasketRecord | undefined {
-      const row = s().selectById.get(id) as ScopeBasketRow | undefined;
+    get(id: string, tenantScope: string): ScopeBasketRecord | undefined {
+      const row = s().selectByIdAndTenant.get(id, tenantScope) as
+        | ScopeBasketRow
+        | undefined;
       return row ? mapScopeBasket(row) : undefined;
     },
     list(filter?: ScopeBasketFilter): readonly ScopeBasketRecord[] {
@@ -462,10 +517,11 @@ export const createScopeBasketRepository = (db: Db): ScopeBasketRepository => {
     },
     update(
       id: string,
+      tenantScope: string,
       changes: ScopeBasketChanges,
     ): ScopeBasketRecord | undefined {
       const handles = s();
-      const existingRow = handles.selectById.get(id) as
+      const existingRow = handles.selectByIdAndTenant.get(id, tenantScope) as
         | ScopeBasketRow
         | undefined;
       if (!existingRow) return undefined;
@@ -477,8 +533,11 @@ export const createScopeBasketRepository = (db: Db): ScopeBasketRepository => {
         countSelection(selection),
         nowIso(),
         id,
+        tenantScope,
       );
-      return mapScopeBasket(handles.selectById.get(id) as ScopeBasketRow);
+      return mapScopeBasket(
+        handles.selectByIdAndTenant.get(id, tenantScope) as ScopeBasketRow,
+      );
     },
   };
 };
@@ -514,7 +573,9 @@ const mapGeneratedSeed = (
 interface GeneratedSeedStmts {
   readonly insert: Stmt;
   readonly selectById: Stmt;
+  readonly selectByIdAndTenant: Stmt;
   readonly selectByRun: Stmt;
+  readonly selectRunById: Stmt;
 }
 
 export const createGeneratedSeedRepository = (
@@ -530,12 +591,28 @@ export const createGeneratedSeedRepository = (
            @count, @contentSha256, @contentByteSize, @contentStorageRef)`,
       ),
       selectById: db.prepare(`SELECT * FROM generated_seeds WHERE id = ?`),
-      selectByRun: db.prepare(
-        `SELECT * FROM generated_seeds WHERE run_id = ? ORDER BY rowid`,
+      selectByIdAndTenant: db.prepare(
+        `SELECT * FROM generated_seeds WHERE id = ? AND tenant_scope = ?`,
       ),
+      selectByRun: db.prepare(
+        `SELECT * FROM generated_seeds
+           WHERE run_id = ? AND tenant_scope = ?
+           ORDER BY rowid`,
+      ),
+      selectRunById: db.prepare(`SELECT * FROM runs WHERE id = ?`),
     });
   return {
     create(input: CreateGeneratedSeedInput): GeneratedSeedMetadataRecord {
+      const handles = s();
+      const runRow = handles.selectRunById.get(input.runId) as
+        | RunRow
+        | undefined;
+      assertSameTenantRun(
+        runRow ? mapRun(runRow) : undefined,
+        input.tenantScope,
+        "generated seed runId",
+      );
+      assertCanonicalContentRef(input.content, "generated seed content");
       const id = randomUUID();
       const params: BindRow = {
         id,
@@ -548,16 +625,23 @@ export const createGeneratedSeedRepository = (
         contentByteSize: input.content.byteSize,
         contentStorageRef: input.content.storageRef,
       };
-      const handles = s();
       handles.insert.run(params);
       return mapGeneratedSeed(handles.selectById.get(id) as GeneratedSeedRow);
     },
-    get(id: string): GeneratedSeedMetadataRecord | undefined {
-      const row = s().selectById.get(id) as GeneratedSeedRow | undefined;
+    get(
+      id: string,
+      tenantScope: string,
+    ): GeneratedSeedMetadataRecord | undefined {
+      const row = s().selectByIdAndTenant.get(id, tenantScope) as
+        | GeneratedSeedRow
+        | undefined;
       return row ? mapGeneratedSeed(row) : undefined;
     },
-    list(filter: RunIdFilter): readonly GeneratedSeedMetadataRecord[] {
-      const rows = s().selectByRun.all(filter.runId) as GeneratedSeedRow[];
+    list(filter: RunTenantFilter): readonly GeneratedSeedMetadataRecord[] {
+      const rows = s().selectByRun.all(
+        filter.runId,
+        filter.tenantScope,
+      ) as GeneratedSeedRow[];
       return rows.map(mapGeneratedSeed);
     },
   };
@@ -592,7 +676,9 @@ const mapExport = (row: ExportRow): ExportMetadataRecord => ({
 interface ExportStmts {
   readonly insert: Stmt;
   readonly selectById: Stmt;
+  readonly selectByIdAndTenant: Stmt;
   readonly selectByRun: Stmt;
+  readonly selectRunById: Stmt;
 }
 
 export const createExportRepository = (db: Db): ExportRepository => {
@@ -606,12 +692,28 @@ export const createExportRepository = (db: Db): ExportRepository => {
            @contentSha256, @contentByteSize, @contentStorageRef)`,
       ),
       selectById: db.prepare(`SELECT * FROM exports WHERE id = ?`),
-      selectByRun: db.prepare(
-        `SELECT * FROM exports WHERE run_id = ? ORDER BY rowid`,
+      selectByIdAndTenant: db.prepare(
+        `SELECT * FROM exports WHERE id = ? AND tenant_scope = ?`,
       ),
+      selectByRun: db.prepare(
+        `SELECT * FROM exports
+           WHERE run_id = ? AND tenant_scope = ?
+           ORDER BY rowid`,
+      ),
+      selectRunById: db.prepare(`SELECT * FROM runs WHERE id = ?`),
     });
   return {
     create(input: CreateExportInput): ExportMetadataRecord {
+      const handles = s();
+      const runRow = handles.selectRunById.get(input.runId) as
+        | RunRow
+        | undefined;
+      assertSameTenantRun(
+        runRow ? mapRun(runRow) : undefined,
+        input.tenantScope,
+        "export runId",
+      );
+      assertCanonicalContentRef(input.content, "export content");
       const id = randomUUID();
       const params: BindRow = {
         id,
@@ -624,16 +726,20 @@ export const createExportRepository = (db: Db): ExportRepository => {
         contentByteSize: input.content.byteSize,
         contentStorageRef: input.content.storageRef,
       };
-      const handles = s();
       handles.insert.run(params);
       return mapExport(handles.selectById.get(id) as ExportRow);
     },
-    get(id: string): ExportMetadataRecord | undefined {
-      const row = s().selectById.get(id) as ExportRow | undefined;
+    get(id: string, tenantScope: string): ExportMetadataRecord | undefined {
+      const row = s().selectByIdAndTenant.get(id, tenantScope) as
+        | ExportRow
+        | undefined;
       return row ? mapExport(row) : undefined;
     },
-    list(filter: RunIdFilter): readonly ExportMetadataRecord[] {
-      const rows = s().selectByRun.all(filter.runId) as ExportRow[];
+    list(filter: RunTenantFilter): readonly ExportMetadataRecord[] {
+      const rows = s().selectByRun.all(
+        filter.runId,
+        filter.tenantScope,
+      ) as ExportRow[];
       return rows.map(mapExport);
     },
   };
