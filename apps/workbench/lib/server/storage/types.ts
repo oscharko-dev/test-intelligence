@@ -1,0 +1,275 @@
+/**
+ * Persistence DTOs and repository interfaces for the Workbench storage boundary.
+ *
+ * This module defines the contract that future Workbench persistence features
+ * depend on (Epic #48). It is intentionally self-contained: it imports only
+ * standard-library types and never references UI or domain modules. Where a
+ * record mirrors an existing domain type, the alignment is documented in a WHY
+ * comment so the persistence schema can evolve independently of the UI layer.
+ */
+
+export type IsoTimestamp = string;
+
+export type Sha256Hex = string;
+
+/**
+ * Reference to a binary stored in the content-addressed artifact store rather
+ * than inline in SQLite. Large node graphs, generated-seed JSON, and export
+ * binaries are persisted as files and referenced by their content hash.
+ */
+export interface ContentRef {
+  readonly sha256: Sha256Hex;
+  readonly byteSize: number;
+  readonly storageRef: string;
+}
+
+/**
+ * WHY: a faithful copy of the `RunStatus` union in `lib/types.ts`. It is
+ * redeclared locally instead of imported solely to keep the storage boundary
+ * free of UI imports; `lib/types.ts` remains the source of truth, and this copy
+ * is kept in sync with it member-for-member.
+ */
+export type WorkbenchRunStatus =
+  | "idle"
+  | "queued"
+  | "running"
+  | "judging"
+  | "policy-gate"
+  | "sealed"
+  | "clean"
+  | "blocked"
+  | "blocked_failure"
+  | "failed"
+  | "degraded";
+
+export type ArtifactKind =
+  | "markdown"
+  | "pdf"
+  | "zip"
+  | "json"
+  | "image"
+  | "other";
+
+export type ExportFormat = "markdown" | "pdf" | "zip" | "json";
+
+/**
+ * WHY: aligns with `WorkbenchSnapshotCatalogRow` in `lib/snapshot-vault.ts`. The
+ * large node graph is offloaded to the artifact store via `payload`; only the
+ * catalog metadata is kept in SQLite.
+ */
+export interface SnapshotMetadataRecord {
+  readonly id: string;
+  readonly tenantScope: string;
+  readonly createdAt: IsoTimestamp;
+  readonly label?: string;
+  readonly source: string;
+  readonly nodeCount: number;
+  readonly pageCount: number;
+  readonly frameCount: number;
+  readonly lifecycleState: string;
+  readonly payload?: ContentRef;
+}
+
+/**
+ * WHY: `status` aligns with `WorkbenchRunStatus` (see above). Large customer
+ * outputs remain on disk and are referenced by `artifactDir`; only run metadata
+ * is stored in SQLite.
+ */
+export interface RunMetadataRecord {
+  readonly id: string;
+  readonly tenantScope: string;
+  readonly createdAt: IsoTimestamp;
+  readonly updatedAt: IsoTimestamp;
+  readonly status: WorkbenchRunStatus;
+  readonly snapshotId?: string;
+  readonly label?: string;
+  readonly artifactDir?: string;
+}
+
+/**
+ * Append-only record for a produced artifact. The binary lives in the
+ * content-addressed store; `content` references it. WHY: `content.sha256` aligns
+ * with the contracts package `ExportArtifactRecord.sha256` naming.
+ */
+export interface ArtifactMetadataRecord {
+  readonly id: string;
+  readonly runId: string;
+  readonly tenantScope: string;
+  readonly createdAt: IsoTimestamp;
+  readonly name: string;
+  readonly kind: ArtifactKind;
+  readonly content: ContentRef;
+  readonly customerFacing: boolean;
+}
+
+export interface ScopeSelection {
+  readonly nodeIds: readonly string[];
+  readonly pageIds: readonly string[];
+  readonly frameIds: readonly string[];
+}
+
+/**
+ * Scope basket is small and fully resident in SQLite (no artifact offload).
+ */
+export interface ScopeBasketRecord {
+  readonly id: string;
+  readonly tenantScope: string;
+  readonly createdAt: IsoTimestamp;
+  readonly updatedAt: IsoTimestamp;
+  readonly label: string;
+  readonly snapshotId?: string;
+  readonly selection: ScopeSelection;
+  readonly itemCount: number;
+}
+
+/**
+ * WHY: the generated `GeneratedTestCaseList` JSON (contracts package) is large
+ * and lives in the artifact store via `content`; only metadata is in SQLite.
+ */
+export interface GeneratedSeedMetadataRecord {
+  readonly id: string;
+  readonly runId: string;
+  readonly tenantScope: string;
+  readonly createdAt: IsoTimestamp;
+  readonly status: string;
+  readonly count: number;
+  readonly content: ContentRef;
+}
+
+/**
+ * WHY: `format` aligns with the contracts package `ExportArtifactRecord.format`.
+ * The export binary lives in the artifact store via `content`.
+ */
+export interface ExportMetadataRecord {
+  readonly id: string;
+  readonly runId: string;
+  readonly tenantScope: string;
+  readonly createdAt: IsoTimestamp;
+  readonly format: ExportFormat;
+  readonly status: string;
+  readonly content: ContentRef;
+}
+
+export interface CreateSnapshotInput {
+  readonly tenantScope: string;
+  readonly label?: string;
+  readonly source: string;
+  readonly nodeCount: number;
+  readonly pageCount: number;
+  readonly frameCount: number;
+  readonly lifecycleState: string;
+  readonly payload?: ContentRef;
+}
+
+export interface CreateRunInput {
+  readonly tenantScope: string;
+  readonly status: WorkbenchRunStatus;
+  readonly snapshotId?: string;
+  readonly label?: string;
+  readonly artifactDir?: string;
+}
+
+export interface CreateArtifactInput {
+  readonly runId: string;
+  readonly tenantScope: string;
+  readonly name: string;
+  readonly kind: ArtifactKind;
+  readonly content: ContentRef;
+  readonly customerFacing: boolean;
+}
+
+export interface CreateScopeBasketInput {
+  readonly tenantScope: string;
+  readonly label: string;
+  readonly snapshotId?: string;
+  readonly selection: ScopeSelection;
+  readonly itemCount: number;
+}
+
+export interface CreateGeneratedSeedInput {
+  readonly runId: string;
+  readonly tenantScope: string;
+  readonly status: string;
+  readonly count: number;
+  readonly content: ContentRef;
+}
+
+export interface CreateExportInput {
+  readonly runId: string;
+  readonly tenantScope: string;
+  readonly format: ExportFormat;
+  readonly status: string;
+  readonly content: ContentRef;
+}
+
+export interface TenantScopeFilter {
+  readonly tenantScope?: string;
+}
+
+export interface RunIdFilter {
+  readonly runId: string;
+}
+
+export interface ScopeBasketFilter {
+  readonly tenantScope?: string;
+  readonly snapshotId?: string;
+}
+
+export interface ScopeBasketChanges {
+  readonly label?: string;
+  readonly selection?: ScopeSelection;
+}
+
+/**
+ * Repositories return deep, immutable snapshots of stored state. `get` and
+ * `update*` return `undefined` for an absent id; `list` returns an empty array
+ * when nothing matches. Methods are synchronous because the concrete SQLite
+ * implementation (better-sqlite3) and the in-memory double are both synchronous.
+ */
+export interface SnapshotRepository {
+  create(input: CreateSnapshotInput): SnapshotMetadataRecord;
+  get(id: string): SnapshotMetadataRecord | undefined;
+  list(filter?: TenantScopeFilter): readonly SnapshotMetadataRecord[];
+  updateLifecycleState(
+    id: string,
+    lifecycleState: string,
+  ): SnapshotMetadataRecord | undefined;
+}
+
+export interface RunRepository {
+  create(input: CreateRunInput): RunMetadataRecord;
+  get(id: string): RunMetadataRecord | undefined;
+  list(filter?: TenantScopeFilter): readonly RunMetadataRecord[];
+  updateStatus(
+    id: string,
+    status: WorkbenchRunStatus,
+  ): RunMetadataRecord | undefined;
+}
+
+export interface ArtifactRepository {
+  create(input: CreateArtifactInput): ArtifactMetadataRecord;
+  get(id: string): ArtifactMetadataRecord | undefined;
+  list(filter: RunIdFilter): readonly ArtifactMetadataRecord[];
+}
+
+export interface ScopeBasketRepository {
+  create(input: CreateScopeBasketInput): ScopeBasketRecord;
+  get(id: string): ScopeBasketRecord | undefined;
+  list(filter?: ScopeBasketFilter): readonly ScopeBasketRecord[];
+  update(
+    id: string,
+    changes: ScopeBasketChanges,
+  ): ScopeBasketRecord | undefined;
+}
+
+export interface GeneratedSeedRepository {
+  create(input: CreateGeneratedSeedInput): GeneratedSeedMetadataRecord;
+  get(id: string): GeneratedSeedMetadataRecord | undefined;
+  list(filter: RunIdFilter): readonly GeneratedSeedMetadataRecord[];
+}
+
+export interface ExportRepository {
+  create(input: CreateExportInput): ExportMetadataRecord;
+  get(id: string): ExportMetadataRecord | undefined;
+  list(filter: RunIdFilter): readonly ExportMetadataRecord[];
+}
