@@ -71,11 +71,12 @@ jobs:
       # native `prebuild-install` for `better-sqlite3` does not run during
       # `pnpm install`. The trust allowlist in root `package.json`
       # (`pnpm.onlyBuiltDependencies`) names `better-sqlite3` as the single
-      # package whose install scripts are permitted; this step operationalises
-      # that allowlist by explicitly rebuilding the native binding required by
-      # the Workbench storage adapter (Issue #52).
+      # package whose install scripts are permitted; `pnpm rebuild -r`
+      # operationalises that allowlist across the workspaces (the dep is
+      # declared by `apps/workbench`, not the root project, so `-r` is
+      # required for pnpm to locate it).
       - name: Build native modules — better-sqlite3
-        run: pnpm rebuild better-sqlite3
+        run: pnpm rebuild -r better-sqlite3
 
       - name: Lockfile host allowlist
         run: node scripts/check-lockfile-hosts.mjs
