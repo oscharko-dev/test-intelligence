@@ -2,9 +2,12 @@
 import { randomUUID } from "node:crypto";
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   rmSync,
+  statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -74,6 +77,8 @@ const okSchemaStep = (version: number): WorkbenchMigration => ({
   up() {},
 });
 
+const modeOf = (filePath: string): number => statSync(filePath).mode & 0o777;
+
 describe("bootstrapWorkbenchStorage", () => {
   let root: string;
   let databaseFile: string;
@@ -82,11 +87,7 @@ describe("bootstrapWorkbenchStorage", () => {
   beforeEach(() => {
     root = path.join(tmpdir(), `ti-bootstrap-${randomUUID()}`);
     databaseFile = path.join(root, ".test-intelligence", "workbench.db");
-    artifactRoot = path.join(
-      root,
-      ".test-intelligence",
-      "storage-artifacts",
-    );
+    artifactRoot = path.join(root, ".test-intelligence", "storage-artifacts");
   });
 
   afterEach(() => {
@@ -99,6 +100,8 @@ describe("bootstrapWorkbenchStorage", () => {
     const adapter = bootstrapWorkbenchStorage({ databaseFile, artifactRoot });
     expect(existsSync(databaseFile)).toBe(true);
     expect(existsSync(artifactRoot)).toBe(true);
+    expect(modeOf(path.dirname(databaseFile))).toBe(0o700);
+    expect(modeOf(artifactRoot)).toBe(0o700);
     expect(adapter.getSchemaVersion()).toBe(WORKBENCH_SCHEMA_VERSION);
     adapter.close();
 
@@ -236,6 +239,44 @@ describe("bootstrapWorkbenchStorage", () => {
       ),
     });
     adapter.close();
+  });
+
+  it("fails closed when the data root is a symlink", () => {
+    mkdirSync(root, { recursive: true });
+    const outsideDataRoot = path.join(root, "outside-data-root");
+    mkdirSync(outsideDataRoot, { recursive: true });
+    symlinkSync(outsideDataRoot, path.dirname(databaseFile), "dir");
+
+    let thrown: unknown;
+    try {
+      bootstrapWorkbenchStorage({ databaseFile, artifactRoot });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(WorkbenchStorageError);
+    expect((thrown as WorkbenchStorageError).code).toBe("STORAGE_PATH_INVALID");
+    expect((thrown as WorkbenchStorageError).message).not.toContain(root);
+    expect(lstatSync(path.dirname(databaseFile)).isSymbolicLink()).toBe(true);
+  });
+
+  it("fails closed when the artifact root is a symlink", () => {
+    mkdirSync(path.dirname(databaseFile), { recursive: true });
+    const outsideArtifactRoot = path.join(root, "outside-artifacts");
+    mkdirSync(outsideArtifactRoot, { recursive: true });
+    symlinkSync(outsideArtifactRoot, artifactRoot, "dir");
+
+    let thrown: unknown;
+    try {
+      bootstrapWorkbenchStorage({ databaseFile, artifactRoot });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(WorkbenchStorageError);
+    expect((thrown as WorkbenchStorageError).code).toBe("STORAGE_PATH_INVALID");
+    expect((thrown as WorkbenchStorageError).message).not.toContain(root);
+    expect(lstatSync(artifactRoot).isSymbolicLink()).toBe(true);
   });
 });
 
