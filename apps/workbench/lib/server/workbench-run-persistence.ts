@@ -33,7 +33,6 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 import {
-  resolveWorkbenchStoragePaths,
   verifyArtifact,
   writeArtifact,
   type ArtifactKind,
@@ -41,11 +40,14 @@ import {
   type WorkbenchRunStatus,
   type WorkbenchStoragePaths,
 } from "@/lib/server/storage";
-// WHY a separate import path: `getWorkbenchStorage` is intentionally NOT
-// re-exported from the storage barrel because it pulls in the better-sqlite3
-// adapter, which must never reach a client bundle. Server-only callers import
-// it directly (mirrors `workbench-snapshot-persistence.ts`).
-import { getWorkbenchStorage } from "@/lib/server/storage/bootstrap";
+// WHY a separate import path: `getWorkbenchStorage`/`getWorkbenchStoragePaths`
+// are intentionally NOT re-exported from the storage barrel because they pull in
+// the better-sqlite3 adapter, which must never reach a client bundle. Server-only
+// callers import them directly (mirrors `workbench-snapshot-persistence.ts`).
+import {
+  getWorkbenchStorage,
+  getWorkbenchStoragePaths,
+} from "@/lib/server/storage/bootstrap";
 import type { WorkbenchStorageAdapter } from "@/lib/server/storage/storage-adapter";
 import type { RunState } from "@/lib/types";
 
@@ -89,16 +91,17 @@ export const storageEnvForRepoRoot = (
 
 /**
  * Server-controlled run-state-document directory
- * (`<repoRoot>/.test-intelligence/run-state`). WHY derived only from
- * `resolveWorkbenchStoragePaths` (reads `process.env`/`WORKBENCH_REPO_ROOT`, never
- * the run request body): documents written here carry NO user-tainted path
- * component, so the writes cannot be a path-injection sink, and the rehydration
- * metadata lives beside the SQLite DB, not inside the operator's output dir (so it
- * is not exposed by the artifact `/files` route).
+ * (`<repoRoot>/.test-intelligence/run-state`). WHY the singleton's cached
+ * `databaseFile` (via `getWorkbenchStoragePaths`, which reads
+ * `process.env`/`WORKBENCH_REPO_ROOT`, never the run request body): documents
+ * written here carry NO user-tainted path component, so the writes cannot be a
+ * path-injection sink; and keying off the adapter's bound DB path keeps the
+ * rehydration metadata beside the SAME SQLite DB the `runs` rows live in (not the
+ * operator's output dir, so it is not exposed by the artifact `/files` route).
  */
 const runStateRoot = (env: NodeJS.ProcessEnv): string =>
   path.join(
-    path.dirname(resolveWorkbenchStoragePaths(env).databaseFile),
+    path.dirname(getWorkbenchStoragePaths({ env }).databaseFile),
     RUN_STATE_DIRECTORY,
   );
 
@@ -299,7 +302,11 @@ export const persistSealedRunArtifacts = (input: {
 }): void => {
   try {
     const env = storageEnvForRepoRoot(input.repoRoot);
-    const paths = resolveWorkbenchStoragePaths(env);
+    // WHY the singleton's cached paths: each artifact's bytes are written to the
+    // content store under these paths while its metadata row is written through
+    // the adapter below; both MUST share the adapter's bound root, not a
+    // divergent per-call resolve (the #52 single-bind contract).
+    const paths = getWorkbenchStoragePaths({ env });
     const storage = getWorkbenchStorage({ env });
     const resolvedArtifactDir = path.resolve(input.artifactDir);
     for (const filePath of input.artifactPaths) {
@@ -415,7 +422,10 @@ export const verifyRunArtifacts = (
   rowId: string,
 ): readonly RunArtifactVerification[] => {
   try {
-    const paths = resolveWorkbenchStoragePaths(env);
+    // WHY the singleton's cached paths: artifact refs are verified against the
+    // content store, so they MUST resolve to the same root the adapter (which
+    // produced these `artifacts` rows) bound at first bootstrap.
+    const paths = getWorkbenchStoragePaths({ env });
     const records = getWorkbenchStorage({ env }).artifacts.list({
       runId: rowId,
     });

@@ -20,6 +20,7 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 
 import { resolveWorkbenchStoragePaths } from "./db-path";
+import type { WorkbenchStoragePaths } from "./db-path";
 import type { WorkbenchMigration } from "./migrations";
 import { createDeferredSqliteWorkbenchStorageAdapter } from "./sqlite-adapter";
 import { WorkbenchStorageError } from "./storage-adapter";
@@ -90,32 +91,73 @@ export const bootstrapWorkbenchStorage = (
 
 const globalForStorage = globalThis as typeof globalThis & {
   __TI_WORKBENCH_STORAGE__?: WorkbenchStorageAdapter;
+  __TI_WORKBENCH_STORAGE_PATHS__?: WorkbenchStoragePaths;
 };
 
 /**
  * Returns the process-wide Workbench storage adapter, bootstrapping it on first
  * use and caching it on `globalThis` (mirrors `workbench-run-registry.ts`). The
- * cached instance ignores per-call options after the first call.
+ * cached instance ignores per-call options after the first call. The resolved
+ * `WorkbenchStoragePaths` the singleton was bootstrapped with are cached
+ * alongside it so content-store I/O can resolve to the SAME data root (see
+ * `getWorkbenchStoragePaths`).
  */
 export const getWorkbenchStorage = (
   options: BootstrapWorkbenchStorageOptions = {},
 ): WorkbenchStorageAdapter => {
   if (globalForStorage.__TI_WORKBENCH_STORAGE__ === undefined) {
+    const resolved = resolvePaths(options);
     globalForStorage.__TI_WORKBENCH_STORAGE__ =
       bootstrapWorkbenchStorage(options);
+    // Cache only after a successful bootstrap so a migration failure leaves both
+    // the adapter and the paths absent (the getters re-attempt on the next call).
+    globalForStorage.__TI_WORKBENCH_STORAGE_PATHS__ = {
+      databaseFile: resolved.databaseFile,
+      artifactRoot: resolved.artifactRoot,
+    };
   }
   return globalForStorage.__TI_WORKBENCH_STORAGE__;
 };
 
 /**
- * Closes and clears the cached adapter. Intended for tests that bootstrap into
- * temporary directories and need a clean singleton between cases.
+ * Returns the `WorkbenchStoragePaths` the singleton adapter is actually bound
+ * to, bootstrapping it on first use. WHY this exists: the adapter binds its data
+ * root ONCE at first bootstrap and ignores per-call `env` afterward (the #52
+ * contract), so callers that drive content-store I/O must use these cached paths
+ * rather than a fresh per-call `resolveWorkbenchStoragePaths(env)` — otherwise a
+ * later call with a different `WORKBENCH_REPO_ROOT` would scatter artifact bytes
+ * and the metadata rows that reference them across different roots. Pass the same
+ * `options.env` you pass to `getWorkbenchStorage` so the FIRST call binds the
+ * intended root; the return is resolved-then-cached above, so it is provably
+ * defined (no non-null assertion).
+ */
+export const getWorkbenchStoragePaths = (
+  options: BootstrapWorkbenchStorageOptions = {},
+): WorkbenchStoragePaths => {
+  getWorkbenchStorage(options);
+  const paths = globalForStorage.__TI_WORKBENCH_STORAGE_PATHS__;
+  if (paths === undefined) {
+    // Unreachable: a successful getWorkbenchStorage caches the paths in the same
+    // branch. Narrowed explicitly so the return type carries no `undefined`.
+    throw new WorkbenchStorageError(
+      "MIGRATION_FAILED",
+      "Failed to initialize the local Workbench database. Existing data was left unchanged.",
+    );
+  }
+  return paths;
+};
+
+/**
+ * Closes and clears the cached adapter and its cached paths. Intended for tests
+ * that bootstrap into temporary directories and need a clean singleton between
+ * cases.
  */
 export const resetWorkbenchStorageForTests = (): void => {
   globalForStorage.__TI_WORKBENCH_STORAGE__?.close();
-  // WHY `delete` rather than assigning `undefined`: the singleton field is an
-  // OPTIONAL property, and `exactOptionalPropertyTypes` forbids writing
-  // `undefined` to a non-`undefined`-typed slot. Deleting the key restores the
-  // absent state the lazy getter checks for.
+  // WHY `delete` rather than assigning `undefined`: the singleton fields are
+  // OPTIONAL properties, and `exactOptionalPropertyTypes` forbids writing
+  // `undefined` to a non-`undefined`-typed slot. Deleting the keys restores the
+  // absent state the lazy getters check for.
   delete globalForStorage.__TI_WORKBENCH_STORAGE__;
+  delete globalForStorage.__TI_WORKBENCH_STORAGE_PATHS__;
 };

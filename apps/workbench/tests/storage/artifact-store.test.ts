@@ -86,16 +86,17 @@ describe("artifact-store", () => {
       );
     });
 
-    it("does not replace a pre-existing shard at the target path (immutability)", () => {
-      // Simulate a corrupt/partial shard already present at the final path: a
-      // content-addressed write must never overwrite it, and must still report
-      // the correct ref without throwing.
+    it("repairs a pre-existing corrupt shard at the target path (self-heal)", () => {
+      // A truncated/corrupt shard already sits at the final path (e.g. a prior
+      // crash mid-write). writeArtifact for the SAME hash must atomically replace
+      // it with the canonical bytes — restoration, not mutation, since a content
+      // hash has exactly one valid byte sequence.
       const bytes = bytesOf("content-addressed-payload");
       const sha256 = sha256Hex(bytes);
       const absolute = artifactAbsolutePath(paths, sha256);
       mkdirSync(path.dirname(absolute), { recursive: true });
-      const corrupt = bytesOf("partial-corrupt-shard");
-      writeFileSync(absolute, corrupt);
+      // Wrong bytes (and wrong length) at the canonical path.
+      writeFileSync(absolute, bytesOf("partial-corrupt-shard"));
 
       const ref = writeArtifact(paths, bytes);
 
@@ -104,11 +105,58 @@ describe("artifact-store", () => {
       expect(ref.storageRef).toBe(
         `${sha256.slice(0, 2)}/${sha256.slice(2, 4)}/${sha256}.bin`,
       );
-      // The on-disk bytes are untouched (write-once immutability preserved).
-      expect(new Uint8Array(readFileSync(absolute))).toStrictEqual(corrupt);
+      // The corrupt shard was repaired to the canonical bytes on disk.
+      expect(new Uint8Array(readFileSync(absolute))).toStrictEqual(bytes);
+      // Read/verify of the artifact now succeed against the repaired shard.
+      expect(readArtifact(paths, ref)).toStrictEqual(bytes);
+      expect(verifyArtifact(paths, ref)).toStrictEqual({
+        present: true,
+        checksumValid: true,
+        actualByteSize: ref.byteSize,
+      });
       // No leftover temp files accumulate in the shard directory.
       expect(readdirSync(path.dirname(absolute))).toStrictEqual([
         `${sha256}.bin`,
+      ]);
+    });
+
+    it("repairs a corrupt shard that happens to share the correct byte length", () => {
+      // A same-length corrupt shard would slip past a length-only check; the
+      // sha256 comparison must still detect it and trigger the atomic rewrite.
+      const bytes = bytesOf("same-length-AAAA");
+      const sha256 = sha256Hex(bytes);
+      const absolute = artifactAbsolutePath(paths, sha256);
+      mkdirSync(path.dirname(absolute), { recursive: true });
+      const corrupt = bytesOf("same-length-BBBB");
+      expect(corrupt.byteLength).toBe(bytes.byteLength);
+      writeFileSync(absolute, corrupt);
+
+      const ref = writeArtifact(paths, bytes);
+
+      expect(new Uint8Array(readFileSync(absolute))).toStrictEqual(bytes);
+      expect(verifyArtifact(paths, ref).checksumValid).toBe(true);
+      expect(readdirSync(path.dirname(absolute))).toStrictEqual([
+        `${sha256}.bin`,
+      ]);
+    });
+
+    it("leaves an already-correct shard byte-identical and writes no temp file", () => {
+      // A correct existing shard must NOT be rewritten (write-once): capture the
+      // inode/mtime-bearing bytes, rewrite, and assert the on-disk bytes and the
+      // sole directory entry are unchanged.
+      const bytes = bytesOf("already-correct-shard");
+      const first = writeArtifact(paths, bytes);
+      const absolute = artifactAbsolutePath(paths, first.sha256);
+      const before = new Uint8Array(readFileSync(absolute));
+
+      const second = writeArtifact(paths, bytes);
+
+      expect(second).toStrictEqual(first);
+      expect(new Uint8Array(readFileSync(absolute))).toStrictEqual(before);
+      expect(readArtifact(paths, second)).toStrictEqual(bytes);
+      // No temp residue from the skipped rewrite.
+      expect(readdirSync(path.dirname(absolute))).toStrictEqual([
+        `${first.sha256}.bin`,
       ]);
     });
 

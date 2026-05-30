@@ -61,21 +61,45 @@ const isErrnoCode = (error: unknown, code: string): boolean =>
   (error as NodeJS.ErrnoException).code === code;
 
 /**
+ * True only when the file already at `absolute` holds EXACTLY the canonical
+ * bytes for `sha256`/`byteSize` (length matches and the recomputed digest
+ * matches). Any read error (absent, unreadable) returns `false` so the caller
+ * (re)writes. `absolute` is derived from the validated `sha256`, never from user
+ * input, so reading it is not a path-injection sink.
+ */
+const existingShardMatches = (
+  absolute: string,
+  sha256: string,
+  byteSize: number,
+): boolean => {
+  try {
+    const bytes = readFileSync(absolute);
+    return bytes.byteLength === byteSize && sha256Hex(bytes) === sha256;
+  } catch {
+    return false;
+  }
+};
+
+/**
  * Persists `bytes` under their content hash and returns the reference.
  *
  * WHY temp-file + atomic rename: `writeFileSync` to the final path is not
- * atomic — a crash mid-write would leave a truncated shard that a later write
- * for the same hash would then trust. Instead the bytes are written to a unique
- * temp file in the SAME shard directory (same filesystem, so `renameSync` is
- * atomic) and renamed onto `<hash>.bin`. A crash now leaves only an orphan temp
- * file, never a partial final shard.
+ * atomic — a crash mid-write would leave a truncated shard. Instead the bytes
+ * are written to a uniquely named temp file in the SAME shard directory (same
+ * filesystem, so `renameSync` is atomic) and renamed onto `<hash>.bin`. The
+ * rename atomically REPLACES whatever was at the target, so an absent shard is
+ * created and a corrupt/truncated one is repaired in a single step; a crash
+ * leaves only an orphan temp file, never a partial final shard. The temp name
+ * carries a `randomUUID()`, so concurrent writers for the same hash never
+ * collide on the temp path and the rename needs no `wx` guard.
  *
- * WHY skip when the target exists: the store is content-addressed, so an
- * existing file at the target path is by definition the identical bytes.
- * Skipping the rename preserves immutable-evidence semantics (write-once, never
- * overwritten) and keeps concurrent identical writes safe. The temp file is
- * cleaned up best-effort so orphans do not accumulate. The temp name is derived
- * only from the validated hash plus a `randomUUID()` — no user-tainted input.
+ * WHY skip only an already-correct shard: the store is content-addressed and
+ * immutable, so the canonical bytes for a hash are fixed. When the existing
+ * shard already holds those exact bytes the rewrite is skipped (write-once,
+ * never needlessly overwritten); otherwise — absent OR corrupt — the atomic
+ * rename writes the canonical bytes, which RESTORES a corrupt shard to its one
+ * correct value (restoration, not mutation). The temp file is cleaned up
+ * best-effort so orphans never accumulate.
  */
 export const writeArtifact = (
   paths: WorkbenchStoragePaths,
@@ -89,14 +113,17 @@ export const writeArtifact = (
   const ref: ContentRef = { sha256, byteSize, storageRef };
 
   mkdirSync(shardDir, { recursive: true });
-  if (existsSync(absolute)) return ref;
+  if (
+    existsSync(absolute) &&
+    existingShardMatches(absolute, sha256, byteSize)
+  ) {
+    return ref;
+  }
 
   const tempPath = path.join(shardDir, `${sha256}.${randomUUID()}.tmp`);
   try {
-    writeFileSync(tempPath, bytes, { flag: "wx" });
-    // `wx` keeps the rename a no-op if a racing write already created the
-    // final shard; that destination is identical content, so the temp is dropped.
-    if (!existsSync(absolute)) renameSync(tempPath, absolute);
+    writeFileSync(tempPath, bytes);
+    renameSync(tempPath, absolute);
   } finally {
     rmSync(tempPath, { force: true });
   }
