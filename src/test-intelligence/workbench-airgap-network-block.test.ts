@@ -4,10 +4,20 @@ import path from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
-const scriptDir = path.dirname(fileURLToPath(import.meta.url));
-const networkBlock = path.join(scriptDir, "workbench-airgap-network-block.mjs");
+const repoRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "..",
+);
+const networkBlock = path.join(
+  repoRoot,
+  "scripts",
+  "workbench-airgap-network-block.mjs",
+);
 
-const runBlockedProbe = (expression) =>
+const runBlockedProbe = (
+  importName: "spawnSync" | "execSync" | "execFileSync",
+) =>
   spawnSync(
     process.execPath,
     [
@@ -15,7 +25,7 @@ const runBlockedProbe = (expression) =>
       networkBlock,
       "--input-type=module",
       "-e",
-      `import { ${expression.importName} } from "node:child_process"; ${expression.importName}("true");`,
+      `import { ${importName} } from "node:child_process"; ${importName}("true");`,
     ],
     {
       encoding: "utf8",
@@ -23,9 +33,9 @@ const runBlockedProbe = (expression) =>
   );
 
 void describe("Workbench airgap network block", () => {
-  for (const importName of ["spawnSync", "execSync", "execFileSync"]) {
+  for (const importName of ["spawnSync", "execSync", "execFileSync"] as const) {
     void it(`blocks child_process.${importName}`, () => {
-      const result = runBlockedProbe({ importName });
+      const result = runBlockedProbe(importName);
       assert.notEqual(result.status, 0);
       assert.match(
         `${result.stdout}\n${result.stderr}`,
