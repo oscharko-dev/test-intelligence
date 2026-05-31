@@ -134,6 +134,67 @@ const SCHEMA_V2_INDEX_STATEMENTS: readonly string[] = [
 ];
 
 /**
+ * DDL for schema version 3: persisted canonical test-case editor model
+ * (Issue #56). Three tables back the parent → current-version → trace-links
+ * relationship; large JSON columns (preconditions, steps, test data, tags) live
+ * inline because each generated case is small (kilobytes), while the original
+ * generated payload remains in the artifact store as a content-addressed
+ * snapshot.
+ */
+const SCHEMA_V3_STATEMENTS: readonly string[] = [
+  `CREATE TABLE IF NOT EXISTS test_cases (
+    id TEXT PRIMARY KEY,
+    tenant_scope TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    source_run_id TEXT NOT NULL,
+    source_generated_seed_id TEXT NOT NULL,
+    source_test_case_id TEXT NOT NULL,
+    current_version_id TEXT NOT NULL,
+    status TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS test_case_versions (
+    id TEXT PRIMARY KEY,
+    test_case_id TEXT NOT NULL,
+    tenant_scope TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    version_index INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    title TEXT NOT NULL,
+    objective TEXT NOT NULL,
+    preconditions TEXT NOT NULL,
+    steps TEXT NOT NULL,
+    test_data TEXT NOT NULL,
+    priority TEXT NOT NULL,
+    risk TEXT NOT NULL,
+    tags TEXT NOT NULL,
+    status TEXT NOT NULL,
+    description TEXT,
+    content_sha256 TEXT NOT NULL,
+    content_byte_size INTEGER NOT NULL,
+    content_storage_ref TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS test_case_trace_links (
+    id TEXT PRIMARY KEY,
+    test_case_version_id TEXT NOT NULL,
+    tenant_scope TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    target_kind TEXT NOT NULL,
+    target_id TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_workbench_test_cases_tenant
+     ON test_cases (tenant_scope)`,
+  `CREATE INDEX IF NOT EXISTS idx_workbench_test_cases_run_tenant
+     ON test_cases (source_run_id, tenant_scope)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_workbench_test_cases_unique_source
+     ON test_cases (source_run_id, source_test_case_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_workbench_test_case_versions_case
+     ON test_case_versions (test_case_id, tenant_scope, version_index)`,
+  `CREATE INDEX IF NOT EXISTS idx_workbench_test_case_trace_links_version
+     ON test_case_trace_links (test_case_version_id, tenant_scope)`,
+];
+
+/**
  * Names of every table the built-in schema creates. Used by tests to assert the
  * full set exists and by future readiness checks.
  */
@@ -146,9 +207,12 @@ export const WORKBENCH_SCHEMA_TABLES: readonly string[] = [
   "exports",
   "render_metadata",
   "audit_events",
+  "test_cases",
+  "test_case_versions",
+  "test_case_trace_links",
 ];
 
-export const WORKBENCH_SCHEMA_VERSION = 2;
+export const WORKBENCH_SCHEMA_VERSION = 3;
 
 export const WORKBENCH_SCHEMA_INDEXES: readonly string[] = [
   "idx_workbench_snapshots_tenant",
@@ -158,6 +222,11 @@ export const WORKBENCH_SCHEMA_INDEXES: readonly string[] = [
   "idx_workbench_scope_baskets_snapshot",
   "idx_workbench_generated_seeds_run_tenant",
   "idx_workbench_exports_run_tenant",
+  "idx_workbench_test_cases_tenant",
+  "idx_workbench_test_cases_run_tenant",
+  "idx_workbench_test_cases_unique_source",
+  "idx_workbench_test_case_versions_case",
+  "idx_workbench_test_case_trace_links_version",
 ];
 
 /**
@@ -183,6 +252,15 @@ export const buildBuiltinSchemaMigrations = (
     description: "Add Workbench metadata lookup indexes.",
     up(): void {
       for (const statement of SCHEMA_V2_INDEX_STATEMENTS) {
+        db.exec(statement);
+      }
+    },
+  },
+  {
+    version: 3,
+    description: "Create persisted test case editor tables and indexes.",
+    up(): void {
+      for (const statement of SCHEMA_V3_STATEMENTS) {
         db.exec(statement);
       }
     },

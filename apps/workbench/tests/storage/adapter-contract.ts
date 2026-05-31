@@ -9,12 +9,16 @@
 
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { WorkbenchStorageError, artifactStorageRef } from "@/lib/server/storage";
+import {
+  WorkbenchStorageError,
+  artifactStorageRef,
+} from "@/lib/server/storage";
 import type {
   ContentRef,
   CreateArtifactInput,
   CreateExportInput,
   CreateGeneratedSeedInput,
+  CreatePersistedTestCaseInput,
   CreateRunInput,
   CreateScopeBasketInput,
   CreateSnapshotInput,
@@ -104,6 +108,36 @@ const migration = (
   version,
   description: `migration ${version}`,
   up,
+});
+
+const testCaseInput = (
+  args: {
+    sourceRunId: string;
+    sourceGeneratedSeedId: string;
+    sourceTestCaseId?: string;
+  },
+  overrides: Partial<CreatePersistedTestCaseInput> = {},
+): CreatePersistedTestCaseInput => ({
+  tenantScope: "tenant-a",
+  sourceRunId: args.sourceRunId,
+  sourceGeneratedSeedId: args.sourceGeneratedSeedId,
+  sourceTestCaseId: args.sourceTestCaseId ?? "gen-tc-1",
+  status: "draft",
+  initialVersion: {
+    source: "generated",
+    title: "Validate IBAN field",
+    objective: "Ensure IBAN input enforces format",
+    preconditions: ["User is on payment screen"],
+    steps: [{ action: "Enter IBAN", expected: "Field accepts value" }],
+    testData: ["DE89370400440532013000"],
+    priority: "P1",
+    risk: "regulatory",
+    tags: ["L1", "FUNCTIONAL"],
+    status: "generated",
+    content: contentRef("d4"),
+    traceTargets: [{ targetKind: "run", targetId: args.sourceRunId }],
+  },
+  ...overrides,
 });
 
 export const runWorkbenchStorageAdapterContract = (
@@ -239,9 +273,7 @@ export const runWorkbenchStorageAdapterContract = (
         expect(
           adapter.runs.updateStatus(created.id, "tenant-b", "sealed"),
         ).toBeUndefined();
-        expect(adapter.runs.get(created.id, "tenant-a")?.status).toBe(
-          "queued",
-        );
+        expect(adapter.runs.get(created.id, "tenant-a")?.status).toBe("queued");
       });
     });
 
@@ -329,14 +361,10 @@ export const runWorkbenchStorageAdapterContract = (
 
       it("updates label and selection and recomputes item count", () => {
         const created = adapter.scopeBaskets.create(scopeBasketInput());
-        const updated = adapter.scopeBaskets.update(
-          created.id,
-          "tenant-a",
-          {
-            label: "Renamed",
-            selection: { nodeIds: ["n9"], pageIds: [], frameIds: ["f1"] },
-          },
-        );
+        const updated = adapter.scopeBaskets.update(created.id, "tenant-a", {
+          label: "Renamed",
+          selection: { nodeIds: ["n9"], pageIds: [], frameIds: ["f1"] },
+        });
         expect(updated?.label).toBe("Renamed");
         expect(updated?.selection.nodeIds).toStrictEqual(["n9"]);
         expect(updated?.itemCount).toBe(2);
@@ -453,8 +481,214 @@ export const runWorkbenchStorageAdapterContract = (
           ),
         ).toThrow(WorkbenchStorageError);
         expect(() =>
-          adapter.exports.create(exportInput(run.id, { tenantScope: "tenant-b" })),
+          adapter.exports.create(
+            exportInput(run.id, { tenantScope: "tenant-b" }),
+          ),
         ).toThrow(WorkbenchStorageError);
+      });
+    });
+
+    describe("testCases", () => {
+      const seededRun = (): {
+        runId: string;
+        generatedSeedId: string;
+      } => {
+        const run = adapter.runs.create(runInput());
+        const seed = adapter.generatedSeeds.create(generatedSeedInput(run.id));
+        return { runId: run.id, generatedSeedId: seed.id };
+      };
+
+      it("creates a case with an initial version and trace links", () => {
+        const { runId, generatedSeedId } = seededRun();
+        const detail = adapter.testCases.create(
+          testCaseInput({
+            sourceRunId: runId,
+            sourceGeneratedSeedId: generatedSeedId,
+          }),
+        );
+        expect(detail.testCase.sourceRunId).toBe(runId);
+        expect(detail.testCase.currentVersionId).toBe(detail.currentVersion.id);
+        expect(detail.testCase.status).toBe("draft");
+        expect(detail.currentVersion.versionIndex).toBe(1);
+        expect(detail.currentVersion.source).toBe("generated");
+        expect(detail.currentVersion.title).toBe("Validate IBAN field");
+        expect(detail.currentVersion.traceLinks).toHaveLength(1);
+        expect(detail.currentVersion.traceLinks[0]?.targetKind).toBe("run");
+        expect(detail.currentVersion.traceLinks[0]?.targetId).toBe(runId);
+        expect(detail.currentVersion.steps).toStrictEqual([
+          { action: "Enter IBAN", expected: "Field accepts value" },
+        ]);
+      });
+
+      it("get returns the same detail as create", () => {
+        const { runId, generatedSeedId } = seededRun();
+        const created = adapter.testCases.create(
+          testCaseInput({
+            sourceRunId: runId,
+            sourceGeneratedSeedId: generatedSeedId,
+          }),
+        );
+        expect(
+          adapter.testCases.get(created.testCase.id, "tenant-a"),
+        ).toStrictEqual(created);
+      });
+
+      it("get returns undefined for the wrong tenant", () => {
+        const { runId, generatedSeedId } = seededRun();
+        const created = adapter.testCases.create(
+          testCaseInput({
+            sourceRunId: runId,
+            sourceGeneratedSeedId: generatedSeedId,
+          }),
+        );
+        expect(
+          adapter.testCases.get(created.testCase.id, "tenant-b"),
+        ).toBeUndefined();
+      });
+
+      it("rejects empty traceTargets", () => {
+        const { runId, generatedSeedId } = seededRun();
+        expect(() =>
+          adapter.testCases.create(
+            testCaseInput(
+              { sourceRunId: runId, sourceGeneratedSeedId: generatedSeedId },
+              {
+                initialVersion: {
+                  source: "generated",
+                  title: "x",
+                  objective: "x",
+                  preconditions: [],
+                  steps: [],
+                  testData: [],
+                  priority: "P1",
+                  risk: "r",
+                  tags: [],
+                  status: "generated",
+                  content: contentRef("d4"),
+                  traceTargets: [],
+                },
+              },
+            ),
+          ),
+        ).toThrow(WorkbenchStorageError);
+      });
+
+      it("rejects a sourceRunId in a different tenant", () => {
+        const run = adapter.runs.create(runInput({ tenantScope: "tenant-a" }));
+        const seed = adapter.generatedSeeds.create(generatedSeedInput(run.id));
+        expect(() =>
+          adapter.testCases.create(
+            testCaseInput(
+              { sourceRunId: run.id, sourceGeneratedSeedId: seed.id },
+              { tenantScope: "tenant-b" },
+            ),
+          ),
+        ).toThrow(WorkbenchStorageError);
+      });
+
+      it("rejects a sourceGeneratedSeedId that does not match the run", () => {
+        const runA = adapter.runs.create(runInput());
+        const runB = adapter.runs.create(runInput());
+        const seedB = adapter.generatedSeeds.create(
+          generatedSeedInput(runB.id),
+        );
+        expect(() =>
+          adapter.testCases.create(
+            testCaseInput({
+              sourceRunId: runA.id,
+              sourceGeneratedSeedId: seedB.id,
+            }),
+          ),
+        ).toThrow(WorkbenchStorageError);
+      });
+
+      it("rejects a non-canonical content reference", () => {
+        const { runId, generatedSeedId } = seededRun();
+        expect(() =>
+          adapter.testCases.create(
+            testCaseInput(
+              { sourceRunId: runId, sourceGeneratedSeedId: generatedSeedId },
+              {
+                initialVersion: {
+                  source: "generated",
+                  title: "x",
+                  objective: "x",
+                  preconditions: [],
+                  steps: [],
+                  testData: [],
+                  priority: "P1",
+                  risk: "r",
+                  tags: [],
+                  status: "generated",
+                  content: {
+                    ...contentRef("d4"),
+                    storageRef: "wrong/path.bin",
+                  },
+                  traceTargets: [{ targetKind: "run", targetId: runId }],
+                },
+              },
+            ),
+          ),
+        ).toThrow(WorkbenchStorageError);
+      });
+
+      it("list filters by sourceRunId", () => {
+        const a = seededRun();
+        const b = seededRun();
+        adapter.testCases.create(
+          testCaseInput({
+            sourceRunId: a.runId,
+            sourceGeneratedSeedId: a.generatedSeedId,
+            sourceTestCaseId: "tc-a-1",
+          }),
+        );
+        adapter.testCases.create(
+          testCaseInput({
+            sourceRunId: b.runId,
+            sourceGeneratedSeedId: b.generatedSeedId,
+            sourceTestCaseId: "tc-b-1",
+          }),
+        );
+        const filtered = adapter.testCases.list({ runId: a.runId });
+        expect(filtered).toHaveLength(1);
+        expect(filtered[0]?.sourceRunId).toBe(a.runId);
+      });
+
+      it("findBySource locates an existing record and returns undefined otherwise", () => {
+        const { runId, generatedSeedId } = seededRun();
+        adapter.testCases.create(
+          testCaseInput({
+            sourceRunId: runId,
+            sourceGeneratedSeedId: generatedSeedId,
+            sourceTestCaseId: "gen-tc-42",
+          }),
+        );
+        expect(
+          adapter.testCases.findBySource("tenant-a", runId, "gen-tc-42"),
+        ).toBeDefined();
+        expect(
+          adapter.testCases.findBySource("tenant-a", runId, "absent"),
+        ).toBeUndefined();
+      });
+
+      it("rolls back a failed insert inside a transaction", () => {
+        const { runId, generatedSeedId } = seededRun();
+        expect(() =>
+          adapter.transaction((tx) => {
+            tx.testCases.create(
+              testCaseInput({
+                sourceRunId: runId,
+                sourceGeneratedSeedId: generatedSeedId,
+                sourceTestCaseId: "tc-tx-1",
+              }),
+            );
+            throw new Error("rollback");
+          }),
+        ).toThrow("rollback");
+        expect(
+          adapter.testCases.findBySource("tenant-a", runId, "tc-tx-1"),
+        ).toBeUndefined();
+        expect(adapter.testCases.list()).toStrictEqual([]);
       });
     });
 

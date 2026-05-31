@@ -28,6 +28,7 @@ import type {
   CreateArtifactInput,
   CreateExportInput,
   CreateGeneratedSeedInput,
+  CreatePersistedTestCaseInput,
   CreateRunInput,
   CreateScopeBasketInput,
   CreateSnapshotInput,
@@ -35,6 +36,7 @@ import type {
   ExportRepository,
   GeneratedSeedMetadataRecord,
   GeneratedSeedRepository,
+  PersistedTestCaseDetail,
   RunMetadataRecord,
   RunRepository,
   RunTenantFilter,
@@ -46,8 +48,19 @@ import type {
   SnapshotMetadataRecord,
   SnapshotRepository,
   TenantScopeFilter,
+  TestCaseFilter,
+  TestCaseLifecycleStatus,
+  TestCaseRecord,
+  TestCaseRepository,
+  TestCaseSource,
+  TestCaseStepRecord,
+  TestCaseTraceLinkKind,
+  TestCaseTraceLinkRecord,
+  TestCaseVersionRecord,
   WorkbenchRunStatus,
 } from "./types";
+
+import { WorkbenchStorageError } from "./storage-adapter";
 
 type Db = BetterSqlite3Database.Database;
 
@@ -197,10 +210,9 @@ export const createSnapshotRepository = (db: Db): SnapshotRepository => {
       tenantScope: string,
       source: string,
     ): SnapshotMetadataRecord | undefined {
-      const row = s().selectByTenantAndSource.get(
-        tenantScope,
-        source,
-      ) as SnapshotRow | undefined;
+      const row = s().selectByTenantAndSource.get(tenantScope, source) as
+        | SnapshotRow
+        | undefined;
       return row ? mapSnapshot(row) : undefined;
     },
     list(filter?: TenantScopeFilter): readonly SnapshotMetadataRecord[] {
@@ -217,7 +229,11 @@ export const createSnapshotRepository = (db: Db): SnapshotRepository => {
       lifecycleState: string,
     ): SnapshotMetadataRecord | undefined {
       const handles = s();
-      const result = handles.updateLifecycle.run(lifecycleState, id, tenantScope);
+      const result = handles.updateLifecycle.run(
+        lifecycleState,
+        id,
+        tenantScope,
+      );
       if (result.changes === 0) return undefined;
       return mapSnapshot(
         handles.selectByIdAndTenant.get(id, tenantScope) as SnapshotRow,
@@ -319,7 +335,12 @@ export const createRunRepository = (db: Db): RunRepository => {
       status: WorkbenchRunStatus,
     ): RunMetadataRecord | undefined {
       const handles = s();
-      const result = handles.updateStatus.run(status, nowIso(), id, tenantScope);
+      const result = handles.updateStatus.run(
+        status,
+        nowIso(),
+        id,
+        tenantScope,
+      );
       if (result.changes === 0) return undefined;
       return mapRun(handles.selectByIdAndTenant.get(id, tenantScope) as RunRow);
     },
@@ -548,7 +569,9 @@ export const createScopeBasketRepository = (db: Db): ScopeBasketRepository => {
               filter.snapshotId,
             ) as ScopeBasketRow[])
           : filter?.tenantScope !== undefined
-            ? (handles.selectByTenant.all(filter.tenantScope) as ScopeBasketRow[])
+            ? (handles.selectByTenant.all(
+                filter.tenantScope,
+              ) as ScopeBasketRow[])
             : filter?.snapshotId !== undefined
               ? (handles.selectBySnapshot.all(
                   filter.snapshotId,
@@ -782,6 +805,363 @@ export const createExportRepository = (db: Db): ExportRepository => {
         filter.tenantScope,
       ) as ExportRow[];
       return rows.map(mapExport);
+    },
+  };
+};
+
+interface TestCaseRow {
+  readonly id: string;
+  readonly tenant_scope: string;
+  readonly created_at: string;
+  readonly updated_at: string;
+  readonly source_run_id: string;
+  readonly source_generated_seed_id: string;
+  readonly source_test_case_id: string;
+  readonly current_version_id: string;
+  readonly status: string;
+}
+
+interface TestCaseVersionRow {
+  readonly id: string;
+  readonly test_case_id: string;
+  readonly tenant_scope: string;
+  readonly created_at: string;
+  readonly version_index: number;
+  readonly source: string;
+  readonly title: string;
+  readonly objective: string;
+  readonly preconditions: string;
+  readonly steps: string;
+  readonly test_data: string;
+  readonly priority: string;
+  readonly risk: string;
+  readonly tags: string;
+  readonly status: string;
+  readonly description: string | null;
+  readonly content_sha256: string;
+  readonly content_byte_size: number;
+  readonly content_storage_ref: string;
+}
+
+interface TestCaseTraceLinkRow {
+  readonly id: string;
+  readonly test_case_version_id: string;
+  readonly tenant_scope: string;
+  readonly created_at: string;
+  readonly target_kind: string;
+  readonly target_id: string;
+}
+
+const asStepArray = (value: unknown): TestCaseStepRecord[] => {
+  if (!Array.isArray(value)) return [];
+  const steps: TestCaseStepRecord[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const record = entry as Record<string, unknown>;
+    if (
+      typeof record.action !== "string" ||
+      typeof record.expected !== "string"
+    ) {
+      continue;
+    }
+    steps.push({ action: record.action, expected: record.expected });
+  }
+  return steps;
+};
+
+const parseJsonArray = (json: string): readonly string[] =>
+  asStringArray(JSON.parse(json) as unknown);
+
+const parseJsonSteps = (json: string): readonly TestCaseStepRecord[] =>
+  asStepArray(JSON.parse(json) as unknown);
+
+const mapTestCase = (row: TestCaseRow): TestCaseRecord => ({
+  id: row.id,
+  tenantScope: row.tenant_scope,
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
+  sourceRunId: row.source_run_id,
+  sourceGeneratedSeedId: row.source_generated_seed_id,
+  sourceTestCaseId: row.source_test_case_id,
+  currentVersionId: row.current_version_id,
+  status: row.status as TestCaseLifecycleStatus,
+});
+
+const mapTestCaseTraceLink = (
+  row: TestCaseTraceLinkRow,
+): TestCaseTraceLinkRecord => ({
+  id: row.id,
+  testCaseVersionId: row.test_case_version_id,
+  tenantScope: row.tenant_scope,
+  createdAt: row.created_at,
+  targetKind: row.target_kind as TestCaseTraceLinkKind,
+  targetId: row.target_id,
+});
+
+const mapTestCaseVersion = (
+  row: TestCaseVersionRow,
+  traceLinks: readonly TestCaseTraceLinkRecord[],
+): TestCaseVersionRecord => ({
+  id: row.id,
+  testCaseId: row.test_case_id,
+  tenantScope: row.tenant_scope,
+  createdAt: row.created_at,
+  versionIndex: row.version_index,
+  source: row.source as TestCaseSource,
+  title: row.title,
+  objective: row.objective,
+  preconditions: parseJsonArray(row.preconditions),
+  steps: parseJsonSteps(row.steps),
+  testData: parseJsonArray(row.test_data),
+  priority: row.priority,
+  risk: row.risk,
+  tags: parseJsonArray(row.tags),
+  status: row.status,
+  ...(row.description !== null ? { description: row.description } : {}),
+  content: contentRefFrom(
+    row.content_sha256,
+    row.content_byte_size,
+    row.content_storage_ref,
+  ),
+  traceLinks,
+});
+
+interface TestCaseStmts {
+  readonly insertCase: Stmt;
+  readonly insertVersion: Stmt;
+  readonly insertTraceLink: Stmt;
+  readonly selectCaseById: Stmt;
+  readonly selectCaseByIdAndTenant: Stmt;
+  readonly selectCaseBySource: Stmt;
+  readonly selectVersionById: Stmt;
+  readonly selectTraceLinksByVersion: Stmt;
+  readonly selectAll: Stmt;
+  readonly selectByTenant: Stmt;
+  readonly selectByRun: Stmt;
+  readonly selectByTenantAndRun: Stmt;
+  readonly selectGeneratedSeedById: Stmt;
+  readonly selectRunById: Stmt;
+}
+
+export const createTestCaseRepository = (db: Db): TestCaseRepository => {
+  let stmts: TestCaseStmts | undefined;
+  const s = (): TestCaseStmts =>
+    (stmts ??= {
+      insertCase: db.prepare(
+        `INSERT INTO test_cases (id, tenant_scope, created_at, updated_at,
+           source_run_id, source_generated_seed_id, source_test_case_id,
+           current_version_id, status)
+         VALUES (@id, @tenantScope, @createdAt, @updatedAt,
+           @sourceRunId, @sourceGeneratedSeedId, @sourceTestCaseId,
+           @currentVersionId, @status)`,
+      ),
+      insertVersion: db.prepare(
+        `INSERT INTO test_case_versions (id, test_case_id, tenant_scope, created_at,
+           version_index, source, title, objective, preconditions, steps, test_data,
+           priority, risk, tags, status, description,
+           content_sha256, content_byte_size, content_storage_ref)
+         VALUES (@id, @testCaseId, @tenantScope, @createdAt,
+           @versionIndex, @source, @title, @objective, @preconditions, @steps, @testData,
+           @priority, @risk, @tags, @status, @description,
+           @contentSha256, @contentByteSize, @contentStorageRef)`,
+      ),
+      insertTraceLink: db.prepare(
+        `INSERT INTO test_case_trace_links (id, test_case_version_id, tenant_scope,
+           created_at, target_kind, target_id)
+         VALUES (@id, @testCaseVersionId, @tenantScope, @createdAt, @targetKind, @targetId)`,
+      ),
+      selectCaseById: db.prepare(`SELECT * FROM test_cases WHERE id = ?`),
+      selectCaseByIdAndTenant: db.prepare(
+        `SELECT * FROM test_cases WHERE id = ? AND tenant_scope = ?`,
+      ),
+      selectCaseBySource: db.prepare(
+        `SELECT * FROM test_cases
+           WHERE tenant_scope = ? AND source_run_id = ? AND source_test_case_id = ?
+           LIMIT 1`,
+      ),
+      selectVersionById: db.prepare(
+        `SELECT * FROM test_case_versions WHERE id = ?`,
+      ),
+      selectTraceLinksByVersion: db.prepare(
+        `SELECT * FROM test_case_trace_links
+           WHERE test_case_version_id = ? AND tenant_scope = ?
+           ORDER BY rowid`,
+      ),
+      selectAll: db.prepare(`SELECT * FROM test_cases ORDER BY rowid`),
+      selectByTenant: db.prepare(
+        `SELECT * FROM test_cases WHERE tenant_scope = ? ORDER BY rowid`,
+      ),
+      selectByRun: db.prepare(
+        `SELECT * FROM test_cases WHERE source_run_id = ? ORDER BY rowid`,
+      ),
+      selectByTenantAndRun: db.prepare(
+        `SELECT * FROM test_cases
+           WHERE tenant_scope = ? AND source_run_id = ?
+           ORDER BY rowid`,
+      ),
+      selectGeneratedSeedById: db.prepare(
+        `SELECT * FROM generated_seeds WHERE id = ?`,
+      ),
+      selectRunById: db.prepare(`SELECT * FROM runs WHERE id = ?`),
+    });
+
+  const assertReferencedGeneratedSeed = (
+    handles: TestCaseStmts,
+    input: CreatePersistedTestCaseInput,
+  ): void => {
+    const seedRow = handles.selectGeneratedSeedById.get(
+      input.sourceGeneratedSeedId,
+    ) as GeneratedSeedRow | undefined;
+    if (
+      seedRow === undefined ||
+      seedRow.tenant_scope !== input.tenantScope ||
+      seedRow.run_id !== input.sourceRunId
+    ) {
+      throw new WorkbenchStorageError(
+        "REFERENTIAL_INTEGRITY",
+        "test case sourceGeneratedSeedId must reference an existing generated seed in the same tenant and run.",
+      );
+    }
+  };
+
+  const loadDetail = (
+    handles: TestCaseStmts,
+    record: TestCaseRecord,
+  ): PersistedTestCaseDetail | undefined => {
+    const versionRow = handles.selectVersionById.get(
+      record.currentVersionId,
+    ) as TestCaseVersionRow | undefined;
+    if (versionRow === undefined) return undefined;
+    const linkRows = handles.selectTraceLinksByVersion.all(
+      versionRow.id,
+      record.tenantScope,
+    ) as TestCaseTraceLinkRow[];
+    const traceLinks = linkRows.map(mapTestCaseTraceLink);
+    return {
+      testCase: record,
+      currentVersion: mapTestCaseVersion(versionRow, traceLinks),
+    };
+  };
+
+  return {
+    create(input: CreatePersistedTestCaseInput): PersistedTestCaseDetail {
+      assertCanonicalContentRef(
+        input.initialVersion.content,
+        "test case version content",
+      );
+      const handles = s();
+      const runRow = handles.selectRunById.get(input.sourceRunId) as
+        | RunRow
+        | undefined;
+      assertSameTenantRun(
+        runRow ? mapRun(runRow) : undefined,
+        input.tenantScope,
+        "test case sourceRunId",
+      );
+      assertReferencedGeneratedSeed(handles, input);
+      if (input.initialVersion.traceTargets.length === 0) {
+        throw new WorkbenchStorageError(
+          "REFERENTIAL_INTEGRITY",
+          "test case initialVersion.traceTargets must include at least one trace link.",
+        );
+      }
+      const testCaseId = randomUUID();
+      const versionId = randomUUID();
+      const timestamp = nowIso();
+      const initial = input.initialVersion;
+
+      const caseParams: BindRow = {
+        id: testCaseId,
+        tenantScope: input.tenantScope,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        sourceRunId: input.sourceRunId,
+        sourceGeneratedSeedId: input.sourceGeneratedSeedId,
+        sourceTestCaseId: input.sourceTestCaseId,
+        currentVersionId: versionId,
+        status: input.status,
+      };
+      const versionParams: BindRow = {
+        id: versionId,
+        testCaseId,
+        tenantScope: input.tenantScope,
+        createdAt: timestamp,
+        versionIndex: 1,
+        source: initial.source,
+        title: initial.title,
+        objective: initial.objective,
+        preconditions: JSON.stringify(initial.preconditions),
+        steps: JSON.stringify(initial.steps),
+        testData: JSON.stringify(initial.testData),
+        priority: initial.priority,
+        risk: initial.risk,
+        tags: JSON.stringify(initial.tags),
+        status: initial.status,
+        description: initial.description ?? null,
+        contentSha256: initial.content.sha256,
+        contentByteSize: initial.content.byteSize,
+        contentStorageRef: initial.content.storageRef,
+      };
+
+      handles.insertCase.run(caseParams);
+      handles.insertVersion.run(versionParams);
+      for (const target of initial.traceTargets) {
+        handles.insertTraceLink.run({
+          id: randomUUID(),
+          testCaseVersionId: versionId,
+          tenantScope: input.tenantScope,
+          createdAt: timestamp,
+          targetKind: target.targetKind,
+          targetId: target.targetId,
+        });
+      }
+
+      const createdRow = handles.selectCaseById.get(testCaseId) as TestCaseRow;
+      const detail = loadDetail(handles, mapTestCase(createdRow));
+      if (detail === undefined) {
+        // WHY unreachable in practice: the inserts above ran in the calling
+        // transaction, so the row is observable for read-your-writes. The check
+        // exists only to keep the return type non-undefined for the contract.
+        throw new WorkbenchStorageError(
+          "REFERENTIAL_INTEGRITY",
+          "test case version row missing immediately after insert.",
+        );
+      }
+      return detail;
+    },
+    get(id: string, tenantScope: string): PersistedTestCaseDetail | undefined {
+      const handles = s();
+      const row = handles.selectCaseByIdAndTenant.get(id, tenantScope) as
+        | TestCaseRow
+        | undefined;
+      if (row === undefined) return undefined;
+      return loadDetail(handles, mapTestCase(row));
+    },
+    list(filter?: TestCaseFilter): readonly TestCaseRecord[] {
+      const handles = s();
+      const tenant = filter?.tenantScope;
+      const runId = filter?.runId;
+      const rows =
+        tenant !== undefined && runId !== undefined
+          ? (handles.selectByTenantAndRun.all(tenant, runId) as TestCaseRow[])
+          : tenant !== undefined
+            ? (handles.selectByTenant.all(tenant) as TestCaseRow[])
+            : runId !== undefined
+              ? (handles.selectByRun.all(runId) as TestCaseRow[])
+              : (handles.selectAll.all() as TestCaseRow[]);
+      return rows.map(mapTestCase);
+    },
+    findBySource(
+      tenantScope: string,
+      sourceRunId: string,
+      sourceTestCaseId: string,
+    ): TestCaseRecord | undefined {
+      const row = s().selectCaseBySource.get(
+        tenantScope,
+        sourceRunId,
+        sourceTestCaseId,
+      ) as TestCaseRow | undefined;
+      return row ? mapTestCase(row) : undefined;
     },
   };
 };

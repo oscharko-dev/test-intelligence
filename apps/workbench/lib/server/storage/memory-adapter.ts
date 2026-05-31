@@ -26,6 +26,7 @@ import type {
   CreateArtifactInput,
   CreateExportInput,
   CreateGeneratedSeedInput,
+  CreatePersistedTestCaseInput,
   CreateRunInput,
   CreateScopeBasketInput,
   CreateSnapshotInput,
@@ -33,6 +34,7 @@ import type {
   ExportRepository,
   GeneratedSeedMetadataRecord,
   GeneratedSeedRepository,
+  PersistedTestCaseDetail,
   RunMetadataRecord,
   RunRepository,
   RunTenantFilter,
@@ -43,6 +45,11 @@ import type {
   SnapshotMetadataRecord,
   SnapshotRepository,
   TenantScopeFilter,
+  TestCaseFilter,
+  TestCaseRecord,
+  TestCaseRepository,
+  TestCaseTraceLinkRecord,
+  TestCaseVersionRecord,
   WorkbenchRunStatus,
 } from "./types";
 
@@ -53,6 +60,9 @@ interface MemoryState {
   scopeBaskets: Map<string, ScopeBasketRecord>;
   generatedSeeds: Map<string, GeneratedSeedMetadataRecord>;
   exports: Map<string, ExportMetadataRecord>;
+  testCases: Map<string, TestCaseRecord>;
+  testCaseVersions: Map<string, TestCaseVersionRecord>;
+  testCaseTraceLinks: Map<string, TestCaseTraceLinkRecord>;
 }
 
 const createEmptyState = (): MemoryState => ({
@@ -62,6 +72,9 @@ const createEmptyState = (): MemoryState => ({
   scopeBaskets: new Map(),
   generatedSeeds: new Map(),
   exports: new Map(),
+  testCases: new Map(),
+  testCaseVersions: new Map(),
+  testCaseTraceLinks: new Map(),
 });
 
 const snapshot = <T>(record: T): T => structuredClone(record);
@@ -76,6 +89,9 @@ const cloneState = (state: MemoryState): MemoryState => ({
   scopeBaskets: cloneMap(state.scopeBaskets),
   generatedSeeds: cloneMap(state.generatedSeeds),
   exports: cloneMap(state.exports),
+  testCases: cloneMap(state.testCases),
+  testCaseVersions: cloneMap(state.testCaseVersions),
+  testCaseTraceLinks: cloneMap(state.testCaseTraceLinks),
 });
 
 const restoreState = (target: MemoryState, source: MemoryState): void => {
@@ -85,6 +101,9 @@ const restoreState = (target: MemoryState, source: MemoryState): void => {
   target.scopeBaskets = source.scopeBaskets;
   target.generatedSeeds = source.generatedSeeds;
   target.exports = source.exports;
+  target.testCases = source.testCases;
+  target.testCaseVersions = source.testCaseVersions;
+  target.testCaseTraceLinks = source.testCaseTraceLinks;
 };
 
 const matchesTenant = (
@@ -350,6 +369,147 @@ const createExportRepository = (state: MemoryState): ExportRepository => ({
   },
 });
 
+const assertReferencedGeneratedSeed = (
+  state: MemoryState,
+  input: CreatePersistedTestCaseInput,
+): void => {
+  const seed = state.generatedSeeds.get(input.sourceGeneratedSeedId);
+  if (
+    seed === undefined ||
+    seed.tenantScope !== input.tenantScope ||
+    seed.runId !== input.sourceRunId
+  ) {
+    throw new WorkbenchStorageError(
+      "REFERENTIAL_INTEGRITY",
+      "test case sourceGeneratedSeedId must reference an existing generated seed in the same tenant and run.",
+    );
+  }
+};
+
+const assertTraceTargetsPresent = (
+  input: CreatePersistedTestCaseInput,
+): void => {
+  if (input.initialVersion.traceTargets.length === 0) {
+    throw new WorkbenchStorageError(
+      "REFERENTIAL_INTEGRITY",
+      "test case initialVersion.traceTargets must include at least one trace link.",
+    );
+  }
+};
+
+const createTestCaseRepository = (state: MemoryState): TestCaseRepository => ({
+  create(input: CreatePersistedTestCaseInput): PersistedTestCaseDetail {
+    assertCanonicalContentRef(
+      input.initialVersion.content,
+      "test case version content",
+    );
+    assertSameTenantRun(
+      state.runs.get(input.sourceRunId),
+      input.tenantScope,
+      "test case sourceRunId",
+    );
+    assertReferencedGeneratedSeed(state, input);
+    assertTraceTargetsPresent(input);
+
+    const testCaseId = randomUUID();
+    const versionId = randomUUID();
+    const timestamp = nowIso();
+    const initial = input.initialVersion;
+    const traceLinks: TestCaseTraceLinkRecord[] = initial.traceTargets.map(
+      (target) => ({
+        id: randomUUID(),
+        testCaseVersionId: versionId,
+        tenantScope: input.tenantScope,
+        createdAt: timestamp,
+        targetKind: target.targetKind,
+        targetId: target.targetId,
+      }),
+    );
+    const version: TestCaseVersionRecord = {
+      id: versionId,
+      testCaseId,
+      tenantScope: input.tenantScope,
+      createdAt: timestamp,
+      versionIndex: 1,
+      source: initial.source,
+      title: initial.title,
+      objective: initial.objective,
+      preconditions: [...initial.preconditions],
+      steps: initial.steps.map((step) => ({ ...step })),
+      testData: [...initial.testData],
+      priority: initial.priority,
+      risk: initial.risk,
+      tags: [...initial.tags],
+      status: initial.status,
+      ...(initial.description !== undefined
+        ? { description: initial.description }
+        : {}),
+      content: { ...initial.content },
+      traceLinks,
+    };
+    const testCase: TestCaseRecord = {
+      id: testCaseId,
+      tenantScope: input.tenantScope,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      sourceRunId: input.sourceRunId,
+      sourceGeneratedSeedId: input.sourceGeneratedSeedId,
+      sourceTestCaseId: input.sourceTestCaseId,
+      currentVersionId: versionId,
+      status: input.status,
+    };
+    state.testCases.set(testCase.id, snapshot(testCase));
+    state.testCaseVersions.set(version.id, snapshot(version));
+    for (const link of traceLinks) {
+      state.testCaseTraceLinks.set(link.id, snapshot(link));
+    }
+    return { testCase: snapshot(testCase), currentVersion: snapshot(version) };
+  },
+  get(id: string, tenantScope: string): PersistedTestCaseDetail | undefined {
+    const record = state.testCases.get(id);
+    if (record === undefined || !isSameTenant(record, tenantScope)) {
+      return undefined;
+    }
+    const version = state.testCaseVersions.get(record.currentVersionId);
+    if (version === undefined) return undefined;
+    const links = [...state.testCaseTraceLinks.values()].filter(
+      (link) => link.testCaseVersionId === version.id,
+    );
+    const currentVersion: TestCaseVersionRecord = {
+      ...version,
+      traceLinks: links.map(snapshot),
+    };
+    return {
+      testCase: snapshot(record),
+      currentVersion: snapshot(currentVersion),
+    };
+  },
+  list(filter?: TestCaseFilter): readonly TestCaseRecord[] {
+    return [...state.testCases.values()]
+      .filter((record) =>
+        matchesTenant(record.tenantScope, filter?.tenantScope),
+      )
+      .filter(
+        (record) =>
+          filter?.runId === undefined || record.sourceRunId === filter.runId,
+      )
+      .map(snapshot);
+  },
+  findBySource(
+    tenantScope: string,
+    sourceRunId: string,
+    sourceTestCaseId: string,
+  ): TestCaseRecord | undefined {
+    const record = [...state.testCases.values()].find(
+      (candidate) =>
+        candidate.tenantScope === tenantScope &&
+        candidate.sourceRunId === sourceRunId &&
+        candidate.sourceTestCaseId === sourceTestCaseId,
+    );
+    return record === undefined ? undefined : snapshot(record);
+  },
+});
+
 interface MemoryAdapterOptions {
   readonly migrations?: readonly WorkbenchMigration[];
   readonly initialSchemaVersion?: number;
@@ -362,6 +522,7 @@ class MemoryWorkbenchStorageAdapter implements WorkbenchStorageAdapter {
   readonly scopeBaskets: ScopeBasketRepository;
   readonly generatedSeeds: GeneratedSeedRepository;
   readonly exports: ExportRepository;
+  readonly testCases: TestCaseRepository;
 
   private readonly state: MemoryState;
   private readonly migrations: readonly WorkbenchMigration[];
@@ -382,6 +543,7 @@ class MemoryWorkbenchStorageAdapter implements WorkbenchStorageAdapter {
     this.scopeBaskets = createScopeBasketRepository(this.state);
     this.generatedSeeds = createGeneratedSeedRepository(this.state);
     this.exports = createExportRepository(this.state);
+    this.testCases = createTestCaseRepository(this.state);
     this.txHandle = this.buildTxHandle();
   }
 
@@ -393,6 +555,7 @@ class MemoryWorkbenchStorageAdapter implements WorkbenchStorageAdapter {
       scopeBaskets: this.scopeBaskets,
       generatedSeeds: this.generatedSeeds,
       exports: this.exports,
+      testCases: this.testCases,
       migrateToLatest: () => {
         throw new WorkbenchStorageError(
           "NESTED_TRANSACTION",
@@ -463,6 +626,9 @@ class MemoryWorkbenchStorageAdapter implements WorkbenchStorageAdapter {
     this.state.scopeBaskets.clear();
     this.state.generatedSeeds.clear();
     this.state.exports.clear();
+    this.state.testCases.clear();
+    this.state.testCaseVersions.clear();
+    this.state.testCaseTraceLinks.clear();
   }
 }
 

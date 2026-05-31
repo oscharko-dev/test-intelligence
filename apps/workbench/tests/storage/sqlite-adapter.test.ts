@@ -10,7 +10,10 @@ import type {
   WorkbenchMigration,
   WorkbenchStorageAdapter,
 } from "@/lib/server/storage";
-import { WorkbenchStorageError, artifactStorageRef } from "@/lib/server/storage";
+import {
+  WorkbenchStorageError,
+  artifactStorageRef,
+} from "@/lib/server/storage";
 import { createSqliteWorkbenchStorageAdapter } from "@/lib/server/storage/sqlite-adapter";
 import {
   WORKBENCH_SCHEMA_INDEXES,
@@ -65,7 +68,7 @@ describe("SqliteWorkbenchStorageAdapter specifics", () => {
     for (const table of WORKBENCH_SCHEMA_TABLES) {
       expect(names).toContain(table);
     }
-    expect(WORKBENCH_SCHEMA_TABLES).toHaveLength(8);
+    expect(WORKBENCH_SCHEMA_TABLES).toHaveLength(11);
     const indexNames = indexRows.map((row) => row.name);
     for (const index of WORKBENCH_SCHEMA_INDEXES) {
       expect(indexNames).toContain(index);

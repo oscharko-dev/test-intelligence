@@ -278,10 +278,7 @@ export interface ScopeBasketRepository {
 
 export interface GeneratedSeedRepository {
   create(input: CreateGeneratedSeedInput): GeneratedSeedMetadataRecord;
-  get(
-    id: string,
-    tenantScope: string,
-  ): GeneratedSeedMetadataRecord | undefined;
+  get(id: string, tenantScope: string): GeneratedSeedMetadataRecord | undefined;
   list(filter: RunTenantFilter): readonly GeneratedSeedMetadataRecord[];
 }
 
@@ -289,4 +286,127 @@ export interface ExportRepository {
   create(input: CreateExportInput): ExportMetadataRecord;
   get(id: string, tenantScope: string): ExportMetadataRecord | undefined;
   list(filter: RunTenantFilter): readonly ExportMetadataRecord[];
+}
+
+/**
+ * WHY a discriminated union for the version source: today only `"generated"` is
+ * supported (Issue #56 ingests cases produced at run seal); reserving the slot
+ * keeps storage forwards-compatible with manual / imported sources without a
+ * schema migration.
+ */
+export type TestCaseSource = "generated";
+
+export type TestCaseLifecycleStatus = "draft" | "reviewed" | "approved";
+
+export type TestCaseTraceLinkKind =
+  | "run"
+  | "snapshot"
+  | "figma-node"
+  | "scope-basket";
+
+/**
+ * A single ordered step. WHY only `action` + `expected`: the persisted editor
+ * model is the canonical view, not a verbatim mirror of the generator payload
+ * (which also carries `data` and a lifecycle id). Those engine-only fields stay
+ * inside the immutable content-addressed snapshot that backs each version.
+ */
+export interface TestCaseStepRecord {
+  readonly action: string;
+  readonly expected: string;
+}
+
+export interface TestCaseTraceLinkRecord {
+  readonly id: string;
+  readonly testCaseVersionId: string;
+  readonly tenantScope: string;
+  readonly createdAt: IsoTimestamp;
+  readonly targetKind: TestCaseTraceLinkKind;
+  readonly targetId: string;
+}
+
+/**
+ * Canonical persisted version of a test case. WHY `content` is required: each
+ * version is anchored to an immutable artifact snapshot of the originating
+ * generator payload, satisfying AC#3 (run artifacts referenced, not overwritten).
+ */
+export interface TestCaseVersionRecord {
+  readonly id: string;
+  readonly testCaseId: string;
+  readonly tenantScope: string;
+  readonly createdAt: IsoTimestamp;
+  readonly versionIndex: number;
+  readonly source: TestCaseSource;
+  readonly title: string;
+  readonly objective: string;
+  readonly preconditions: readonly string[];
+  readonly steps: readonly TestCaseStepRecord[];
+  readonly testData: readonly string[];
+  readonly priority: string;
+  readonly risk: string;
+  readonly tags: readonly string[];
+  readonly status: string;
+  readonly description?: string;
+  readonly content: ContentRef;
+  readonly traceLinks: readonly TestCaseTraceLinkRecord[];
+}
+
+export interface TestCaseRecord {
+  readonly id: string;
+  readonly tenantScope: string;
+  readonly createdAt: IsoTimestamp;
+  readonly updatedAt: IsoTimestamp;
+  readonly sourceRunId: string;
+  readonly sourceGeneratedSeedId: string;
+  readonly sourceTestCaseId: string;
+  readonly currentVersionId: string;
+  readonly status: TestCaseLifecycleStatus;
+}
+
+export interface PersistedTestCaseDetail {
+  readonly testCase: TestCaseRecord;
+  readonly currentVersion: TestCaseVersionRecord;
+}
+
+export interface TestCaseTraceTargetInput {
+  readonly targetKind: TestCaseTraceLinkKind;
+  readonly targetId: string;
+}
+
+export interface CreatePersistedTestCaseInput {
+  readonly tenantScope: string;
+  readonly sourceRunId: string;
+  readonly sourceGeneratedSeedId: string;
+  readonly sourceTestCaseId: string;
+  readonly status: TestCaseLifecycleStatus;
+  readonly initialVersion: {
+    readonly source: TestCaseSource;
+    readonly title: string;
+    readonly objective: string;
+    readonly preconditions: readonly string[];
+    readonly steps: readonly TestCaseStepRecord[];
+    readonly testData: readonly string[];
+    readonly priority: string;
+    readonly risk: string;
+    readonly tags: readonly string[];
+    readonly status: string;
+    readonly description?: string;
+    readonly content: ContentRef;
+    readonly traceTargets: readonly TestCaseTraceTargetInput[];
+  };
+}
+
+export interface TestCaseFilter {
+  readonly tenantScope?: string;
+  readonly runId?: string;
+}
+
+export interface TestCaseRepository {
+  create(input: CreatePersistedTestCaseInput): PersistedTestCaseDetail;
+  get(id: string, tenantScope: string): PersistedTestCaseDetail | undefined;
+  list(filter?: TestCaseFilter): readonly TestCaseRecord[];
+  findBySource(
+    tenantScope: string,
+    sourceRunId: string,
+    sourceTestCaseId: string,
+  ): TestCaseRecord | undefined;
 }
