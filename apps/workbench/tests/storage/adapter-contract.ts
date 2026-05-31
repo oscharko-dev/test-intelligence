@@ -632,7 +632,7 @@ export const runWorkbenchStorageAdapterContract = (
         ).toThrow(WorkbenchStorageError);
       });
 
-      it("list filters by sourceRunId", () => {
+      it("list filters by sourceRunId and projects current-version summary fields", () => {
         const a = seededRun();
         const b = seededRun();
         adapter.testCases.create(
@@ -651,7 +651,77 @@ export const runWorkbenchStorageAdapterContract = (
         );
         const filtered = adapter.testCases.list({ runId: a.runId });
         expect(filtered).toHaveLength(1);
-        expect(filtered[0]?.sourceRunId).toBe(a.runId);
+        const summary = filtered[0];
+        expect(summary?.sourceRunId).toBe(a.runId);
+        expect(summary?.title).toBe("Validate IBAN field");
+        expect(summary?.priority).toBe("P1");
+        expect(summary?.risk).toBe("regulatory");
+        expect(summary?.tags).toStrictEqual(["L1", "FUNCTIONAL"]);
+        expect(summary?.versionStatus).toBe("generated");
+        expect(summary?.traceLinkKinds).toStrictEqual(["run"]);
+        expect(summary?.snapshotIds).toStrictEqual([]);
+      });
+
+      it("list derives snapshotIds from distinct snapshot trace targets", () => {
+        const { runId, generatedSeedId } = seededRun();
+        const snapA = adapter.snapshots.create(
+          snapshotInput({ source: "figma:snap-a" }),
+        );
+        const snapB = adapter.snapshots.create(
+          snapshotInput({ source: "figma:snap-b" }),
+        );
+        adapter.testCases.create(
+          testCaseInput(
+            { sourceRunId: runId, sourceGeneratedSeedId: generatedSeedId },
+            {
+              initialVersion: {
+                source: "generated",
+                title: "Snapshot-linked",
+                objective: "",
+                preconditions: [],
+                steps: [],
+                testData: [],
+                priority: "P2",
+                risk: "low",
+                tags: [],
+                status: "generated",
+                content: contentRef("d4"),
+                traceTargets: [
+                  { targetKind: "run", targetId: runId },
+                  { targetKind: "snapshot", targetId: snapA.id },
+                  { targetKind: "snapshot", targetId: snapA.id },
+                  { targetKind: "snapshot", targetId: snapB.id },
+                  { targetKind: "figma-node", targetId: "node-1" },
+                ],
+              },
+            },
+          ),
+        );
+        const [summary] = adapter.testCases.list({ runId });
+        expect(summary?.snapshotIds).toStrictEqual([snapA.id, snapB.id]);
+        expect(summary?.traceLinkKinds).toStrictEqual([
+          "run",
+          "snapshot",
+          "figma-node",
+        ]);
+        expect(summary?.tags).toStrictEqual([]);
+      });
+
+      it("list summary reflects only the current version when a second version row exists for the same case", () => {
+        const { runId, generatedSeedId } = seededRun();
+        const created = adapter.testCases.create(
+          testCaseInput({
+            sourceRunId: runId,
+            sourceGeneratedSeedId: generatedSeedId,
+          }),
+        );
+        const [before] = adapter.testCases.list({ runId });
+        expect(before?.currentVersionId).toBe(created.currentVersion.id);
+        expect(before?.title).toBe(created.currentVersion.title);
+        expect(before?.versionStatus).toBe(created.currentVersion.status);
+        expect(before?.priority).toBe(created.currentVersion.priority);
+        expect(before?.risk).toBe(created.currentVersion.risk);
+        expect(before?.tags).toStrictEqual(created.currentVersion.tags);
       });
 
       it("findBySource locates an existing record and returns undefined otherwise", () => {

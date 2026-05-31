@@ -66,7 +66,17 @@ const seedPersistedCase = (args: {
 };
 
 interface ListResponseBody {
-  readonly testCases: ReadonlyArray<{ id: string; sourceTestCaseId: string }>;
+  readonly testCases: ReadonlyArray<{
+    readonly id: string;
+    readonly sourceTestCaseId: string;
+    readonly title: string;
+    readonly priority: string;
+    readonly risk: string;
+    readonly tags: readonly string[];
+    readonly versionStatus: string;
+    readonly snapshotIds: readonly string[];
+    readonly traceLinkKinds: readonly string[];
+  }>;
 }
 
 interface DetailResponseBody {
@@ -93,7 +103,7 @@ describe("Workbench test cases API", () => {
     await rm(repoRoot, { recursive: true, force: true });
   });
 
-  it("GET /api/workbench/test-cases returns persisted cases filtered by runId", async () => {
+  it("GET /api/workbench/test-cases returns persisted cases filtered by runId with current-version summary fields", async () => {
     const a = seedPersistedCase({ sourceTestCaseId: "tc-a" });
     seedPersistedCase({ sourceTestCaseId: "tc-b" });
 
@@ -104,7 +114,15 @@ describe("Workbench test cases API", () => {
     expect(response.status).toBe(200);
     const body = (await response.json()) as ListResponseBody;
     expect(body.testCases).toHaveLength(1);
-    expect(body.testCases[0]?.sourceTestCaseId).toBe("tc-a");
+    const summary = body.testCases[0];
+    expect(summary?.sourceTestCaseId).toBe("tc-a");
+    expect(summary?.title).toBe("Persisted case");
+    expect(summary?.priority).toBe("P1");
+    expect(summary?.risk).toBe("low");
+    expect(summary?.tags).toStrictEqual(["L1"]);
+    expect(summary?.versionStatus).toBe("generated");
+    expect(summary?.snapshotIds).toStrictEqual([]);
+    expect(summary?.traceLinkKinds).toStrictEqual(["run"]);
   });
 
   it("GET /api/workbench/test-cases without runId returns every case", async () => {

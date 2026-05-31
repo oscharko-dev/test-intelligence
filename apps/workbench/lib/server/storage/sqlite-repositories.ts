@@ -54,6 +54,7 @@ import type {
   TestCaseRepository,
   TestCaseSource,
   TestCaseStepRecord,
+  TestCaseSummary,
   TestCaseTraceLinkKind,
   TestCaseTraceLinkRecord,
   TestCaseVersionRecord,
@@ -926,6 +927,63 @@ const mapTestCaseVersion = (
   traceLinks,
 });
 
+interface TestCaseSummaryRow {
+  readonly id: string;
+  readonly tenant_scope: string;
+  readonly created_at: string;
+  readonly updated_at: string;
+  readonly source_run_id: string;
+  readonly source_generated_seed_id: string;
+  readonly source_test_case_id: string;
+  readonly current_version_id: string;
+  readonly status: string;
+  readonly v_title: string;
+  readonly v_priority: string;
+  readonly v_risk: string;
+  readonly v_tags: string;
+  readonly v_status: string;
+}
+
+const distinctOrdered = <T>(values: readonly T[]): T[] => {
+  const seen = new Set<T>();
+  const out: T[] = [];
+  for (const value of values) {
+    if (!seen.has(value)) {
+      seen.add(value);
+      out.push(value);
+    }
+  }
+  return out;
+};
+
+const mapTestCaseSummary = (
+  row: TestCaseSummaryRow,
+  traceLinks: readonly TestCaseTraceLinkRecord[],
+): TestCaseSummary => ({
+  id: row.id,
+  tenantScope: row.tenant_scope,
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
+  sourceRunId: row.source_run_id,
+  sourceGeneratedSeedId: row.source_generated_seed_id,
+  sourceTestCaseId: row.source_test_case_id,
+  currentVersionId: row.current_version_id,
+  status: row.status as TestCaseLifecycleStatus,
+  title: row.v_title,
+  priority: row.v_priority,
+  risk: row.v_risk,
+  tags: distinctOrdered([...parseJsonArray(row.v_tags)]),
+  versionStatus: row.v_status,
+  snapshotIds: distinctOrdered(
+    traceLinks
+      .filter((l) => l.targetKind === "snapshot")
+      .map((l) => l.targetId),
+  ),
+  traceLinkKinds: distinctOrdered<TestCaseTraceLinkKind>(
+    traceLinks.map((l) => l.targetKind),
+  ),
+});
+
 interface TestCaseStmts {
   readonly insertCase: Stmt;
   readonly insertVersion: Stmt;
@@ -935,13 +993,41 @@ interface TestCaseStmts {
   readonly selectCaseBySource: Stmt;
   readonly selectVersionById: Stmt;
   readonly selectTraceLinksByVersion: Stmt;
-  readonly selectAll: Stmt;
-  readonly selectByTenant: Stmt;
-  readonly selectByRun: Stmt;
-  readonly selectByTenantAndRun: Stmt;
+  readonly selectSummaryAll: Stmt;
+  readonly selectSummaryByTenant: Stmt;
+  readonly selectSummaryByRun: Stmt;
+  readonly selectSummaryByTenantAndRun: Stmt;
   readonly selectGeneratedSeedById: Stmt;
   readonly selectRunById: Stmt;
 }
+
+/**
+ * WHY `INNER JOIN`: every persisted test case is created with its initial
+ * version in the same transaction; a row with a missing `current_version_id`
+ * target violates the storage invariant. Filtering it out here keeps the list
+ * endpoint robust against a hypothetical corrupted row without crashing the
+ * route; the contract test asserts the happy path explicitly.
+ */
+const TEST_CASE_SUMMARY_SELECT = `
+  SELECT
+    tc.id AS id,
+    tc.tenant_scope AS tenant_scope,
+    tc.created_at AS created_at,
+    tc.updated_at AS updated_at,
+    tc.source_run_id AS source_run_id,
+    tc.source_generated_seed_id AS source_generated_seed_id,
+    tc.source_test_case_id AS source_test_case_id,
+    tc.current_version_id AS current_version_id,
+    tc.status AS status,
+    tcv.title AS v_title,
+    tcv.priority AS v_priority,
+    tcv.risk AS v_risk,
+    tcv.tags AS v_tags,
+    tcv.status AS v_status
+  FROM test_cases AS tc
+  INNER JOIN test_case_versions AS tcv
+    ON tcv.id = tc.current_version_id
+`;
 
 export const createTestCaseRepository = (db: Db): TestCaseRepository => {
   let stmts: TestCaseStmts | undefined;
@@ -987,17 +1073,23 @@ export const createTestCaseRepository = (db: Db): TestCaseRepository => {
            WHERE test_case_version_id = ? AND tenant_scope = ?
            ORDER BY rowid`,
       ),
-      selectAll: db.prepare(`SELECT * FROM test_cases ORDER BY rowid`),
-      selectByTenant: db.prepare(
-        `SELECT * FROM test_cases WHERE tenant_scope = ? ORDER BY rowid`,
+      selectSummaryAll: db.prepare(
+        `${TEST_CASE_SUMMARY_SELECT} ORDER BY tc.rowid`,
       ),
-      selectByRun: db.prepare(
-        `SELECT * FROM test_cases WHERE source_run_id = ? ORDER BY rowid`,
+      selectSummaryByTenant: db.prepare(
+        `${TEST_CASE_SUMMARY_SELECT}
+           WHERE tc.tenant_scope = ?
+           ORDER BY tc.rowid`,
       ),
-      selectByTenantAndRun: db.prepare(
-        `SELECT * FROM test_cases
-           WHERE tenant_scope = ? AND source_run_id = ?
-           ORDER BY rowid`,
+      selectSummaryByRun: db.prepare(
+        `${TEST_CASE_SUMMARY_SELECT}
+           WHERE tc.source_run_id = ?
+           ORDER BY tc.rowid`,
+      ),
+      selectSummaryByTenantAndRun: db.prepare(
+        `${TEST_CASE_SUMMARY_SELECT}
+           WHERE tc.tenant_scope = ? AND tc.source_run_id = ?
+           ORDER BY tc.rowid`,
       ),
       selectGeneratedSeedById: db.prepare(
         `SELECT * FROM generated_seeds WHERE id = ?`,
@@ -1137,19 +1229,48 @@ export const createTestCaseRepository = (db: Db): TestCaseRepository => {
       if (row === undefined) return undefined;
       return loadDetail(handles, mapTestCase(row));
     },
-    list(filter?: TestCaseFilter): readonly TestCaseRecord[] {
+    list(filter?: TestCaseFilter): readonly TestCaseSummary[] {
       const handles = s();
       const tenant = filter?.tenantScope;
       const runId = filter?.runId;
       const rows =
         tenant !== undefined && runId !== undefined
-          ? (handles.selectByTenantAndRun.all(tenant, runId) as TestCaseRow[])
+          ? (handles.selectSummaryByTenantAndRun.all(
+              tenant,
+              runId,
+            ) as TestCaseSummaryRow[])
           : tenant !== undefined
-            ? (handles.selectByTenant.all(tenant) as TestCaseRow[])
+            ? (handles.selectSummaryByTenant.all(
+                tenant,
+              ) as TestCaseSummaryRow[])
             : runId !== undefined
-              ? (handles.selectByRun.all(runId) as TestCaseRow[])
-              : (handles.selectAll.all() as TestCaseRow[]);
-      return rows.map(mapTestCase);
+              ? (handles.selectSummaryByRun.all(runId) as TestCaseSummaryRow[])
+              : (handles.selectSummaryAll.all() as TestCaseSummaryRow[]);
+      if (rows.length === 0) return [];
+      // WHY single batch query: fetching trace links per-row is O(N) round-trips;
+      // grouping by version_id in memory after one IN-clause query keeps list reads O(1).
+      const versionIds = rows.map((r) => r.current_version_id);
+      const placeholders = versionIds.map(() => "?").join(", ");
+      const allLinkRows = db
+        .prepare(
+          `SELECT * FROM test_case_trace_links
+             WHERE test_case_version_id IN (${placeholders})
+             ORDER BY rowid`,
+        )
+        .all(...versionIds) as TestCaseTraceLinkRow[];
+      const linksByVersionId = new Map<string, TestCaseTraceLinkRow[]>();
+      for (const linkRow of allLinkRows) {
+        const bucket = linksByVersionId.get(linkRow.test_case_version_id);
+        if (bucket !== undefined) {
+          bucket.push(linkRow);
+        } else {
+          linksByVersionId.set(linkRow.test_case_version_id, [linkRow]);
+        }
+      }
+      return rows.map((row) => {
+        const linkRows = linksByVersionId.get(row.current_version_id) ?? [];
+        return mapTestCaseSummary(row, linkRows.map(mapTestCaseTraceLink));
+      });
     },
     findBySource(
       tenantScope: string,
