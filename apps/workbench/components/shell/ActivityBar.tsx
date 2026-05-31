@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  ClipboardList,
   Database,
   History,
   Play,
@@ -13,7 +14,12 @@ import type { ReactNode } from "react";
 import { ui } from "@/lib/ui-classes";
 
 interface NavItem {
-  href: "/runs" | "/snapshots" | "/settings/model" | "/runs/history";
+  href:
+    | "/runs"
+    | "/snapshots"
+    | "/test-cases"
+    | "/settings/model"
+    | "/runs/history";
   icon: LucideIcon;
   label: string;
 }
@@ -21,6 +27,7 @@ interface NavItem {
 const ITEMS: readonly NavItem[] = [
   { href: "/runs", icon: Play, label: "Runs" },
   { href: "/snapshots", icon: Database, label: "Snapshot Vault" },
+  { href: "/test-cases", icon: ClipboardList, label: "Test Cases" },
   { href: "/settings/model", icon: Settings, label: "Model Settings" },
   { href: "/runs/history", icon: History, label: "Run History" },
 ];
