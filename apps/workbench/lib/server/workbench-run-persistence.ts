@@ -37,10 +37,12 @@ import {
   writeArtifact,
   type ArtifactKind,
   type ExportFormat,
+  type GeneratedSeedMetadataRecord,
   type WorkbenchRunStatus,
   type WorkbenchStorageAdapter,
   type WorkbenchStoragePaths,
 } from "@/lib/server/storage";
+import { ingestGeneratedTestCases } from "@/lib/server/workbench-test-case-ingestion";
 // WHY a separate import path: `getWorkbenchStorage`/`getWorkbenchStoragePaths`
 // are intentionally NOT re-exported from the storage barrel because they pull in
 // the better-sqlite3 adapter, which must never reach a client bundle. Server-only
@@ -240,9 +242,9 @@ const recordSeedFile = (input: {
   readonly tenantScope: string;
   readonly status: WorkbenchRunStatus;
   readonly bytes: Uint8Array;
-}): void => {
+}): GeneratedSeedMetadataRecord => {
   const content = writeArtifact(input.paths, input.bytes);
-  input.storage.generatedSeeds.create({
+  return input.storage.generatedSeeds.create({
     runId: input.rowId,
     tenantScope: input.tenantScope,
     status: input.status,
@@ -314,6 +316,11 @@ export const persistSealedRunArtifacts = (input: {
     const paths = getWorkbenchStoragePaths({ env });
     const storage = getWorkbenchStorage({ env });
     const resolvedArtifactDir = path.resolve(input.artifactDir);
+    // WHY a single up-front read of the runs row: ingestion (Issue #56) needs
+    // the run's `snapshotId` for the canonical `snapshot` trace link, and this
+    // row is already on disk. One extra read keeps the parameter list to
+    // `persistSealedRunArtifacts` unchanged and tolerates a missing row.
+    const runRow = storage.runs.get(input.rowId, input.tenantScope);
     for (const filePath of input.artifactPaths) {
       const absolute = path.resolve(filePath);
       recordSingleArtifact({
@@ -340,14 +347,34 @@ export const persistSealedRunArtifacts = (input: {
       (p) => path.resolve(p) === seedTarget,
     );
     if (seedEntry !== undefined) {
-      recordSeedFile({
+      const seedBytes = Uint8Array.from(readFileSync(seedEntry));
+      const seedRecord = recordSeedFile({
         storage,
         paths,
         rowId: input.rowId,
         tenantScope: input.tenantScope,
         status: input.status,
-        bytes: Uint8Array.from(readFileSync(seedEntry)),
+        bytes: seedBytes,
       });
+      // WHY a separate try/catch here: `ingestGeneratedTestCases` is itself
+      // best-effort, but wrapping it again locally prevents any future
+      // signature change from leaking into the seal hook.
+      try {
+        ingestGeneratedTestCases({
+          env,
+          rowId: input.rowId,
+          tenantScope: input.tenantScope,
+          generatedSeedId: seedRecord.id,
+          seedBytes,
+          ...(runRow?.snapshotId !== undefined
+            ? { snapshotId: runRow.snapshotId }
+            : {}),
+        });
+      } catch (error) {
+        console.error(
+          `[workbench] Generated test case ingestion failed unexpectedly; canonical editor records skipped: ${describeStorageError(error)}`,
+        );
+      }
     }
   } catch (error) {
     console.error(

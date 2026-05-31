@@ -15,6 +15,7 @@ import type {
   RunRepository,
   ScopeBasketRepository,
   SnapshotRepository,
+  TestCaseRepository,
 } from "./types";
 
 export type WorkbenchStorageErrorCode =
@@ -55,6 +56,7 @@ export interface WorkbenchStorageAdapter {
   readonly scopeBaskets: ScopeBasketRepository;
   readonly generatedSeeds: GeneratedSeedRepository;
   readonly exports: ExportRepository;
+  readonly testCases: TestCaseRepository;
   migrateToLatest(): number;
   getSchemaVersion(): number;
   transaction<T>(work: (tx: WorkbenchStorageAdapter) => T): T;

@@ -34,6 +34,7 @@ import {
   createRunRepository,
   createScopeBasketRepository,
   createSnapshotRepository,
+  createTestCaseRepository,
 } from "./sqlite-repositories";
 import { writePreMigrationBackup } from "./sqlite-backup";
 import { buildBuiltinSchemaMigrations } from "./sqlite-schema";
@@ -46,6 +47,7 @@ import type {
   RunRepository,
   ScopeBasketRepository,
   SnapshotRepository,
+  TestCaseRepository,
 } from "./types";
 
 export interface SqliteAdapterOptions {
@@ -93,6 +95,7 @@ class SqliteWorkbenchStorageAdapter implements WorkbenchStorageAdapter {
   readonly scopeBaskets: ScopeBasketRepository;
   readonly generatedSeeds: GeneratedSeedRepository;
   readonly exports: ExportRepository;
+  readonly testCases: TestCaseRepository;
 
   private readonly db: BetterSqlite3.Database;
   private readonly databaseFile: string;
@@ -117,6 +120,7 @@ class SqliteWorkbenchStorageAdapter implements WorkbenchStorageAdapter {
     this.scopeBaskets = createScopeBasketRepository(this.db);
     this.generatedSeeds = createGeneratedSeedRepository(this.db);
     this.exports = createExportRepository(this.db);
+    this.testCases = createTestCaseRepository(this.db);
 
     this.txHandle = this.buildTxHandle();
     this.migrations =
@@ -139,6 +143,7 @@ class SqliteWorkbenchStorageAdapter implements WorkbenchStorageAdapter {
       scopeBaskets: this.scopeBaskets,
       generatedSeeds: this.generatedSeeds,
       exports: this.exports,
+      testCases: this.testCases,
       migrateToLatest: () => {
         throw new WorkbenchStorageError(
           "NESTED_TRANSACTION",

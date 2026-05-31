@@ -40,6 +40,21 @@ export type {
 } from "./types";
 
 export type {
+  CreatePersistedTestCaseInput,
+  PersistedTestCaseDetail,
+  TestCaseFilter,
+  TestCaseLifecycleStatus,
+  TestCaseRecord,
+  TestCaseRepository,
+  TestCaseSource,
+  TestCaseStepRecord,
+  TestCaseTraceLinkKind,
+  TestCaseTraceLinkRecord,
+  TestCaseTraceTargetInput,
+  TestCaseVersionRecord,
+} from "./types";
+
+export type {
   WorkbenchStorageAdapter,
   WorkbenchStorageErrorCode,
 } from "./storage-adapter";
