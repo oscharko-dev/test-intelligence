@@ -296,7 +296,7 @@ export interface ExportRepository {
  */
 export type TestCaseSource = "generated";
 
-export type TestCaseLifecycleStatus = "draft" | "in-review" | "approved";
+export type TestCaseLifecycleStatus = "draft" | "reviewed" | "approved";
 
 export type TestCaseTraceLinkKind =
   | "run"

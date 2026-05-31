@@ -312,4 +312,44 @@ describe("ingestGeneratedTestCases (in-memory adapter)", () => {
     });
     expect(report.persistedCount).toBe(0);
   });
+
+  it("skips malformed entries and persists the otherwise-valid ones in the same payload", () => {
+    const malformed = [
+      { id: "missing-title" },
+      {
+        id: "missing-steps",
+        title: "T",
+        objective: "O",
+        preconditions: [],
+        testData: [],
+        figmaTraceRefs: [],
+      },
+      "not-an-object",
+      null,
+    ];
+    const valid = generatedFixture({ id: "valid-1" });
+    const seedBytes = new Uint8Array(
+      Buffer.from(
+        JSON.stringify({
+          jobId: "j",
+          schemaVersion: "x",
+          testCases: [...malformed, valid],
+        }),
+        "utf8",
+      ),
+    );
+    const ctx = seedRunAndSeed(seedBytes);
+    const report = ingestGeneratedTestCases({
+      env: env(),
+      rowId: ctx.rowId,
+      tenantScope: ctx.tenantScope,
+      generatedSeedId: ctx.generatedSeedId,
+      seedBytes,
+    });
+    expect(report.persistedCount).toBe(1);
+    expect(report.skippedDuplicateCount).toBe(0);
+    expect(
+      getWorkbenchStorage({ env: env() }).testCases.list({ runId: ctx.rowId }),
+    ).toHaveLength(1);
+  });
 });

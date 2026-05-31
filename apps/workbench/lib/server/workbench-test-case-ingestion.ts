@@ -154,6 +154,30 @@ const extractTestCases = (bytes: Uint8Array): readonly GeneratedTestCase[] => {
   return [];
 };
 
+/**
+ * Runtime guard for the fields the mapper and the persisted schema depend on.
+ * The contracts package types are not available at runtime, and legacy
+ * fixtures (mock runner output, replay-cache snapshots) sometimes carry
+ * partially-shaped entries. A failing guard skips the entry rather than
+ * aborting the surrounding transaction, so otherwise-valid cases in the same
+ * payload still persist.
+ */
+const isIngestibleGeneratedTestCase = (
+  candidate: unknown,
+): candidate is GeneratedTestCase => {
+  if (typeof candidate !== "object" || candidate === null) return false;
+  const record = candidate as Record<string, unknown>;
+  return (
+    typeof record["id"] === "string" &&
+    typeof record["title"] === "string" &&
+    typeof record["objective"] === "string" &&
+    Array.isArray(record["preconditions"]) &&
+    Array.isArray(record["steps"]) &&
+    Array.isArray(record["testData"]) &&
+    Array.isArray(record["figmaTraceRefs"])
+  );
+};
+
 export interface IngestGeneratedTestCasesInput {
   readonly env: NodeJS.ProcessEnv;
   readonly rowId: string;
@@ -185,14 +209,10 @@ export const ingestGeneratedTestCases = (
       let persisted = 0;
       let skipped = 0;
       for (const generated of cases) {
-        if (
-          typeof generated !== "object" ||
-          generated === null ||
-          typeof (generated as { id?: unknown }).id !== "string"
-        ) {
-          // Defensive: malformed array entries are skipped rather than thrown.
-          continue;
-        }
+        // Defensive: malformed array entries are skipped rather than thrown,
+        // so a single bad legacy fixture never aborts the surrounding
+        // transaction for the otherwise-valid cases.
+        if (!isIngestibleGeneratedTestCase(generated)) continue;
         const existing = tx.testCases.findBySource(
           input.tenantScope,
           input.rowId,

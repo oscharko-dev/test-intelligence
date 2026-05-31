@@ -224,15 +224,26 @@ const EXPORT_FORMAT_BY_KIND: Readonly<
 };
 
 /**
- * WHY a defensible count when the shape is unknown: the produced seed file is
- * the engine's `GeneratedTestCaseList` JSON whose top level is the test-case
- * array; a bare array length is the case count. If the JSON is not an array
- * (shape changed or file truncated) the count is reported as 0 rather than
- * throwing, so seal persistence is never blocked by an unexpected payload.
+ * WHY a defensible count when the shape is unknown: the engine emits the
+ * contracts package `GeneratedTestCaseList` ({ testCases: [...] }), while
+ * historical fixtures and the mock runner have also written the bare
+ * test-case array form. Both shapes are accepted; any other shape — or a
+ * truncated/invalid JSON payload — yields 0 so seal persistence is never
+ * blocked by an unexpected payload.
  */
 const countGeneratedSeeds = (bytes: Uint8Array): number => {
-  const parsed: unknown = JSON.parse(Buffer.from(bytes).toString("utf8"));
-  return Array.isArray(parsed) ? parsed.length : 0;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(bytes).toString("utf8"));
+  } catch {
+    return 0;
+  }
+  if (Array.isArray(parsed)) return parsed.length;
+  if (typeof parsed === "object" && parsed !== null) {
+    const list = (parsed as { testCases?: unknown }).testCases;
+    if (Array.isArray(list)) return list.length;
+  }
+  return 0;
 };
 
 const recordSeedFile = (input: {
