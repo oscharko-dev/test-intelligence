@@ -39,7 +39,6 @@ function DisabledTextArea({
           ui.field.disabled,
           "min-h-[64px] resize-y",
         )}
-        aria-readonly="true"
       />
     </div>
   );
@@ -92,7 +91,6 @@ function ReadOnlyList({
               onChange={NOOP}
               className={cx(ui.field.input, ui.field.disabled, "py-1")}
               aria-label={`${label} item ${index + 1}`}
-              aria-readonly="true"
             />
           </li>
         ))}
@@ -145,7 +143,6 @@ function StepsList({
                 onChange={NOOP}
                 className={cx(ui.field.input, ui.field.disabled, "py-1")}
                 aria-label={`Step ${index + 1} action`}
-                aria-readonly="true"
               />
               <input
                 type="text"
@@ -154,7 +151,6 @@ function StepsList({
                 onChange={NOOP}
                 className={cx(ui.field.input, ui.field.disabled, "py-1")}
                 aria-label={`Step ${index + 1} expected result`}
-                aria-readonly="true"
               />
             </div>
           </li>
