@@ -16,13 +16,21 @@ import {
   assertCanonicalContentRef,
   assertSameTenantRun,
 } from "./contract-validation";
+import {
+  appendVersionInMemory,
+  listVersionsInMemory,
+  transitionStatusInMemory,
+} from "./memory-test-case-helpers";
 import { assertSchemaVersionSupported } from "./migrations";
 import type { WorkbenchMigration } from "./migrations";
 import { WorkbenchStorageError } from "./storage-adapter";
 import type { WorkbenchStorageAdapter } from "./storage-adapter";
 import type {
+  AppendTestCaseVersionInput,
   ArtifactMetadataRecord,
   ArtifactRepository,
+  AuditEventRecord,
+  AuditEventRepository,
   CreateArtifactInput,
   CreateExportInput,
   CreateGeneratedSeedInput,
@@ -52,6 +60,7 @@ import type {
   TestCaseTraceLinkKind,
   TestCaseTraceLinkRecord,
   TestCaseVersionRecord,
+  TransitionTestCaseStatusInput,
   WorkbenchRunStatus,
 } from "./types";
 
@@ -65,6 +74,7 @@ interface MemoryState {
   testCases: Map<string, TestCaseRecord>;
   testCaseVersions: Map<string, TestCaseVersionRecord>;
   testCaseTraceLinks: Map<string, TestCaseTraceLinkRecord>;
+  auditEvents: Map<string, AuditEventRecord>;
 }
 
 const createEmptyState = (): MemoryState => ({
@@ -77,6 +87,7 @@ const createEmptyState = (): MemoryState => ({
   testCases: new Map(),
   testCaseVersions: new Map(),
   testCaseTraceLinks: new Map(),
+  auditEvents: new Map(),
 });
 
 const snapshot = <T>(record: T): T => structuredClone(record);
@@ -94,6 +105,7 @@ const cloneState = (state: MemoryState): MemoryState => ({
   testCases: cloneMap(state.testCases),
   testCaseVersions: cloneMap(state.testCaseVersions),
   testCaseTraceLinks: cloneMap(state.testCaseTraceLinks),
+  auditEvents: cloneMap(state.auditEvents),
 });
 
 const restoreState = (target: MemoryState, source: MemoryState): void => {
@@ -106,6 +118,7 @@ const restoreState = (target: MemoryState, source: MemoryState): void => {
   target.testCases = source.testCases;
   target.testCaseVersions = source.testCaseVersions;
   target.testCaseTraceLinks = source.testCaseTraceLinks;
+  target.auditEvents = source.auditEvents;
 };
 
 const matchesTenant = (
@@ -442,7 +455,37 @@ const projectTestCaseSummary = (
   };
 };
 
-const createTestCaseRepository = (state: MemoryState): TestCaseRepository => ({
+const createAuditEventRepository = (
+  state: MemoryState,
+): AuditEventRepository => ({
+  record(input): AuditEventRecord {
+    const record: AuditEventRecord = {
+      id: randomUUID(),
+      tenantScope: input.tenantScope,
+      createdAt: nowIso(),
+      payload: structuredClone(input.payload),
+    };
+    state.auditEvents.set(record.id, snapshot(record));
+    return snapshot(record);
+  },
+  listForTestCase(
+    testCaseId: string,
+    tenantScope: string,
+  ): readonly AuditEventRecord[] {
+    return [...state.auditEvents.values()]
+      .filter(
+        (event) =>
+          event.tenantScope === tenantScope &&
+          event.payload.testCaseId === testCaseId,
+      )
+      .map(snapshot);
+  },
+});
+
+const createTestCaseRepository = (
+  state: MemoryState,
+  audit: AuditEventRepository,
+): TestCaseRepository => ({
   create(input: CreatePersistedTestCaseInput): PersistedTestCaseDetail {
     assertCanonicalContentRef(
       input.initialVersion.content,
@@ -560,6 +603,20 @@ const createTestCaseRepository = (state: MemoryState): TestCaseRepository => ({
     );
     return record === undefined ? undefined : snapshot(record);
   },
+  appendVersion(input: AppendTestCaseVersionInput): PersistedTestCaseDetail {
+    return appendVersionInMemory(state, audit, input);
+  },
+  transitionStatus(
+    input: TransitionTestCaseStatusInput,
+  ): PersistedTestCaseDetail {
+    return transitionStatusInMemory(state, audit, input);
+  },
+  listVersions(
+    testCaseId: string,
+    tenantScope: string,
+  ): readonly TestCaseVersionRecord[] {
+    return listVersionsInMemory(state, testCaseId, tenantScope);
+  },
 });
 
 interface MemoryAdapterOptions {
@@ -575,6 +632,7 @@ class MemoryWorkbenchStorageAdapter implements WorkbenchStorageAdapter {
   readonly generatedSeeds: GeneratedSeedRepository;
   readonly exports: ExportRepository;
   readonly testCases: TestCaseRepository;
+  readonly auditEvents: AuditEventRepository;
 
   private readonly state: MemoryState;
   private readonly migrations: readonly WorkbenchMigration[];
@@ -595,7 +653,8 @@ class MemoryWorkbenchStorageAdapter implements WorkbenchStorageAdapter {
     this.scopeBaskets = createScopeBasketRepository(this.state);
     this.generatedSeeds = createGeneratedSeedRepository(this.state);
     this.exports = createExportRepository(this.state);
-    this.testCases = createTestCaseRepository(this.state);
+    this.auditEvents = createAuditEventRepository(this.state);
+    this.testCases = createTestCaseRepository(this.state, this.auditEvents);
     this.txHandle = this.buildTxHandle();
   }
 
@@ -608,6 +667,7 @@ class MemoryWorkbenchStorageAdapter implements WorkbenchStorageAdapter {
       generatedSeeds: this.generatedSeeds,
       exports: this.exports,
       testCases: this.testCases,
+      auditEvents: this.auditEvents,
       migrateToLatest: () => {
         throw new WorkbenchStorageError(
           "NESTED_TRANSACTION",
@@ -681,6 +741,7 @@ class MemoryWorkbenchStorageAdapter implements WorkbenchStorageAdapter {
     this.state.testCases.clear();
     this.state.testCaseVersions.clear();
     this.state.testCaseTraceLinks.clear();
+    this.state.auditEvents.clear();
   }
 }
 

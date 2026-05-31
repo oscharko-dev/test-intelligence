@@ -21,9 +21,27 @@ import {
   assertCanonicalContentRef,
   assertSameTenantRun,
 } from "./contract-validation";
+import {
+  mapTestCase,
+  mapTestCaseTraceLink,
+  mapTestCaseVersion,
+  parseJsonArray,
+  type TestCaseRow,
+  type TestCaseTraceLinkRow,
+  type TestCaseVersionRow,
+} from "./sqlite-test-case-mappers";
+import {
+  appendVersionInSqlite,
+  buildVersioningStmts,
+  listVersionsInSqlite,
+  transitionStatusInSqlite,
+  type VersioningStmts,
+} from "./sqlite-test-case-versioning";
 import type {
+  AppendTestCaseVersionInput,
   ArtifactMetadataRecord,
   ArtifactRepository,
+  AuditEventRepository,
   ContentRef,
   CreateArtifactInput,
   CreateExportInput,
@@ -52,12 +70,11 @@ import type {
   TestCaseLifecycleStatus,
   TestCaseRecord,
   TestCaseRepository,
-  TestCaseSource,
-  TestCaseStepRecord,
   TestCaseSummary,
   TestCaseTraceLinkKind,
   TestCaseTraceLinkRecord,
   TestCaseVersionRecord,
+  TransitionTestCaseStatusInput,
   WorkbenchRunStatus,
 } from "./types";
 
@@ -810,123 +827,6 @@ export const createExportRepository = (db: Db): ExportRepository => {
   };
 };
 
-interface TestCaseRow {
-  readonly id: string;
-  readonly tenant_scope: string;
-  readonly created_at: string;
-  readonly updated_at: string;
-  readonly source_run_id: string;
-  readonly source_generated_seed_id: string;
-  readonly source_test_case_id: string;
-  readonly current_version_id: string;
-  readonly status: string;
-}
-
-interface TestCaseVersionRow {
-  readonly id: string;
-  readonly test_case_id: string;
-  readonly tenant_scope: string;
-  readonly created_at: string;
-  readonly version_index: number;
-  readonly source: string;
-  readonly title: string;
-  readonly objective: string;
-  readonly preconditions: string;
-  readonly steps: string;
-  readonly test_data: string;
-  readonly priority: string;
-  readonly risk: string;
-  readonly tags: string;
-  readonly status: string;
-  readonly description: string | null;
-  readonly content_sha256: string;
-  readonly content_byte_size: number;
-  readonly content_storage_ref: string;
-}
-
-interface TestCaseTraceLinkRow {
-  readonly id: string;
-  readonly test_case_version_id: string;
-  readonly tenant_scope: string;
-  readonly created_at: string;
-  readonly target_kind: string;
-  readonly target_id: string;
-}
-
-const asStepArray = (value: unknown): TestCaseStepRecord[] => {
-  if (!Array.isArray(value)) return [];
-  const steps: TestCaseStepRecord[] = [];
-  for (const entry of value) {
-    if (typeof entry !== "object" || entry === null) continue;
-    const record = entry as Record<string, unknown>;
-    if (
-      typeof record.action !== "string" ||
-      typeof record.expected !== "string"
-    ) {
-      continue;
-    }
-    steps.push({ action: record.action, expected: record.expected });
-  }
-  return steps;
-};
-
-const parseJsonArray = (json: string): readonly string[] =>
-  asStringArray(JSON.parse(json) as unknown);
-
-const parseJsonSteps = (json: string): readonly TestCaseStepRecord[] =>
-  asStepArray(JSON.parse(json) as unknown);
-
-const mapTestCase = (row: TestCaseRow): TestCaseRecord => ({
-  id: row.id,
-  tenantScope: row.tenant_scope,
-  createdAt: row.created_at,
-  updatedAt: row.updated_at,
-  sourceRunId: row.source_run_id,
-  sourceGeneratedSeedId: row.source_generated_seed_id,
-  sourceTestCaseId: row.source_test_case_id,
-  currentVersionId: row.current_version_id,
-  status: row.status as TestCaseLifecycleStatus,
-});
-
-const mapTestCaseTraceLink = (
-  row: TestCaseTraceLinkRow,
-): TestCaseTraceLinkRecord => ({
-  id: row.id,
-  testCaseVersionId: row.test_case_version_id,
-  tenantScope: row.tenant_scope,
-  createdAt: row.created_at,
-  targetKind: row.target_kind as TestCaseTraceLinkKind,
-  targetId: row.target_id,
-});
-
-const mapTestCaseVersion = (
-  row: TestCaseVersionRow,
-  traceLinks: readonly TestCaseTraceLinkRecord[],
-): TestCaseVersionRecord => ({
-  id: row.id,
-  testCaseId: row.test_case_id,
-  tenantScope: row.tenant_scope,
-  createdAt: row.created_at,
-  versionIndex: row.version_index,
-  source: row.source as TestCaseSource,
-  title: row.title,
-  objective: row.objective,
-  preconditions: parseJsonArray(row.preconditions),
-  steps: parseJsonSteps(row.steps),
-  testData: parseJsonArray(row.test_data),
-  priority: row.priority,
-  risk: row.risk,
-  tags: parseJsonArray(row.tags),
-  status: row.status,
-  ...(row.description !== null ? { description: row.description } : {}),
-  content: contentRefFrom(
-    row.content_sha256,
-    row.content_byte_size,
-    row.content_storage_ref,
-  ),
-  traceLinks,
-});
-
 interface TestCaseSummaryRow {
   readonly id: string;
   readonly tenant_scope: string;
@@ -1029,8 +929,14 @@ const TEST_CASE_SUMMARY_SELECT = `
     ON tcv.id = tc.current_version_id
 `;
 
-export const createTestCaseRepository = (db: Db): TestCaseRepository => {
+export const createTestCaseRepository = (
+  db: Db,
+  audit: AuditEventRepository,
+): TestCaseRepository => {
   let stmts: TestCaseStmts | undefined;
+  let versioningStmts: VersioningStmts | undefined;
+  const versioning = (): VersioningStmts =>
+    (versioningStmts ??= buildVersioningStmts(db));
   const s = (): TestCaseStmts =>
     (stmts ??= {
       insertCase: db.prepare(
@@ -1045,11 +951,13 @@ export const createTestCaseRepository = (db: Db): TestCaseRepository => {
         `INSERT INTO test_case_versions (id, test_case_id, tenant_scope, created_at,
            version_index, source, title, objective, preconditions, steps, test_data,
            priority, risk, tags, status, description,
-           content_sha256, content_byte_size, content_storage_ref)
+           content_sha256, content_byte_size, content_storage_ref,
+           previous_version_id, change_reason)
          VALUES (@id, @testCaseId, @tenantScope, @createdAt,
            @versionIndex, @source, @title, @objective, @preconditions, @steps, @testData,
            @priority, @risk, @tags, @status, @description,
-           @contentSha256, @contentByteSize, @contentStorageRef)`,
+           @contentSha256, @contentByteSize, @contentStorageRef,
+           @previousVersionId, @changeReason)`,
       ),
       insertTraceLink: db.prepare(
         `INSERT INTO test_case_trace_links (id, test_case_version_id, tenant_scope,
@@ -1193,6 +1101,8 @@ export const createTestCaseRepository = (db: Db): TestCaseRepository => {
         contentSha256: initial.content.sha256,
         contentByteSize: initial.content.byteSize,
         contentStorageRef: initial.content.storageRef,
+        previousVersionId: null,
+        changeReason: null,
       };
 
       handles.insertCase.run(caseParams);
@@ -1283,6 +1193,20 @@ export const createTestCaseRepository = (db: Db): TestCaseRepository => {
         sourceTestCaseId,
       ) as TestCaseRow | undefined;
       return row ? mapTestCase(row) : undefined;
+    },
+    appendVersion(input: AppendTestCaseVersionInput): PersistedTestCaseDetail {
+      return appendVersionInSqlite(versioning(), audit, input);
+    },
+    transitionStatus(
+      input: TransitionTestCaseStatusInput,
+    ): PersistedTestCaseDetail {
+      return transitionStatusInSqlite(versioning(), audit, input);
+    },
+    listVersions(
+      testCaseId: string,
+      tenantScope: string,
+    ): readonly TestCaseVersionRecord[] {
+      return listVersionsInSqlite(versioning(), testCaseId, tenantScope);
     },
   };
 };

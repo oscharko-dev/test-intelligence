@@ -69,6 +69,11 @@ const failingFollowupSchemaSteps: readonly WorkbenchMigration[] = [
   },
   {
     version: 4,
+    description: "no-op v4 (already applied on existing database)",
+    up() {},
+  },
+  {
+    version: 5,
     description: "intentionally failing follow-up step",
     up() {
       throw new Error("forced migration failure");

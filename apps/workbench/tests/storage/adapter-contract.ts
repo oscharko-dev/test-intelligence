@@ -14,6 +14,7 @@ import {
   artifactStorageRef,
 } from "@/lib/server/storage";
 import type {
+  AppendTestCaseVersionInput,
   ContentRef,
   CreateArtifactInput,
   CreateExportInput,
@@ -22,6 +23,7 @@ import type {
   CreateRunInput,
   CreateScopeBasketInput,
   CreateSnapshotInput,
+  TestCaseLifecycleStatus,
   WorkbenchMigration,
   WorkbenchStorageAdapter,
 } from "@/lib/server/storage";
@@ -138,6 +140,30 @@ const testCaseInput = (
     traceTargets: [{ targetKind: "run", targetId: args.sourceRunId }],
   },
   ...overrides,
+});
+
+const appendVersionInput = (
+  args: { testCaseId: string; runId: string },
+  overrides: Partial<AppendTestCaseVersionInput["version"]> = {},
+  changeReason?: string,
+): AppendTestCaseVersionInput => ({
+  testCaseId: args.testCaseId,
+  tenantScope: "tenant-a",
+  ...(changeReason !== undefined ? { changeReason } : {}),
+  version: {
+    title: "Edited title",
+    objective: "Edited objective",
+    preconditions: [],
+    steps: [{ action: "Edited step", expected: "Edited result" }],
+    testData: [],
+    priority: "P2",
+    risk: "low",
+    tags: ["edited"],
+    status: "draft",
+    content: contentRef("e5"),
+    traceTargets: [{ targetKind: "run", targetId: args.runId }],
+    ...overrides,
+  },
 });
 
 export const runWorkbenchStorageAdapterContract = (
@@ -759,6 +785,456 @@ export const runWorkbenchStorageAdapterContract = (
           adapter.testCases.findBySource("tenant-a", runId, "tc-tx-1"),
         ).toBeUndefined();
         expect(adapter.testCases.list()).toStrictEqual([]);
+      });
+
+      describe("appendVersion (Issue #58)", () => {
+        const seedV1 = (): {
+          readonly testCaseId: string;
+          readonly runId: string;
+          readonly v1Id: string;
+          readonly previousUpdatedAt: string;
+        } => {
+          const { runId, generatedSeedId } = seededRun();
+          const detail = adapter.testCases.create(
+            testCaseInput({
+              sourceRunId: runId,
+              sourceGeneratedSeedId: generatedSeedId,
+            }),
+          );
+          return {
+            testCaseId: detail.testCase.id,
+            runId,
+            v1Id: detail.currentVersion.id,
+            previousUpdatedAt: detail.testCase.updatedAt,
+          };
+        };
+
+        it("creates v2 with previousVersionId pointing to v1.id and source=manual", () => {
+          const seed = seedV1();
+          const detail = adapter.testCases.appendVersion(
+            appendVersionInput(
+              { testCaseId: seed.testCaseId, runId: seed.runId },
+              { title: "Manual edit" },
+              "Adjusted by operator",
+            ),
+          );
+          expect(detail.currentVersion.versionIndex).toBe(2);
+          expect(detail.currentVersion.source).toBe("manual");
+          expect(detail.currentVersion.previousVersionId).toBe(seed.v1Id);
+          expect(detail.currentVersion.title).toBe("Manual edit");
+          expect(detail.currentVersion.changeReason).toBe(
+            "Adjusted by operator",
+          );
+        });
+
+        it("bumps test_cases.currentVersionId and updatedAt", () => {
+          const seed = seedV1();
+          const detail = adapter.testCases.appendVersion(
+            appendVersionInput({
+              testCaseId: seed.testCaseId,
+              runId: seed.runId,
+            }),
+          );
+          expect(detail.testCase.currentVersionId).toBe(
+            detail.currentVersion.id,
+          );
+          expect(detail.testCase.currentVersionId).not.toBe(seed.v1Id);
+          expect(Date.parse(detail.testCase.updatedAt)).toBeGreaterThanOrEqual(
+            Date.parse(seed.previousUpdatedAt),
+          );
+        });
+
+        it("rejects empty title with TITLE_REQUIRED", () => {
+          const seed = seedV1();
+          try {
+            adapter.testCases.appendVersion(
+              appendVersionInput(
+                { testCaseId: seed.testCaseId, runId: seed.runId },
+                { title: "   " },
+              ),
+            );
+            throw new Error("expected throw");
+          } catch (error) {
+            expect(error).toBeInstanceOf(WorkbenchStorageError);
+            const e = error as WorkbenchStorageError;
+            expect(e.code).toBe("VALIDATION_FAILED");
+            const codes = (
+              e.details as ReadonlyArray<{ code: string; field: string }>
+            ).map((entry) => entry.code);
+            expect(codes).toContain("TITLE_REQUIRED");
+          }
+        });
+
+        it("rejects empty steps with AT_LEAST_ONE_STEP", () => {
+          const seed = seedV1();
+          try {
+            adapter.testCases.appendVersion(
+              appendVersionInput(
+                { testCaseId: seed.testCaseId, runId: seed.runId },
+                { steps: [] },
+              ),
+            );
+            throw new Error("expected throw");
+          } catch (error) {
+            const e = error as WorkbenchStorageError;
+            expect(e.code).toBe("VALIDATION_FAILED");
+            const codes = (e.details as ReadonlyArray<{ code: string }>).map(
+              (entry) => entry.code,
+            );
+            expect(codes).toContain("AT_LEAST_ONE_STEP");
+          }
+        });
+
+        it("rejects step missing action with STEP_ACTION_REQUIRED on correct index", () => {
+          const seed = seedV1();
+          try {
+            adapter.testCases.appendVersion(
+              appendVersionInput(
+                { testCaseId: seed.testCaseId, runId: seed.runId },
+                {
+                  steps: [
+                    { action: "ok", expected: "ok" },
+                    { action: " ", expected: "fail" },
+                  ],
+                },
+              ),
+            );
+            throw new Error("expected throw");
+          } catch (error) {
+            const e = error as WorkbenchStorageError;
+            const entries = e.details as ReadonlyArray<{
+              code: string;
+              field: string;
+            }>;
+            expect(
+              entries.find((entry) => entry.code === "STEP_ACTION_REQUIRED"),
+            ).toMatchObject({ field: "steps[1].action" });
+          }
+        });
+
+        it("rejects step missing expected with STEP_EXPECTED_REQUIRED on correct index", () => {
+          const seed = seedV1();
+          try {
+            adapter.testCases.appendVersion(
+              appendVersionInput(
+                { testCaseId: seed.testCaseId, runId: seed.runId },
+                {
+                  steps: [
+                    { action: "ok", expected: "ok" },
+                    { action: "ok2", expected: "" },
+                  ],
+                },
+              ),
+            );
+            throw new Error("expected throw");
+          } catch (error) {
+            const e = error as WorkbenchStorageError;
+            const entries = e.details as ReadonlyArray<{
+              code: string;
+              field: string;
+            }>;
+            expect(
+              entries.find((entry) => entry.code === "STEP_EXPECTED_REQUIRED"),
+            ).toMatchObject({ field: "steps[1].expected" });
+          }
+        });
+
+        it("rejects empty traceTargets with TRACE_LINK_REQUIRED", () => {
+          const seed = seedV1();
+          try {
+            adapter.testCases.appendVersion(
+              appendVersionInput(
+                { testCaseId: seed.testCaseId, runId: seed.runId },
+                { traceTargets: [] },
+              ),
+            );
+            throw new Error("expected throw");
+          } catch (error) {
+            const e = error as WorkbenchStorageError;
+            const codes = (e.details as ReadonlyArray<{ code: string }>).map(
+              (entry) => entry.code,
+            );
+            expect(codes).toContain("TRACE_LINK_REQUIRED");
+          }
+        });
+
+        it("rejects target with empty id with TRACE_TARGET_ID_REQUIRED on correct index", () => {
+          const seed = seedV1();
+          try {
+            adapter.testCases.appendVersion(
+              appendVersionInput(
+                { testCaseId: seed.testCaseId, runId: seed.runId },
+                {
+                  traceTargets: [
+                    { targetKind: "run", targetId: seed.runId },
+                    { targetKind: "snapshot", targetId: "  " },
+                  ],
+                },
+              ),
+            );
+            throw new Error("expected throw");
+          } catch (error) {
+            const e = error as WorkbenchStorageError;
+            const entries = e.details as ReadonlyArray<{
+              code: string;
+              field: string;
+            }>;
+            expect(
+              entries.find(
+                (entry) => entry.code === "TRACE_TARGET_ID_REQUIRED",
+              ),
+            ).toMatchObject({ field: "traceTargets[1].targetId" });
+          }
+        });
+      });
+
+      describe("transitionStatus (Issue #58)", () => {
+        const seedCase = (
+          initial: TestCaseLifecycleStatus = "draft",
+        ): string => {
+          const { runId, generatedSeedId } = seededRun();
+          const detail = adapter.testCases.create(
+            testCaseInput(
+              { sourceRunId: runId, sourceGeneratedSeedId: generatedSeedId },
+              { status: initial },
+            ),
+          );
+          return detail.testCase.id;
+        };
+
+        it("allows draft → reviewed, draft → approved, reviewed → approved", () => {
+          const a = seedCase("draft");
+          expect(
+            adapter.testCases.transitionStatus({
+              testCaseId: a,
+              tenantScope: "tenant-a",
+              newStatus: "reviewed",
+            }).testCase.status,
+          ).toBe("reviewed");
+
+          const b = seedCase("draft");
+          expect(
+            adapter.testCases.transitionStatus({
+              testCaseId: b,
+              tenantScope: "tenant-a",
+              newStatus: "approved",
+            }).testCase.status,
+          ).toBe("approved");
+
+          const c = seedCase("reviewed");
+          expect(
+            adapter.testCases.transitionStatus({
+              testCaseId: c,
+              tenantScope: "tenant-a",
+              newStatus: "approved",
+            }).testCase.status,
+          ).toBe("approved");
+        });
+
+        it("rejects reviewed → draft, approved → reviewed, and draft → draft", () => {
+          const a = seedCase("reviewed");
+          expect(() =>
+            adapter.testCases.transitionStatus({
+              testCaseId: a,
+              tenantScope: "tenant-a",
+              newStatus: "draft",
+            }),
+          ).toThrow(WorkbenchStorageError);
+
+          const b = seedCase("approved");
+          expect(() =>
+            adapter.testCases.transitionStatus({
+              testCaseId: b,
+              tenantScope: "tenant-a",
+              newStatus: "reviewed",
+            }),
+          ).toThrow(WorkbenchStorageError);
+
+          const c = seedCase("draft");
+          expect(() =>
+            adapter.testCases.transitionStatus({
+              testCaseId: c,
+              tenantScope: "tenant-a",
+              newStatus: "draft",
+            }),
+          ).toThrow(WorkbenchStorageError);
+        });
+      });
+
+      describe("listVersions + audit (Issue #58)", () => {
+        const seedWithThreeVersions = (): {
+          testCaseId: string;
+          runId: string;
+        } => {
+          const { runId, generatedSeedId } = seededRun();
+          const detail = adapter.testCases.create(
+            testCaseInput({
+              sourceRunId: runId,
+              sourceGeneratedSeedId: generatedSeedId,
+            }),
+          );
+          const id = detail.testCase.id;
+          adapter.testCases.appendVersion(
+            appendVersionInput(
+              { testCaseId: id, runId },
+              { title: "v2 edit" },
+              "first edit",
+            ),
+          );
+          adapter.testCases.appendVersion(
+            appendVersionInput(
+              { testCaseId: id, runId },
+              { title: "v3 edit" },
+              "second edit",
+            ),
+          );
+          return { testCaseId: id, runId };
+        };
+
+        it("listVersions returns desc by versionIndex (v3, v2, v1)", () => {
+          const { testCaseId } = seedWithThreeVersions();
+          const versions = adapter.testCases.listVersions(
+            testCaseId,
+            "tenant-a",
+          );
+          expect(versions.map((v) => v.versionIndex)).toStrictEqual([3, 2, 1]);
+          expect(versions[0]?.source).toBe("manual");
+          expect(versions[2]?.source).toBe("generated");
+        });
+
+        it("audit event recorded on appendVersion (kind, testCaseId, versionIndex)", () => {
+          const { testCaseId, runId } = seedWithThreeVersions();
+          const events = adapter.auditEvents.listForTestCase(
+            testCaseId,
+            "tenant-a",
+          );
+          const created = events.filter(
+            (e) => e.payload.kind === "test-case.version.created",
+          );
+          expect(created).toHaveLength(2);
+          expect(created[0]?.payload.testCaseId).toBe(testCaseId);
+          expect(
+            created.map((e) =>
+              e.payload.kind === "test-case.version.created"
+                ? e.payload.versionIndex
+                : -1,
+            ),
+          ).toStrictEqual([2, 3]);
+          // Audit must not carry storageRef or raw step content.
+          for (const event of created) {
+            expect(JSON.stringify(event.payload)).not.toContain("storageRef");
+            expect(JSON.stringify(event.payload)).not.toContain("Edited step");
+          }
+          // Guard against runId leakage too.
+          expect(events.every((e) => e.tenantScope === "tenant-a")).toBe(true);
+          expect(runId.length).toBeGreaterThan(0);
+        });
+
+        it("audit event recorded on transitionStatus (kind, previousStatus, newStatus, changeReason)", () => {
+          const { runId, generatedSeedId } = seededRun();
+          const detail = adapter.testCases.create(
+            testCaseInput({
+              sourceRunId: runId,
+              sourceGeneratedSeedId: generatedSeedId,
+            }),
+          );
+          adapter.testCases.transitionStatus({
+            testCaseId: detail.testCase.id,
+            tenantScope: "tenant-a",
+            newStatus: "reviewed",
+            changeReason: "QA sign-off",
+          });
+          const events = adapter.auditEvents.listForTestCase(
+            detail.testCase.id,
+            "tenant-a",
+          );
+          const transitions = events.filter(
+            (e) => e.payload.kind === "test-case.status.transitioned",
+          );
+          expect(transitions).toHaveLength(1);
+          const payload = transitions[0]?.payload;
+          if (payload?.kind !== "test-case.status.transitioned") {
+            throw new Error("unreachable");
+          }
+          expect(payload.previousStatus).toBe("draft");
+          expect(payload.newStatus).toBe("reviewed");
+          expect(payload.changeReason).toBe("QA sign-off");
+        });
+
+        it("audit events for one test case do not include events for sibling test case", () => {
+          const { runId, generatedSeedId } = seededRun();
+          const a = adapter.testCases.create(
+            testCaseInput({
+              sourceRunId: runId,
+              sourceGeneratedSeedId: generatedSeedId,
+              sourceTestCaseId: "tc-a",
+            }),
+          );
+          const b = adapter.testCases.create(
+            testCaseInput({
+              sourceRunId: runId,
+              sourceGeneratedSeedId: generatedSeedId,
+              sourceTestCaseId: "tc-b",
+            }),
+          );
+          adapter.testCases.appendVersion(
+            appendVersionInput(
+              { testCaseId: a.testCase.id, runId },
+              { title: "a-only" },
+            ),
+          );
+          adapter.testCases.transitionStatus({
+            testCaseId: b.testCase.id,
+            tenantScope: "tenant-a",
+            newStatus: "reviewed",
+          });
+          const aEvents = adapter.auditEvents.listForTestCase(
+            a.testCase.id,
+            "tenant-a",
+          );
+          const bEvents = adapter.auditEvents.listForTestCase(
+            b.testCase.id,
+            "tenant-a",
+          );
+          expect(
+            aEvents.every((e) => e.payload.testCaseId === a.testCase.id),
+          ).toBe(true);
+          expect(
+            bEvents.every((e) => e.payload.testCaseId === b.testCase.id),
+          ).toBe(true);
+          expect(aEvents.length).toBe(1);
+          expect(bEvents.length).toBe(1);
+        });
+
+        it("rolls back fully on validation failure (no orphan rows, no audit event recorded)", () => {
+          const { runId, generatedSeedId } = seededRun();
+          const detail = adapter.testCases.create(
+            testCaseInput({
+              sourceRunId: runId,
+              sourceGeneratedSeedId: generatedSeedId,
+            }),
+          );
+          expect(() =>
+            adapter.transaction((tx) => {
+              tx.testCases.appendVersion(
+                appendVersionInput(
+                  { testCaseId: detail.testCase.id, runId },
+                  { title: "" },
+                ),
+              );
+            }),
+          ).toThrow(WorkbenchStorageError);
+          const versions = adapter.testCases.listVersions(
+            detail.testCase.id,
+            "tenant-a",
+          );
+          expect(versions).toHaveLength(1);
+          const events = adapter.auditEvents.listForTestCase(
+            detail.testCase.id,
+            "tenant-a",
+          );
+          expect(events).toStrictEqual([]);
+        });
       });
     });
 

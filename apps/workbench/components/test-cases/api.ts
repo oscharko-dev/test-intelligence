@@ -1,73 +1,38 @@
 /**
- * Typed fetch helpers for the persisted test-case endpoints.
+ * Typed fetch helpers for the persisted test-case READ endpoints.
  *
  * WHY a discriminated `ApiResult` instead of throwing or resolving with an
  * empty success on failure: this is the storage-team pattern (Copilot review
  * pattern 4 on Epic #48). A failed fetch must never appear to the caller as
  * a successful empty list, because empty-on-failure renders the same as
  * empty-on-success and silently hides repository outages from the operator.
+ *
+ * Mutation helpers (POST) live in `./api-mutations`.
  */
 import type {
   PersistedTestCaseDetail,
   TestCaseSummary,
+  TestCaseVersionRecord,
 } from "@/lib/server/storage/types";
+import {
+  fallbackError,
+  isRecord,
+  isStringArray,
+  readErrorBody,
+  type ApiError,
+  type ApiResult,
+} from "./api-internal";
 
-export interface ApiError {
-  readonly status: number;
-  readonly code: string;
-  readonly message: string;
-}
-
-export type ApiResult<T> =
-  | { readonly ok: true; readonly value: T }
-  | { readonly ok: false; readonly error: ApiError };
-
-interface ServerErrorEnvelope {
-  readonly error?: { readonly code?: unknown; readonly message?: unknown };
-}
+export type { ApiError, ApiResult } from "./api-internal";
 
 interface ListEnvelope {
   readonly testCases?: unknown;
 }
 
-const isStringArray = (value: unknown): value is readonly string[] =>
-  Array.isArray(value) && value.every((entry) => typeof entry === "string");
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-
-const fallbackError = (status: number, fallback: string): ApiError => ({
-  status,
-  code:
-    status === 404
-      ? "WORKBENCH_TEST_CASE_NOT_FOUND"
-      : "WORKBENCH_TEST_CASE_REQUEST_FAILED",
-  message: fallback,
-});
-
-const readErrorBody = async (
-  response: Response,
-  fallback: string,
-): Promise<ApiError> => {
-  try {
-    const body = (await response.json()) as ServerErrorEnvelope;
-    const code = body.error?.code;
-    const message = body.error?.message;
-    if (typeof code === "string" && typeof message === "string") {
-      return { status: response.status, code, message };
-    }
-  } catch {
-    // No JSON body, or malformed — fall through to the synthesized error.
-  }
-  return fallbackError(response.status, fallback);
-};
-
 const summariesFromEnvelope = (raw: unknown): readonly TestCaseSummary[] => {
   if (!isRecord(raw)) return [];
   const { testCases } = raw as ListEnvelope;
   if (!Array.isArray(testCases)) return [];
-  // WHY: trust the server contract for the row shape, but defend against
-  // missing array fields so a malformed row never throws inside `.map`.
   return testCases.map((entry): TestCaseSummary => {
     const source = isRecord(entry) ? entry : {};
     return {
@@ -184,10 +149,7 @@ export async function getTestCaseDetail(
         },
       };
     }
-    return {
-      ok: true,
-      value: payload as unknown as PersistedTestCaseDetail,
-    };
+    return { ok: true, value: payload as unknown as PersistedTestCaseDetail };
   } catch (error) {
     return {
       ok: false,
@@ -199,4 +161,69 @@ export async function getTestCaseDetail(
       },
     };
   }
+}
+
+export type ListVersionsResult =
+  | { readonly ok: true; readonly versions: readonly TestCaseVersionRecord[] }
+  | { readonly ok: false; readonly error: ApiError };
+
+export async function listTestCaseVersions(
+  caseId: string,
+): Promise<ListVersionsResult> {
+  try {
+    const response = await fetch(
+      `/api/workbench/test-cases/${encodeURIComponent(caseId)}/versions`,
+      { cache: "no-store" },
+    );
+    if (!response.ok) {
+      return {
+        ok: false,
+        error: await readErrorBody(response, "Could not load version history."),
+      };
+    }
+    const payload = (await response.json().catch(() => undefined)) as unknown;
+    if (!isRecord(payload) || !Array.isArray(payload.versions)) {
+      return {
+        ok: false,
+        error: fallbackError(
+          response.status,
+          "Malformed version list response.",
+        ),
+      };
+    }
+    return {
+      ok: true,
+      versions: payload.versions as unknown as TestCaseVersionRecord[],
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: {
+        status: 0,
+        code: "WORKBENCH_TEST_CASE_VERSIONS_NETWORK_ERROR",
+        message:
+          error instanceof Error ? error.message : "Network request failed.",
+      },
+    };
+  }
+}
+
+export type GetVersionResult =
+  | { readonly ok: true; readonly value: TestCaseVersionRecord }
+  | { readonly ok: false; readonly error: ApiError };
+
+export async function getTestCaseVersion(
+  caseId: string,
+  versionId: string,
+): Promise<GetVersionResult> {
+  const listResult = await listTestCaseVersions(caseId);
+  if (!listResult.ok) return { ok: false, error: listResult.error };
+  const found = listResult.versions.find((v) => v.id === versionId);
+  if (found === undefined) {
+    return {
+      ok: false,
+      error: fallbackError(404, `Version ${versionId} not found.`),
+    };
+  }
+  return { ok: true, value: found };
 }

@@ -97,7 +97,7 @@ describe("TestCaseDetailScreen", () => {
     vi.unstubAllGlobals();
   });
 
-  it("renders the editor with the read-only banner and disabled inputs", async () => {
+  it("renders the editor in read-only state with an Edit button on initial mount", async () => {
     installDetailFetch(Response.json(detail));
     render(<TestCaseDetailScreen caseId="tc-1" />);
 
@@ -107,17 +107,12 @@ describe("TestCaseDetailScreen", () => {
       ).toBeInTheDocument();
     });
 
-    const banner = screen.getByText(
-      /Editing is read-only until the next release/i,
-    );
-    expect(banner).toBeInTheDocument();
-    expect(banner.closest('[role="status"]')).not.toBeNull();
+    expect(
+      screen.getByRole("button", { name: /Edit this test case/i }),
+    ).toBeInTheDocument();
 
     const titleInput = screen.getByLabelText("Title");
     expect(titleInput).toBeDisabled();
-
-    const objective = screen.getByLabelText("Objective");
-    expect(objective).toBeDisabled();
 
     const stepOneAction = screen.getByLabelText("Step 1 action");
     expect(stepOneAction).toBeDisabled();
