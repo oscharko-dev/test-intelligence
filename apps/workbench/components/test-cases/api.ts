@@ -168,7 +168,12 @@ export async function getTestCaseDetail(
     if (
       !isRecord(payload) ||
       !isRecord(payload.testCase) ||
-      !isRecord(payload.currentVersion)
+      !isRecord(payload.currentVersion) ||
+      !Array.isArray(payload.currentVersion.traceLinks) ||
+      !Array.isArray(payload.currentVersion.steps) ||
+      !Array.isArray(payload.currentVersion.preconditions) ||
+      !Array.isArray(payload.currentVersion.testData) ||
+      !Array.isArray(payload.currentVersion.tags)
     ) {
       return {
         ok: false,

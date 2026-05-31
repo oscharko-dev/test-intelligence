@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useId, type ReactNode } from "react";
 import { Copy } from "lucide-react";
 import { IconButton } from "@/components/primitives/IconButton";
@@ -51,16 +50,12 @@ function TraceChip({
 }): ReactNode {
   const display = shortId(link.targetId);
   const label = `${link.targetKind} ${link.targetId}`;
+  // WHY: snapshot vault does not expose stable per-ID anchors or routes yet;
+  // render as copy-only until the vault exposes addressable targets.
   if (link.targetKind === "snapshot") {
     return (
-      <span className={ui.chip.base}>
-        <Link
-          href={`/snapshots#${encodeURIComponent(link.targetId)}`}
-          aria-label={label}
-          className="text-fg-default hover:underline"
-        >
-          {display}
-        </Link>
+      <span className={ui.chip.base} aria-label={label}>
+        <span className="text-fg-default">{display}</span>
         <IconButton
           icon={Copy}
           label={`Copy ${link.targetKind} id ${link.targetId}`}

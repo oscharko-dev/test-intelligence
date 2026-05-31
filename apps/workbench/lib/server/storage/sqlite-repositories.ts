@@ -1246,11 +1246,29 @@ export const createTestCaseRepository = (db: Db): TestCaseRepository => {
             : runId !== undefined
               ? (handles.selectSummaryByRun.all(runId) as TestCaseSummaryRow[])
               : (handles.selectSummaryAll.all() as TestCaseSummaryRow[]);
+      if (rows.length === 0) return [];
+      // WHY single batch query: fetching trace links per-row is O(N) round-trips;
+      // grouping by version_id in memory after one IN-clause query keeps list reads O(1).
+      const versionIds = rows.map((r) => r.current_version_id);
+      const placeholders = versionIds.map(() => "?").join(", ");
+      const allLinkRows = db
+        .prepare(
+          `SELECT * FROM test_case_trace_links
+             WHERE test_case_version_id IN (${placeholders})
+             ORDER BY rowid`,
+        )
+        .all(...versionIds) as TestCaseTraceLinkRow[];
+      const linksByVersionId = new Map<string, TestCaseTraceLinkRow[]>();
+      for (const linkRow of allLinkRows) {
+        const bucket = linksByVersionId.get(linkRow.test_case_version_id);
+        if (bucket !== undefined) {
+          bucket.push(linkRow);
+        } else {
+          linksByVersionId.set(linkRow.test_case_version_id, [linkRow]);
+        }
+      }
       return rows.map((row) => {
-        const linkRows = handles.selectTraceLinksByVersion.all(
-          row.current_version_id,
-          row.tenant_scope,
-        ) as TestCaseTraceLinkRow[];
+        const linkRows = linksByVersionId.get(row.current_version_id) ?? [];
         return mapTestCaseSummary(row, linkRows.map(mapTestCaseTraceLink));
       });
     },
