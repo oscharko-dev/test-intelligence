@@ -40,6 +40,11 @@ export type {
 } from "./types";
 
 export type {
+  AppendTestCaseVersionInput,
+  AuditEventKind,
+  AuditEventPayload,
+  AuditEventRecord,
+  AuditEventRepository,
   CreatePersistedTestCaseInput,
   PersistedTestCaseDetail,
   TestCaseFilter,
@@ -53,6 +58,7 @@ export type {
   TestCaseTraceLinkRecord,
   TestCaseTraceTargetInput,
   TestCaseVersionRecord,
+  TransitionTestCaseStatusInput,
 } from "./types";
 
 export type {

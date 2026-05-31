@@ -10,6 +10,7 @@
 
 import type {
   ArtifactRepository,
+  AuditEventRepository,
   ExportRepository,
   GeneratedSeedRepository,
   RunRepository,
@@ -25,19 +26,27 @@ export type WorkbenchStorageErrorCode =
   | "STORAGE_PATH_INVALID"
   | "MIGRATION_SEQUENCE_INVALID"
   | "MIGRATION_FAILED"
-  | "SCHEMA_VERSION_UNSUPPORTED";
+  | "SCHEMA_VERSION_UNSUPPORTED"
+  | "VALIDATION_FAILED"
+  | "INVALID_STATUS_TRANSITION";
+
+interface WorkbenchStorageErrorOptions extends ErrorOptions {
+  readonly details?: unknown;
+}
 
 export class WorkbenchStorageError extends Error {
   readonly code: WorkbenchStorageErrorCode;
+  readonly details?: unknown;
 
   constructor(
     code: WorkbenchStorageErrorCode,
     message: string,
-    options?: ErrorOptions,
+    options?: WorkbenchStorageErrorOptions,
   ) {
     super(message, options);
     this.name = "WorkbenchStorageError";
     this.code = code;
+    if (options?.details !== undefined) this.details = options.details;
   }
 }
 
@@ -57,6 +66,7 @@ export interface WorkbenchStorageAdapter {
   readonly generatedSeeds: GeneratedSeedRepository;
   readonly exports: ExportRepository;
   readonly testCases: TestCaseRepository;
+  readonly auditEvents: AuditEventRepository;
   migrateToLatest(): number;
   getSchemaVersion(): number;
   transaction<T>(work: (tx: WorkbenchStorageAdapter) => T): T;

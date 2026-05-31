@@ -195,6 +195,20 @@ const SCHEMA_V3_STATEMENTS: readonly string[] = [
 ];
 
 /**
+ * DDL for schema version 4: editor versioning + audit trail (Issue #58).
+ * Adds `previous_version_id` (FK chain) and `change_reason` (optional operator
+ * note, truncated to 500 chars by the repository) to `test_case_versions`. The
+ * `audit_events` table already exists (v1, forward-looking); the audit
+ * repository writes its rows but no schema change is required there.
+ */
+const SCHEMA_V4_STATEMENTS: readonly string[] = [
+  `ALTER TABLE test_case_versions ADD COLUMN previous_version_id TEXT`,
+  `ALTER TABLE test_case_versions ADD COLUMN change_reason TEXT`,
+  `CREATE INDEX IF NOT EXISTS idx_workbench_audit_events_tenant
+     ON audit_events (tenant_scope)`,
+];
+
+/**
  * Names of every table the built-in schema creates. Used by tests to assert the
  * full set exists and by future readiness checks.
  */
@@ -212,7 +226,7 @@ export const WORKBENCH_SCHEMA_TABLES: readonly string[] = [
   "test_case_trace_links",
 ];
 
-export const WORKBENCH_SCHEMA_VERSION = 3;
+export const WORKBENCH_SCHEMA_VERSION = 4;
 
 export const WORKBENCH_SCHEMA_INDEXES: readonly string[] = [
   "idx_workbench_snapshots_tenant",
@@ -227,6 +241,7 @@ export const WORKBENCH_SCHEMA_INDEXES: readonly string[] = [
   "idx_workbench_test_cases_unique_source",
   "idx_workbench_test_case_versions_case",
   "idx_workbench_test_case_trace_links_version",
+  "idx_workbench_audit_events_tenant",
 ];
 
 /**
@@ -261,6 +276,15 @@ export const buildBuiltinSchemaMigrations = (
     description: "Create persisted test case editor tables and indexes.",
     up(): void {
       for (const statement of SCHEMA_V3_STATEMENTS) {
+        db.exec(statement);
+      }
+    },
+  },
+  {
+    version: 4,
+    description: "Add test case version lineage columns and audit event index.",
+    up(): void {
+      for (const statement of SCHEMA_V4_STATEMENTS) {
         db.exec(statement);
       }
     },

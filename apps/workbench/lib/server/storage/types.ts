@@ -289,12 +289,11 @@ export interface ExportRepository {
 }
 
 /**
- * WHY a discriminated union for the version source: today only `"generated"` is
- * supported (Issue #56 ingests cases produced at run seal); reserving the slot
- * keeps storage forwards-compatible with manual / imported sources without a
- * schema migration.
+ * WHY a discriminated union for the version source: `"generated"` is the
+ * seal-time ingestion path (Issue #56) and `"manual"` is operator edits via the
+ * editor (Issue #58). Reserving more slots stays forwards-compatible.
  */
-export type TestCaseSource = "generated";
+export type TestCaseSource = "generated" | "manual";
 
 export type TestCaseLifecycleStatus = "draft" | "reviewed" | "approved";
 
@@ -328,6 +327,8 @@ export interface TestCaseTraceLinkRecord {
  * Canonical persisted version of a test case. WHY `content` is required: each
  * version is anchored to an immutable artifact snapshot of the originating
  * generator payload, satisfying AC#3 (run artifacts referenced, not overwritten).
+ * `previousVersionId` chains each operator-saved version to its predecessor;
+ * `changeReason` carries an optional operator note (≤500 chars after truncation).
  */
 export interface TestCaseVersionRecord {
   readonly id: string;
@@ -348,6 +349,8 @@ export interface TestCaseVersionRecord {
   readonly description?: string;
   readonly content: ContentRef;
   readonly traceLinks: readonly TestCaseTraceLinkRecord[];
+  readonly previousVersionId?: string;
+  readonly changeReason?: string;
 }
 
 export interface TestCaseRecord {
@@ -427,6 +430,74 @@ export interface TestCaseFilter {
   readonly runId?: string;
 }
 
+export interface AppendTestCaseVersionInput {
+  readonly testCaseId: string;
+  readonly tenantScope: string;
+  readonly changeReason?: string;
+  readonly version: {
+    readonly title: string;
+    readonly objective: string;
+    readonly preconditions: readonly string[];
+    readonly steps: readonly TestCaseStepRecord[];
+    readonly testData: readonly string[];
+    readonly priority: string;
+    readonly risk: string;
+    readonly tags: readonly string[];
+    readonly status: string;
+    readonly description?: string;
+    readonly content: ContentRef;
+    readonly traceTargets: readonly TestCaseTraceTargetInput[];
+  };
+}
+
+export interface TransitionTestCaseStatusInput {
+  readonly testCaseId: string;
+  readonly tenantScope: string;
+  readonly newStatus: TestCaseLifecycleStatus;
+  readonly changeReason?: string;
+}
+
+export type AuditEventKind =
+  | "test-case.version.created"
+  | "test-case.status.transitioned";
+
+interface AuditEventVersionCreatedPayload {
+  readonly kind: "test-case.version.created";
+  readonly testCaseId: string;
+  readonly versionIndex: number;
+  readonly changeReason?: string;
+}
+
+interface AuditEventStatusTransitionedPayload {
+  readonly kind: "test-case.status.transitioned";
+  readonly testCaseId: string;
+  readonly previousStatus: TestCaseLifecycleStatus;
+  readonly newStatus: TestCaseLifecycleStatus;
+  readonly changeReason?: string;
+}
+
+export type AuditEventPayload =
+  | AuditEventVersionCreatedPayload
+  | AuditEventStatusTransitionedPayload;
+
+export interface AuditEventRecord {
+  readonly id: string;
+  readonly tenantScope: string;
+  readonly createdAt: IsoTimestamp;
+  readonly payload: AuditEventPayload;
+}
+
+export interface AuditEventRepository {
+  record(input: {
+    readonly tenantScope: string;
+    readonly payload: AuditEventPayload;
+  }): AuditEventRecord;
+  listForTestCase(
+    testCaseId: string,
+    tenantScope: string,
+  ): readonly AuditEventRecord[];
+}
+
 export interface TestCaseRepository {
   create(input: CreatePersistedTestCaseInput): PersistedTestCaseDetail;
   get(id: string, tenantScope: string): PersistedTestCaseDetail | undefined;
@@ -436,4 +507,12 @@ export interface TestCaseRepository {
     sourceRunId: string,
     sourceTestCaseId: string,
   ): TestCaseRecord | undefined;
+  appendVersion(input: AppendTestCaseVersionInput): PersistedTestCaseDetail;
+  transitionStatus(
+    input: TransitionTestCaseStatusInput,
+  ): PersistedTestCaseDetail;
+  listVersions(
+    testCaseId: string,
+    tenantScope: string,
+  ): readonly TestCaseVersionRecord[];
 }
