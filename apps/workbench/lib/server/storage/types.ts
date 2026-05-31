@@ -362,6 +362,33 @@ export interface TestCaseRecord {
   readonly status: TestCaseLifecycleStatus;
 }
 
+/**
+ * Enriched list row for the test-case list endpoint. WHY a separate type from
+ * {@link TestCaseRecord}: the UI must filter by run, snapshot, status, priority,
+ * risk, and tags without an O(N) follow-up fetch per row (Issue #57 AC#3). The
+ * summary widens the canonical record with the current version's metadata plus
+ * trace-link aggregates derived from `currentVersionId`. The `tags`,
+ * `snapshotIds`, and `traceLinkKinds` arrays carry distinct values only.
+ */
+export interface TestCaseSummary {
+  readonly id: string;
+  readonly tenantScope: string;
+  readonly createdAt: IsoTimestamp;
+  readonly updatedAt: IsoTimestamp;
+  readonly sourceRunId: string;
+  readonly sourceGeneratedSeedId: string;
+  readonly sourceTestCaseId: string;
+  readonly currentVersionId: string;
+  readonly status: TestCaseLifecycleStatus;
+  readonly title: string;
+  readonly priority: string;
+  readonly risk: string;
+  readonly tags: readonly string[];
+  readonly versionStatus: string;
+  readonly snapshotIds: readonly string[];
+  readonly traceLinkKinds: readonly TestCaseTraceLinkKind[];
+}
+
 export interface PersistedTestCaseDetail {
   readonly testCase: TestCaseRecord;
   readonly currentVersion: TestCaseVersionRecord;
@@ -403,7 +430,7 @@ export interface TestCaseFilter {
 export interface TestCaseRepository {
   create(input: CreatePersistedTestCaseInput): PersistedTestCaseDetail;
   get(id: string, tenantScope: string): PersistedTestCaseDetail | undefined;
-  list(filter?: TestCaseFilter): readonly TestCaseRecord[];
+  list(filter?: TestCaseFilter): readonly TestCaseSummary[];
   findBySource(
     tenantScope: string,
     sourceRunId: string,

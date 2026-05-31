@@ -48,6 +48,8 @@ import type {
   TestCaseFilter,
   TestCaseRecord,
   TestCaseRepository,
+  TestCaseSummary,
+  TestCaseTraceLinkKind,
   TestCaseTraceLinkRecord,
   TestCaseVersionRecord,
   WorkbenchRunStatus,
@@ -397,6 +399,49 @@ const assertTraceTargetsPresent = (
   }
 };
 
+const distinctOrdered = <T>(values: readonly T[]): T[] => {
+  const seen = new Set<T>();
+  const out: T[] = [];
+  for (const value of values) {
+    if (!seen.has(value)) {
+      seen.add(value);
+      out.push(value);
+    }
+  }
+  return out;
+};
+
+const projectTestCaseSummary = (
+  record: TestCaseRecord,
+  version: TestCaseVersionRecord,
+  links: readonly TestCaseTraceLinkRecord[],
+): TestCaseSummary => {
+  const snapshotIds = distinctOrdered(
+    links.filter((l) => l.targetKind === "snapshot").map((l) => l.targetId),
+  );
+  const traceLinkKinds = distinctOrdered<TestCaseTraceLinkKind>(
+    links.map((l) => l.targetKind),
+  );
+  return {
+    id: record.id,
+    tenantScope: record.tenantScope,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    sourceRunId: record.sourceRunId,
+    sourceGeneratedSeedId: record.sourceGeneratedSeedId,
+    sourceTestCaseId: record.sourceTestCaseId,
+    currentVersionId: record.currentVersionId,
+    status: record.status,
+    title: version.title,
+    priority: version.priority,
+    risk: version.risk,
+    tags: distinctOrdered([...version.tags]),
+    versionStatus: version.status,
+    snapshotIds,
+    traceLinkKinds,
+  };
+};
+
 const createTestCaseRepository = (state: MemoryState): TestCaseRepository => ({
   create(input: CreatePersistedTestCaseInput): PersistedTestCaseDetail {
     assertCanonicalContentRef(
@@ -484,16 +529,23 @@ const createTestCaseRepository = (state: MemoryState): TestCaseRepository => ({
       currentVersion: snapshot(currentVersion),
     };
   },
-  list(filter?: TestCaseFilter): readonly TestCaseRecord[] {
-    return [...state.testCases.values()]
-      .filter((record) =>
-        matchesTenant(record.tenantScope, filter?.tenantScope),
-      )
-      .filter(
-        (record) =>
-          filter?.runId === undefined || record.sourceRunId === filter.runId,
-      )
-      .map(snapshot);
+  list(filter?: TestCaseFilter): readonly TestCaseSummary[] {
+    const summaries: TestCaseSummary[] = [];
+    for (const record of state.testCases.values()) {
+      if (!matchesTenant(record.tenantScope, filter?.tenantScope)) continue;
+      if (filter?.runId !== undefined && record.sourceRunId !== filter.runId) {
+        continue;
+      }
+      const version = state.testCaseVersions.get(record.currentVersionId);
+      if (version === undefined) continue;
+      const links = [...state.testCaseTraceLinks.values()].filter(
+        (l) =>
+          l.testCaseVersionId === version.id &&
+          l.tenantScope === record.tenantScope,
+      );
+      summaries.push(snapshot(projectTestCaseSummary(record, version, links)));
+    }
+    return summaries;
   },
   findBySource(
     tenantScope: string,

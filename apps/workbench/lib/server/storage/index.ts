@@ -48,6 +48,7 @@ export type {
   TestCaseRepository,
   TestCaseSource,
   TestCaseStepRecord,
+  TestCaseSummary,
   TestCaseTraceLinkKind,
   TestCaseTraceLinkRecord,
   TestCaseTraceTargetInput,
